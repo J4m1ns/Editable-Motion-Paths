@@ -346,6 +346,23 @@ def _draw_prop_circle(ctx, us):
     batch_for_shader(sh, 'LINE_LOOP', {"pos": pts}).draw(sh)
 
 
+def _draw_snap_point(ctx, us):
+    if state.snap_point is None:
+        return
+    s = location_3d_to_region_2d(ctx.region, ctx.region_data, state.snap_point)
+    if s is None:
+        return
+    r = 7 * us
+    pts = [(s.x + math.cos(a * 2 * math.pi / 24) * r, s.y + math.sin(a * 2 * math.pi / 24) * r)
+           for a in range(24)]
+    sh = gpu.shader.from_builtin('UNIFORM_COLOR')
+    gpu.state.blend_set('ALPHA')
+    gpu.state.line_width_set(2.0)
+    sh.uniform_float("color", (1.0, 1.0, 1.0, 0.95))
+    batch_for_shader(sh, 'LINE_LOOP', {"pos": pts}).draw(sh)
+    gpu.state.line_width_set(1.0)
+
+
 def _draw_slide_marker(ctx, us):
     if state.slide_marker is None:
         return
@@ -386,8 +403,9 @@ def _draw_mode_indicator(ctx, st, us):
     blf.size(font, 12 * us)
     loc = st.edit_mode == 'LOCATION'
     parts = [("1 Location", loc), ("   2 Rotation", not loc)]
-    if st.use_proportional:
-        name = st.bl_rna.properties['proportional_falloff'].enum_items[st.proportional_falloff].name
+    ts = ctx.scene.tool_settings
+    if ts.use_proportional_edit:
+        name = ts.bl_rna.properties['proportional_edit_falloff'].enum_items[ts.proportional_edit_falloff].name
         parts.append(("      O Proportional: %s %.2f" % (name, st.proportional_size), True))
     hint = ""
     for cache in state.visible_caches(ctx.scene):
@@ -431,6 +449,7 @@ def _draw_pixel():
         _draw_points(ctx, st, us)
         _draw_prop_circle(ctx, us)
         _draw_slide_marker(ctx, us)
+        _draw_snap_point(ctx, us)
         _draw_mode_indicator(ctx, st, us)
 
     if state.box is not None and ctx.area is not None and ctx.area.as_pointer() == state.box_area:
@@ -442,6 +461,31 @@ def _draw_pixel():
         batch_for_shader(sh, 'TRI_FAN', {"pos": coords}).draw(sh)
         sh.uniform_float("color", (1.0, 1.0, 1.0, 0.8) if mode != 'SUB' else (1.0, 0.4, 0.4, 0.8))
         batch_for_shader(sh, 'LINE_LOOP', {"pos": coords}).draw(sh)
+
+    if state.knife is not None and ctx.area is not None and ctx.area.as_pointer() == state.knife[1]:
+        pts = [(p.x, p.y) for p in state.knife[0]]
+        if len(pts) >= 2:
+            sh = gpu.shader.from_builtin('UNIFORM_COLOR')
+            gpu.state.blend_set('ALPHA')
+            gpu.state.line_width_set(2.0)
+            sh.uniform_float("color", (0.3, 1.0, 0.4, 0.9))
+            batch_for_shader(sh, 'LINE_STRIP', {"pos": pts}).draw(sh)
+            gpu.state.line_width_set(1.0)
+    if state.markers is not None and ctx.area is not None and ctx.area.as_pointer() == state.markers[1]:
+        discs = Discs()
+        for p in state.markers[0]:
+            discs.add_outlined(location_3d_to_region_2d(ctx.region, ctx.region_data, p), 4.5 * us,
+                               (0.3, 1.0, 0.4, 1.0))
+        gpu.state.blend_set('ALPHA')
+        discs.draw()
+    if state.circle is not None and ctx.area is not None and ctx.area.as_pointer() == state.circle[3]:
+        cx, cy, r, _a = state.circle
+        pts = [(cx + math.cos(a * 2 * math.pi / 48) * r, cy + math.sin(a * 2 * math.pi / 48) * r)
+               for a in range(48)]
+        sh = gpu.shader.from_builtin('UNIFORM_COLOR')
+        gpu.state.blend_set('ALPHA')
+        sh.uniform_float("color", (1.0, 1.0, 1.0, 0.8))
+        batch_for_shader(sh, 'LINE_LOOP', {"pos": pts}).draw(sh)
 
     if state.hud is not None and ctx.area is not None and ctx.area.as_pointer() == state.hud_area:
         text, (x, y) = state.hud

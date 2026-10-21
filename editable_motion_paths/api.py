@@ -274,7 +274,7 @@ def move_key(obj, bone=None, frame=None, target=None, offset=None, mode=None):
 
 def insert_key(obj, bone=None, frame=None, mode=None):
     """Insert a key on the path at `frame` without changing the motion."""
-    from .ops_select import insert_key as _insert
+    from .ops_keys import insert_key as _insert
     c = _cache(obj, bone, mode)
     k = _insert(c, float(frame))
     _push("Insert Path Key")

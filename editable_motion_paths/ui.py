@@ -4,38 +4,66 @@ import bpy
 
 from . import state
 
+
+def _k(op, key, props=None, **mods):
+    ev = {"type": key, "value": mods.pop("value", 'PRESS')}
+    ev.update(mods)
+    return (op, ev, {"properties": list(props.items())} if props else None)
+
+
 TOOL_KEYMAP = (
-    ("emp.click", {"type": 'LEFTMOUSE', "value": 'PRESS', "any": True}, None),
-    ("emp.jump_to_key", {"type": 'LEFTMOUSE', "value": 'DOUBLE_CLICK'}, None),
-    ("emp.box_select", {"type": 'LEFTMOUSE', "value": 'CLICK_DRAG', "any": True}, None),
-    ("emp.box_select", {"type": 'B', "value": 'PRESS'},
-     {"properties": [("wait_for_input", True)]}),
-    ("emp.transform", {"type": 'G', "value": 'PRESS'}, {"properties": [("mode", 'TRANSLATE')]}),
-    ("emp.transform", {"type": 'R', "value": 'PRESS'}, {"properties": [("mode", 'ROTATE')]}),
-    ("emp.transform", {"type": 'S', "value": 'PRESS'}, {"properties": [("mode", 'SCALE')]}),
-    ("emp.select_all", {"type": 'A', "value": 'PRESS'}, {"properties": [("action", 'SELECT')]}),
-    ("emp.select_all", {"type": 'A', "value": 'PRESS', "alt": True},
-     {"properties": [("action", 'DESELECT')]}),
-    ("emp.select_all", {"type": 'I', "value": 'PRESS', "ctrl": True},
-     {"properties": [("action", 'INVERT')]}),
-    ("emp.delete_keys", {"type": 'X', "value": 'PRESS'}, None),
-    ("emp.delete_keys", {"type": 'DEL', "value": 'PRESS'}, None),
-    ("emp.handle_type_menu", {"type": 'V', "value": 'PRESS'}, None),
-    ("emp.context_menu", {"type": 'RIGHTMOUSE', "value": 'PRESS'}, None),
-    ("emp.smooth", {"type": 'S', "value": 'PRESS', "alt": True}, None),
-    ("emp.exaggerate", {"type": 'E', "value": 'PRESS', "alt": True}, None),
-    ("emp.ease", {"type": 'E', "value": 'PRESS'}, None),
-    ("emp.fix_loop", {"type": 'L', "value": 'PRESS'}, None),
-    ("emp.cleanup", {"type": 'X', "value": 'PRESS', "ctrl": True},
-     {"properties": [("dissolve", True)]}),
-    ("wm.context_set_enum", {"type": 'ONE', "value": 'PRESS'},
-     {"properties": [("data_path", "scene.emp.edit_mode"), ("value", 'LOCATION')]}),
-    ("wm.context_set_enum", {"type": 'TWO', "value": 'PRESS'},
-     {"properties": [("data_path", "scene.emp.edit_mode"), ("value", 'ROTATION')]}),
-    ("wm.context_toggle", {"type": 'O', "value": 'PRESS'},
-     {"properties": [("data_path", "scene.emp.use_proportional")]}),
-    ("wm.context_pie_enum", {"type": 'O', "value": 'PRESS', "shift": True},
-     {"properties": [("data_path", "scene.emp.proportional_falloff")]}),
+    # select
+    _k("emp.click", 'LEFTMOUSE', any=True),
+    _k("emp.jump_to_key", 'LEFTMOUSE', value='DOUBLE_CLICK'),
+    _k("emp.box_select", 'LEFTMOUSE', value='CLICK_DRAG', any=True),
+    _k("emp.box_select", 'B', {"wait_for_input": True}),
+    _k("emp.circle_select", 'C'),
+    _k("emp.select_all", 'A', {"action": 'SELECT'}),
+    _k("emp.select_all", 'A', {"action": 'DESELECT'}, alt=True),
+    _k("emp.select_all", 'I', {"action": 'INVERT'}, ctrl=True),
+    _k("emp.select_linked", 'L', ctrl=True),
+    _k("emp.select_linked_pick", 'L'),
+    _k("emp.select_linked_pick", 'L', {"deselect": True}, shift=True),
+    _k("emp.select_more_less", 'NUMPAD_PLUS', ctrl=True),
+    _k("emp.select_more_less", 'NUMPAD_MINUS', {"less": True}, ctrl=True),
+    _k("emp.select_similar", 'G', shift=True),
+    _k("emp.select_side", 'LEFT_BRACKET', {"side": 'LEFT'}),
+    _k("emp.select_side", 'RIGHT_BRACKET', {"side": 'RIGHT'}),
+    _k("emp.hide", 'H'),
+    _k("emp.hide", 'H', {"unselected": True}, shift=True),
+    _k("emp.reveal", 'H', alt=True),
+    # transform
+    _k("emp.transform", 'G', {"mode": 'TRANSLATE'}),
+    _k("emp.transform", 'R', {"mode": 'ROTATE'}),
+    _k("emp.transform", 'S', {"mode": 'SCALE'}),
+    _k("emp.transform", 'T', {"mode": 'ROTATE', "twist": True}, ctrl=True),
+    _k("emp.transform", 'S', {"mode": 'SHEAR'}, shift=True, ctrl=True, alt=True),
+    _k("emp.slide", 'V', shift=True),
+    _k("emp.mirror", 'M', ctrl=True),
+    _k("emp.snap_pie", 'S', shift=True),
+    # keys
+    _k("emp.delete_menu", 'X'),
+    _k("emp.delete_keys", 'DEL'),
+    _k("emp.dissolve_keys", 'X', ctrl=True),
+    _k("emp.extrude", 'E'),
+    _k("emp.duplicate", 'D', shift=True),
+    _k("emp.loopcut", 'R', ctrl=True),
+    _k("emp.knife", 'K'),
+    _k("emp.merge", 'M'),
+    _k("emp.loop_menu", 'C', alt=True),
+    _k("emp.handle_type_menu", 'V'),
+    _k("emp.interpolation_menu", 'T'),
+    # shape / timing
+    _k("emp.smooth", 'S', alt=True),
+    _k("emp.exaggerate", 'E', alt=True),
+    _k("emp.ease", 'E', shift=True),
+    _k("emp.context_menu", 'RIGHTMOUSE'),
+    # modes, proportional editing (Blender's own settings)
+    _k("wm.context_set_enum", 'ONE', {"data_path": "scene.emp.edit_mode", "value": 'LOCATION'}),
+    _k("wm.context_set_enum", 'TWO', {"data_path": "scene.emp.edit_mode", "value": 'ROTATION'}),
+    _k("wm.context_toggle", 'O', {"data_path": "tool_settings.use_proportional_edit"}),
+    _k("wm.context_pie_enum", 'O', {"data_path": "tool_settings.proportional_edit_falloff"}, shift=True),
+    _k("wm.context_toggle", 'O', {"data_path": "tool_settings.use_proportional_connected"}, alt=True),
 )
 
 HELP = (
@@ -82,17 +110,19 @@ def _draw_tool_settings(context, layout, tool):
 
 
 def _draw_proportional(layout, st, compact=False):
+    """Blender's proportional editing settings (shared with mesh editing) plus the path radius."""
+    ts = bpy.context.scene.tool_settings
     row = layout.row(align=True)
-    row.prop(st, "use_proportional", text="" if compact else "Proportional",
-             icon='PROP_CON' if st.use_proportional and st.proportional_connected else
-             ('PROP_ON' if st.use_proportional else 'PROP_OFF'))
+    on = ts.use_proportional_edit
+    row.prop(ts, "use_proportional_edit", text="" if compact else "Proportional",
+             icon='PROP_CON' if on and ts.use_proportional_connected else ('PROP_ON' if on else 'PROP_OFF'))
     sub = row.row(align=True)
-    sub.active = st.use_proportional
-    sub.prop(st, "proportional_falloff", text="", icon_only=True)
+    sub.active = on
+    sub.prop(ts, "proportional_edit_falloff", text="", icon_only=True)
     if not compact:
         sub.prop(st, "proportional_size", text="Size")
-    sub.prop(st, "proportional_connected", text="", icon='LINKED' if st.proportional_connected else 'UNLINKED',
-             toggle=True)
+    sub.prop(ts, "use_proportional_connected", text="", icon='LINKED' if ts.use_proportional_connected
+             else 'UNLINKED', toggle=True)
 
 
 class EMP_PoseTool(bpy.types.WorkSpaceTool):

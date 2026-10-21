@@ -356,6 +356,20 @@ class PathCache:
             return B[i]
         return B[i] + (B[i + 1] - B[i]) * f
 
+    def extend_to(self, t):
+        """Make the path reach frame t (keys added past the ends) until the next bake; the
+        parent space there is assumed to stay as at the end."""
+        if not self.B:
+            return
+        if t > self.fe:
+            n = int(math.ceil(t)) - self.fe
+            self.B = self.B + [self.B[-1].copy() for _ in range(n)]
+        if t < self.fs:
+            n = self.fs - int(math.floor(t))
+            self.B = [self.B[0].copy() for _ in range(n)] + self.B
+            self.fs -= n
+        self.dirty = True
+
     def point(self, tg, t, vals=None):
         """World position of the path at time t; `vals` overrides the edited channels."""
         B = self.B_at(t)

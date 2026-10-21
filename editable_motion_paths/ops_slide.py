@@ -14,6 +14,7 @@ from bpy_extras.view3d_utils import location_3d_to_region_2d
 from mathutils import Vector
 
 from . import core, pick, state
+from .ops_keys import frames_from_mouse
 from .ops_transform import NumInput
 
 SAMPLE_STEP = 0.1
@@ -222,7 +223,7 @@ class EMP_OT_slide(bpy.types.Operator):
                                "mouse, so the bone arrives there earlier or later"),
         ('TIMING', "Timing", "Keys keep their pose and move in time (like dragging them in the "
                              "timeline). The frame dots around them spread out or bunch up"),
-    ], default='SPACING')
+    ], default='TIMING')
     extrapolate: BoolProperty(
         name="Continue Motion", default=False,
         description="The pose follows the trajectory and keeps going past the first / last key, "
@@ -293,9 +294,12 @@ class EMP_OT_slide(bpy.types.Operator):
         self.jobs = self._jobs(context, ensure=False)
         self.ensured = False
         if not self.jobs:
-            self.report({'WARNING'}, "Select keys on a path first")
-            return {'CANCELLED'}
+            return {'PASS_THROUGH'}
         self._build_track()
+        # the mouse works like in the timeline: right = later, left = earlier
+        self.x0 = self.mouse0.x
+        self.xv = float(event.mouse_x - self.region.x)
+        self.xl = event.mouse_x - self.region.x
         self.offset = 0.0
         self.numinput = NumInput(1)
         for job in self.jobs:
@@ -310,8 +314,8 @@ class EMP_OT_slide(bpy.types.Operator):
     # -- following the path with the mouse -------------------------------------
 
     def _build_track(self):
-        """Screen-space polyline the mouse slides on: the path between its first and last
-        key plus a straight continuation on both ends (so keys can go past the ends)."""
+        """The path between its first and last key plus a straight continuation on both ends
+        (keys can go past the ends): the slide marker is shown on it."""
         best = None
         for job in self.jobs:
             for k in job.keys:
@@ -350,36 +354,7 @@ class EMP_OT_slide(bpy.types.Operator):
         post_p = [traj.p_last + v_last * (t - t1) for t in post_t]
         self.track_times = pre_t + times + post_t
         self.track_points = pre_p + pts + post_p
-        self.track_2d = [location_3d_to_region_2d(self.region, self.rv3d, p) for p in self.track_points]
-        on_screen = [p for p in self.track_2d if p is not None]
-        length = sum((b - a).length for a, b in zip(on_screen, on_screen[1:]))
-        self.px_per_frame = max(length / max(len(on_screen) - 1, 1), 1.0)
         state.slide_extension = (pre_p + [pts[0]], [pts[-1]] + post_p)
-        self.t_cur = self.active_t
-        self.t_start = self._track(self.mouse0)
-
-    def _track(self, m):
-        """Point of the path under the mouse. Staying close (in time) to the current point is
-        preferred, so the marker follows the curve instead of jumping across its loops, but
-        it does jump when the mouse is clearly over another part of the path."""
-        times = self.track_times
-        pts = self.track_2d
-        best = None
-        for i in range(len(pts) - 1):
-            a, b = pts[i], pts[i + 1]
-            if a is None or b is None:
-                continue
-            seg = b - a
-            ln = seg.length_squared
-            f = 0.0 if ln < 1e-9 else max(0.0, min(1.0, (m - a).dot(seg) / ln))
-            d = (a + seg * f - m).length
-            t = times[i] + (times[i + 1] - times[i]) * f
-            score = d + abs(t - self.t_cur) * self.px_per_frame * 0.35
-            if best is None or score < best[0]:
-                best = (score, t)
-        if best is not None:
-            self.t_cur = best[1]
-        return self.t_cur
 
     def _update(self, context, event):
         snap = not event.ctrl
@@ -387,8 +362,7 @@ class EMP_OT_slide(bpy.types.Operator):
             v = self.numinput.value(0)
             delta = v if v is not None else 0.0
         else:
-            m = Vector((event.mouse_x - self.region.x, event.mouse_y - self.region.y))
-            delta = self._track(m) - self.t_start
+            delta = frames_from_mouse(self.xv - self.x0)
             if snap:
                 delta = round(self.active_t + delta) - self.active_t
         delta = self._clamp(delta, snap)
@@ -415,7 +389,8 @@ class EMP_OT_slide(bpy.types.Operator):
         state.slide_marker = (p, "%s  %+g" % (frame, round(delta, 2)))
         state.hud = (txt, (event.mouse_x - self.region.x, event.mouse_y - self.region.y))
         self.area.header_text_set(
-            txt + "   T: Timing / Spacing   C: continue motion past the ends   Ctrl: subframes   "
+            txt + "   move left / right   T: Timing / Spacing   C: continue past the ends   "
+                  "Ctrl: subframes   Shift: precise   "
                   "type a frame offset   LMB/Enter: confirm   RMB/Esc: cancel")
         state.tag_redraw()
 
@@ -454,7 +429,12 @@ class EMP_OT_slide(bpy.types.Operator):
 
     def _modal(self, context, event):
         t, v = event.type, event.value
-        if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE', 'LEFT_CTRL', 'RIGHT_CTRL'}:
+        if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            x = event.mouse_x - self.region.x
+            self.xv += (x - self.xl) * (0.1 if event.shift else 1.0)
+            self.xl = x
+            self._update(context, event)
+        elif t in {'LEFT_CTRL', 'RIGHT_CTRL'}:
             self._update(context, event)
         elif (t == 'LEFTMOUSE' and v == 'PRESS') or (t in {'RET', 'NUMPAD_ENTER', 'SPACE'} and v == 'PRESS'):
             self._finish(context)

@@ -9,3 +9,7 @@ __pycache__/
 *.blend
 *.blend1
 *.png
+
+# Local dev tests and notes
+dev/
+README_DEV.md

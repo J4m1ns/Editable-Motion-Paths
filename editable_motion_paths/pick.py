@@ -69,6 +69,10 @@ def hit_test(context, mx, my, radius=None):
     radius = radius or _radius()
     m = Vector((mx, my))
     best = None
+    best_key = None
+    # inside the drawn disc of a key, the key always wins over handles (a handle seen
+    # end-on can be drawn right on top of its key)
+    key_r = st.key_size * 0.5 * compat.ui_scale() + 2.0
     for cache in state.visible_caches(context.scene):
         if not cache.refresh():
             continue
@@ -91,7 +95,9 @@ def hit_test(context, mx, my, radius=None):
                 d = (s - m).length + bias
                 if d <= radius and (best is None or d < best.dist):
                     best = Hit(cache, k, part, d)
-    return best
+                if part == 'KEY' and d <= key_r and (best_key is None or d < best_key.dist):
+                    best_key = Hit(cache, k, part, d)
+    return best_key or best
 
 
 def line_hit(context, mx, my, radius=None):

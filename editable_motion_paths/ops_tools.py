@@ -153,66 +153,6 @@ def _sel_keys(cache):
     return [k for k in cache.keys if k.sel]
 
 
-class EMP_OT_delete_keys(bpy.types.Operator):
-    """Delete the selected path keys"""
-    bl_idname = "emp.delete_keys"
-    bl_label = "Delete Path Keys"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def invoke(self, context, event):
-        caches = state.editable_caches(context.scene)
-        if not any(_sel_keys(c) for c in caches):
-            return {'PASS_THROUGH'}
-        return self.execute(context)
-
-    def execute(self, context):
-        n = 0
-        for cache in state.editable_caches(context.scene):
-            sel = _sel_keys(cache)
-            if not sel:
-                continue
-            tg = cache.target()
-            ch = tg.channels(cache.ptype)
-            for c, fc in enumerate(ch.fcurves):
-                if fc is None:
-                    continue
-                idxs = sorted((k.idx[c] for k in sel if k.idx[c] >= 0), reverse=True)
-                kps = fc.keyframe_points
-                for i in idxs:
-                    kps.remove(kps[i], fast=True)
-                fc.update()
-                if len(kps) == 0:
-                    compat.remove_fcurve(tg.obj, ch.path, c)
-            n += len(sel)
-            cache.dirty = True
-        if not n:
-            return {'CANCELLED'}
-        pick.tag_anim_editors()
-        return {'FINISHED'}
-
-
-class EMP_OT_insert_key(bpy.types.Operator):
-    """Insert a key on the editable paths at the current frame (keeps the motion)"""
-    bl_idname = "emp.insert_key"
-    bl_label = "Insert Path Key"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        from .ops_select import insert_key
-        t = float(context.scene.frame_current)
-        caches = state.editable_caches(context.scene)
-        if not caches:
-            self.report({'WARNING'}, "Select a bone/object that has a path")
-            return {'CANCELLED'}
-        pick.deselect_all(caches)
-        for cache in caches:
-            k = insert_key(cache, t)
-            if k is not None:
-                pick.select_part(cache, k, 'KEY', True)
-        pick.tag_anim_editors()
-        return {'FINISHED'}
-
-
 class EMP_OT_handle_type(bpy.types.Operator):
     """Set the handle type of the selected path keys"""
     bl_idname = "emp.handle_type"
@@ -856,49 +796,9 @@ class EMP_OT_cleanup(bpy.types.Operator):
     keep_holds: BoolProperty(
         name="Keep Holds", default=True,
         description="Keys where the motion stops (contacts, held poses) stay exactly as they are")
-    dissolve: BoolProperty(
-        name="Dissolve", default=False, options={'SKIP_SAVE'},
-        description="Ctrl+X: one selected key is removed and its neighbors refitted to keep the "
-                    "shape; several selected keys are cleaned up")
-
     @classmethod
     def poll(cls, context):
         return context.mode in {'POSE', 'OBJECT'}
-
-    def invoke(self, context, event):
-        if self.dissolve and not any(k.sel for c in state.editable_caches(context.scene) for k in c.keys):
-            return {'PASS_THROUGH'}
-        return self.execute(context)
-
-    def _dissolve(self, cache, tg, keys, i):
-        """Remove key i, refitting its neighbors (two on each side) to keep the shape."""
-        from . import fit
-        ch = tg.channels(cache.ptype)
-        if i == 0 or i == len(keys) - 1:
-            for c, fc in enumerate(ch.fcurves):
-                if fc is not None and keys[i].idx[c] >= 0:
-                    fc.keyframe_points.remove(fc.keyframe_points[keys[i].idx[c]])
-                    fc.update()
-            return 1, 0, 0.0, None
-        w = keys[max(0, i - 2):i + 3]
-        r0, r1 = w[0].t, w[-1].t
-        for fc in ch.fcurves:
-            if fc is not None and len(fc.keyframe_points):
-                r0 = max(r0, fc.keyframe_points[0].co[0])
-                r1 = min(r1, fc.keyframe_points[-1].co[0])
-        target = float(keys[i].t)
-        if not (r0 + 1e-3 < target < r1 - 1e-3):
-            return 0, 0, 0.0, None
-        fitter = fit.Fitter(cache, tg, float(r0), float(r1))
-        inside = sorted({float(k.t) for k in w if r0 - 1e-3 <= k.t <= r1 + 1e-3} | {float(r0), float(r1)})
-        knots = [t for t in inside if abs(t - target) > 1e-3]
-        fixed = ({t for t in knots if fitter.is_corner(t)} | {float(r0), float(r1)})
-        if self.keep_holds:
-            fixed |= fitter.hold_keys(knots) - {target}
-        slopes = fitter.fit(knots, fixed)
-        err = fitter.max_error(knots, slopes)[0]
-        fit.write(fitter, knots, slopes, select=False)
-        return len(inside), len(knots), err / fitter.size * 100.0, fitter
 
     def execute(self, context):
         from . import fit
@@ -911,16 +811,6 @@ class EMP_OT_cleanup(bpy.types.Operator):
             if tg is None or len(keys) < 2:
                 continue
             sel = [k.t for k in keys if k.sel]
-            if self.dissolve and len(sel) == 1:
-                i = next(j for j, k in enumerate(keys) if k.sel)
-                b, a, e, _f = self._dissolve(cache, tg, keys, i)
-                before += b
-                after += a
-                worst = max(worst, e)
-                cache.dirty = True
-                continue
-            if self.dissolve and not sel:
-                continue
             r0, r1 = (min(sel), max(sel)) if len(sel) >= 2 else (keys[0].t, keys[-1].t)
             ch = tg.channels(cache.ptype)
             fcs = [fc for fc in ch.fcurves if fc is not None and len(fc.keyframe_points)]
@@ -1071,5 +961,5 @@ class EMP_OT_ease(_AdjustOp, bpy.types.Operator):
 
 
 classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_path_update, EMP_OT_edit_tool,
-           EMP_OT_delete_keys, EMP_OT_insert_key, EMP_OT_handle_type, EMP_OT_interpolation,
+           EMP_OT_handle_type, EMP_OT_interpolation,
            EMP_OT_smooth, EMP_OT_exaggerate, EMP_OT_ease, EMP_OT_fix_loop, EMP_OT_cleanup)

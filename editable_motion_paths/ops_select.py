@@ -7,6 +7,7 @@ from bpy.props import BoolProperty, EnumProperty
 from mathutils import Vector
 
 from . import compat, core, pick, state
+from .ops_keys import insert_key
 
 
 def _region_mouse(context, event):
@@ -196,26 +197,6 @@ def _is_loop(cache):
     return (cache.keys[0].co - cache.keys[-1].co).length < size * 0.02
 
 
-def insert_key(cache, t):
-    """Insert a key at frame t on the edited channels of a path, keeping the motion."""
-    tg = cache.target()
-    if tg is None:
-        return None
-    ch = tg.channels(cache.ptype)
-    fcs = [fc for fc in ch.fcurves if fc is not None and len(fc.keyframe_points)]
-    if not fcs:
-        core.ensure_keys(tg, cache.ptype, [t])
-    else:
-        for fc in fcs:
-            fc.keyframe_points.insert(t, fc.evaluate(t), options={'FAST'})
-            fc.update()
-    cache.refresh(force=True)
-    for k in cache.keys:
-        if abs(k.t - t) < 1e-3:
-            return k
-    return None
-
-
 class EMP_OT_select_all(bpy.types.Operator):
     """Select or deselect all keys of the editable paths"""
     bl_idname = "emp.select_all"
@@ -394,5 +375,316 @@ class EMP_OT_handle_type_menu(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# ----------------------------------------------------------------------------
+# More selection tools (mesh Edit Mode style)
+# ----------------------------------------------------------------------------
+
+def _any_selected(context):
+    return any(k.any_sel for c in state.editable_caches(context.scene) for k in c.keys)
+
+
+class EMP_OT_select_linked(bpy.types.Operator):
+    """Select every key of the paths that have a selected key (Ctrl+L)"""
+    bl_idname = "emp.select_linked"
+    bl_label = "Select Linked Path Keys"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def invoke(self, context, event):
+        if not _any_selected(context):
+            return {'PASS_THROUGH'}
+        return self.execute(context)
+
+    def execute(self, context):
+        for c in state.editable_caches(context.scene):
+            if any(k.any_sel for k in c.keys):
+                for k in c.keys:
+                    pick.select_part(c, k, 'KEY', True)
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+
+class EMP_OT_select_linked_pick(bpy.types.Operator):
+    """Select every key of the path under the mouse (L; Shift+L deselects)"""
+    bl_idname = "emp.select_linked_pick"
+    bl_label = "Pick Linked Path Keys"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    deselect: BoolProperty(name="Deselect", default=False)
+
+    def invoke(self, context, event):
+        if context.region_data is None:
+            return {'PASS_THROUGH'}
+        mx, my = event.mouse_region_x, event.mouse_region_y
+        hit = pick.hit_test(context, mx, my) or pick.line_hit(context, mx, my, 20.0 * compat.ui_scale())
+        if hit is None:
+            return {'PASS_THROUGH'}
+        cache = hit.cache
+        if not cache.owner_selected():
+            if self.deselect or not pick.select_owner(context, cache, True):
+                return {'PASS_THROUGH'}
+            cache.refresh(force=True)
+        for k in cache.keys:
+            pick.select_part(cache, k, 'KEY', not self.deselect)
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+
+def _ring(cache):
+    return cache.cyclic or _is_loop(cache)
+
+
+class EMP_OT_select_more_less(bpy.types.Operator):
+    """Grow or shrink the key selection along the path (Ctrl+NumPad + / -)"""
+    bl_idname = "emp.select_more_less"
+    bl_label = "Select More / Less"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    less: BoolProperty(name="Less", default=False)
+
+    def invoke(self, context, event):
+        if not _any_selected(context):
+            return {'PASS_THROUGH'}
+        return self.execute(context)
+
+    def execute(self, context):
+        for c in state.editable_caches(context.scene):
+            sel = [k.sel for k in c.keys]
+            n = len(sel)
+            if not any(sel):
+                continue
+            ring = _ring(c) and n > 2
+
+            def at(i):
+                if ring:
+                    return sel[i % n]
+                return sel[i] if 0 <= i < n else None
+            new = []
+            for i in range(n):
+                nb = [x for x in (at(i - 1), at(i + 1)) if x is not None]
+                if self.less:
+                    new.append(sel[i] and all(nb))
+                else:
+                    new.append(sel[i] or any(nb))
+            for k, s in zip(c.keys, new):
+                if s != k.sel:
+                    pick.select_part(c, k, 'KEY', s)
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+
+class EMP_OT_select_side(bpy.types.Operator):
+    """Select the keys before ([) or after (]) the current frame"""
+    bl_idname = "emp.select_side"
+    bl_label = "Select Before / After Current Frame"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    side: EnumProperty(name="Side", items=[('LEFT', "Before Current Frame", ""),
+                                           ('RIGHT', "After Current Frame", "")], default='LEFT')
+    extend: BoolProperty(name="Extend", default=False)
+
+    def invoke(self, context, event):
+        if not state.editable_caches(context.scene):
+            return {'PASS_THROUGH'}
+        return self.execute(context)
+
+    def execute(self, context):
+        cur = context.scene.frame_current + context.scene.frame_subframe
+        caches = state.editable_caches(context.scene)
+        if not self.extend:
+            pick.deselect_all(caches)
+            for c in caches:
+                c.refresh(force=True)
+        for c in caches:
+            for k in c.keys:
+                if (k.t <= cur + 1e-4) if self.side == 'LEFT' else (k.t >= cur - 1e-4):
+                    pick.select_part(c, k, 'KEY', True)
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+
+SIMILAR = [
+    ('HANDLE_TYPE', "Handle Type", "Keys with the same handle type"),
+    ('INTERPOLATION', "Interpolation", "Keys with the same interpolation"),
+    ('KEY_TYPE', "Keyframe Type", "Keys of the same keyframe type (keyframe, breakdown...)"),
+    ('PARTIAL', "Partial Keys", "Keys that are keyed on some channels only (dark center), or "
+                                "fully keyed ones"),
+    ('HOLD', "Holds", "Keys where the motion stops (or keys where it doesn't)"),
+]
+
+
+def _key_type(c, k):
+    tg = c.target()
+    ch = tg.channels(c.ptype)
+    for ci, fc in enumerate(ch.fcurves):
+        i = k.idx[ci] if ci < len(k.idx) else -1
+        if fc is not None and i >= 0:
+            return fc.keyframe_points[i].type
+    return 'KEYFRAME'
+
+
+def _is_hold(c, k):
+    tg = c.target()
+    if tg is None or not c.speeds:
+        return False
+    v = (c.point(tg, min(k.t + 0.5, c.fe)) - c.point(tg, max(k.t - 0.5, c.fs))).length
+    vmax = max(c.speeds)
+    return v < 0.03 * vmax
+
+
+class EMP_OT_select_similar(bpy.types.Operator):
+    """Select keys similar to the selected ones (Shift+G)"""
+    bl_idname = "emp.select_similar"
+    bl_label = "Select Similar Path Keys"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    type: EnumProperty(name="Type", items=SIMILAR, default='HANDLE_TYPE')
+
+    def invoke(self, context, event):
+        if not _any_selected(context):
+            return {'PASS_THROUGH'}
+        bpy.ops.wm.call_menu(name="EMP_MT_select_similar")
+        return {'FINISHED'}
+
+    def execute(self, context):
+        caches = state.editable_caches(context.scene)
+
+        def attr(c, k):
+            if self.type == 'HANDLE_TYPE':
+                return (k.type_l, k.type_r)
+            if self.type == 'INTERPOLATION':
+                return k.interp
+            if self.type == 'KEY_TYPE':
+                return _key_type(c, k)
+            if self.type == 'PARTIAL':
+                return k.partial
+            return _is_hold(c, k)
+        want = {attr(c, k) for c in caches for k in c.keys if k.sel}
+        if not want:
+            return {'CANCELLED'}
+        for c in caches:
+            for k in c.keys:
+                if not k.sel and attr(c, k) in want:
+                    pick.select_part(c, k, 'KEY', True)
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+
+class EMP_MT_select_similar(bpy.types.Menu):
+    bl_label = "Select Similar"
+    bl_idname = "EMP_MT_select_similar"
+
+    def draw(self, context):
+        self.layout.operator_context = 'EXEC_DEFAULT'
+        self.layout.operator_enum("emp.select_similar", "type")
+
+
+class EMP_OT_hide(bpy.types.Operator):
+    """Hide the paths that have selected keys (H), or all other paths (Shift+H)"""
+    bl_idname = "emp.hide"
+    bl_label = "Hide Paths"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    unselected: BoolProperty(name="Unselected", default=False)
+
+    def invoke(self, context, event):
+        if not _any_selected(context):
+            return {'PASS_THROUGH'}
+        return self.execute(context)
+
+    def execute(self, context):
+        st = state.settings(context.scene)
+        keep = {c.key[:2] for c in state.editable_caches(context.scene) if any(k.any_sel for k in c.keys)}
+        for e in st.paths:
+            if e.object is None:
+                continue
+            mine = (e.object.name, e.bone_name) in keep
+            if mine != self.unselected:
+                e.show = False
+        state.tag_redraw()
+        return {'FINISHED'}
+
+
+class EMP_OT_reveal(bpy.types.Operator):
+    """Show all hidden paths (Alt+H also reveals hidden bones / objects)"""
+    bl_idname = "emp.reveal"
+    bl_label = "Reveal Paths"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def invoke(self, context, event):
+        self.execute(context)
+        return {'PASS_THROUGH'}     # Blender reveals bones / objects too
+
+    def execute(self, context):
+        st = state.settings(context.scene)
+        for e in st.paths:
+            e.show = True
+        state.tag_redraw()
+        return {'FINISHED'}
+
+
+class EMP_OT_circle_select(bpy.types.Operator):
+    """Paint-select path keys with a circle (C). Wheel: radius, LMB: select, """ \
+        """MMB / Shift+LMB: deselect, RMB / Enter: done"""
+    bl_idname = "emp.circle_select"
+    bl_label = "Circle Select Path Keys"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    radius: bpy.props.IntProperty(name="Radius", default=25, min=1)
+
+    def invoke(self, context, event):
+        if context.region_data is None or not state.editable_caches(context.scene):
+            return {'PASS_THROUGH'}
+        self.painting = None
+        self.pos = Vector((event.mouse_region_x, event.mouse_region_y))
+        state.circle = (self.pos.x, self.pos.y, self.radius, context.area.as_pointer())
+        context.window_manager.modal_handler_add(self)
+        context.area.header_text_set("Circle select: LMB select, MMB / Shift+LMB deselect, "
+                                     "wheel / +- radius, RMB / Enter done")
+        state.tag_redraw()
+        return {'RUNNING_MODAL'}
+
+    def _paint(self, context, value):
+        from bpy_extras.view3d_utils import location_3d_to_region_2d
+        region, rv3d = context.region, context.region_data
+        r2 = self.radius * self.radius
+        changed = False
+        for c in state.editable_caches(context.scene):
+            for k in c.keys:
+                s = location_3d_to_region_2d(region, rv3d, k.co)
+                if s is not None and (s - self.pos).length_squared <= r2 and k.sel != value:
+                    pick.select_part(c, k, 'KEY', value)
+                    changed = True
+        if changed:
+            pick.tag_anim_editors()
+
+    def modal(self, context, event):
+        t, v = event.type, event.value
+        if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            self.pos = Vector((event.mouse_region_x, event.mouse_region_y))
+            if self.painting is not None:
+                self._paint(context, self.painting)
+        elif t in {'LEFTMOUSE', 'MIDDLEMOUSE'}:
+            if v == 'PRESS':
+                self.painting = not (t == 'MIDDLEMOUSE' or event.shift or event.ctrl)
+                self._paint(context, self.painting)
+            elif v == 'RELEASE':
+                self.painting = None
+        elif t in {'WHEELUPMOUSE', 'NUMPAD_PLUS', 'EQUAL'} and v == 'PRESS':
+            self.radius = int(self.radius * 1.15) + 1
+        elif t in {'WHEELDOWNMOUSE', 'NUMPAD_MINUS', 'MINUS'} and v == 'PRESS':
+            self.radius = max(2, int(self.radius / 1.15))
+        elif t in {'RIGHTMOUSE', 'ESC', 'RET', 'NUMPAD_ENTER', 'SPACE'} and v == 'PRESS':
+            state.circle = None
+            context.area.header_text_set(None)
+            state.tag_redraw()
+            return {'FINISHED'}
+        state.circle = (self.pos.x, self.pos.y, self.radius, context.area.as_pointer())
+        state.tag_redraw()
+        return {'RUNNING_MODAL'}
+
+
 classes = (EMP_OT_click, EMP_OT_select_all, EMP_OT_box_select, EMP_OT_jump_to_key,
+           EMP_OT_select_linked, EMP_OT_select_linked_pick, EMP_OT_select_more_less,
+           EMP_OT_select_side, EMP_OT_select_similar, EMP_MT_select_similar, EMP_OT_hide,
+           EMP_OT_reveal, EMP_OT_circle_select,
            EMP_OT_context_menu, EMP_OT_handle_type_menu)

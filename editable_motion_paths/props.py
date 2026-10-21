@@ -52,33 +52,11 @@ class EMP_Settings(bpy.types.PropertyGroup):
         default='LOCATION', update=_mode_changed,
     )
 
-    use_proportional: BoolProperty(
-        name="Proportional Editing",
-        description="Moving keys also moves the nearby unselected keys with a falloff (O). "
-                    "Mouse wheel or Page Up/Down changes the radius while transforming",
-        default=False, update=_redraw)
-    proportional_falloff: EnumProperty(
-        name="Falloff",
-        description="Falloff type for proportional editing (Shift+O)",
-        items=[
-            ('SMOOTH', "Smooth", "", 'SMOOTHCURVE', 0),
-            ('SPHERE', "Sphere", "", 'SPHERECURVE', 1),
-            ('ROOT', "Root", "", 'ROOTCURVE', 2),
-            ('INVERSE_SQUARE', "Inverse Square", "", 'INVERSESQUARECURVE', 3),
-            ('SHARP', "Sharp", "", 'SHARPCURVE', 4),
-            ('LINEAR', "Linear", "", 'LINCURVE', 5),
-            ('CONSTANT', "Constant", "", 'NOCURVE', 6),
-            ('RANDOM', "Random", "", 'RNDCURVE', 7),
-        ], default='SMOOTH')
     proportional_size: FloatProperty(
-        name="Proportional Size", description="Radius of the proportional falloff",
+        name="Proportional Size",
+        description="Radius of proportional editing on paths (on/off, falloff and connected are "
+                    "Blender's own settings: O, Shift+O, Alt+O)",
         default=0.3, min=1e-4, soft_max=10.0, subtype='DISTANCE', unit='LENGTH')
-    proportional_connected: BoolProperty(
-        name="Connected",
-        description="Measure the distance along the path (only keys of the same path are "
-                    "affected) instead of straight through space",
-        default=True)
-
     range_mode: EnumProperty(
         name="Range",
         description="Frame range the paths are calculated for",
