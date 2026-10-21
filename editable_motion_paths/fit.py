@@ -46,19 +46,22 @@ def _thomas(a, b, c, d):
 
 
 class Fitter:
-    def __init__(self, cache, tg, r0, r1):
+    def __init__(self, cache, tg, r0, r1, target=None):
+        """Fit the channels over [r0, r1]: to their current curves, or to `target(t)` (channel
+        values of a new motion inside the range; outside it the curves stay as they are)."""
         self.cache = cache
         self.tg = tg
         ch = tg.channels(cache.ptype)
         self.ch = ch
         self.chans = [c for c, fc in enumerate(ch.fcurves) if fc is not None and len(fc.keyframe_points)]
         self.r0, self.r1 = r0, r1
-        n = max(1, int(round((r1 - r0) / STEP)))
-        self.S = [r0 + (r1 - r0) * i / n for i in range(n + 1)]
-        self.Y = [ch.values(t) for t in self.S]
-        self.P = [cache.point(tg, t, v) for t, v in zip(self.S, self.Y)]
+        self.target = target
         self._vals = {}
         self._der = {}
+        n = max(1, int(round((r1 - r0) / STEP)))
+        self.S = [r0 + (r1 - r0) * i / n for i in range(n + 1)]
+        self.Y = [self.value(t) for t in self.S]
+        self.P = [cache.point(tg, t, v) for t, v in zip(self.S, self.Y)]
         # slope scale per channel, to tell corners from smooth keys
         self.scale = {}
         for c in self.chans:
@@ -73,16 +76,20 @@ class Fitter:
     def value(self, t):
         v = self._vals.get(t)
         if v is None:
-            v = self._vals[t] = self.ch.values(t)
+            if self.target is not None and self.r0 - 1e-9 <= t <= self.r1 + 1e-9:
+                v = self.target(t)
+            else:
+                v = self.ch.values(t)
+            self._vals[t] = v
         return v
 
     def derivs(self, t):
         """(left, right) slope per channel of the original curves at t."""
         d = self._der.get(t)
         if d is None:
-            a = self.ch.values(t - EPS_D)
+            a = self.value(t - EPS_D)
             m = self.value(t)
-            b = self.ch.values(t + EPS_D)
+            b = self.value(t + EPS_D)
             d = self._der[t] = ([(m[c] - a[c]) / EPS_D for c in range(len(m))],
                                 [(b[c] - m[c]) / EPS_D for c in range(len(m))])
         return d
@@ -113,28 +120,38 @@ class Fitter:
 
     # -- fitting -------------------------------------------------------------------
 
-    def fit(self, knots, fixed, given=None):
+    def fit(self, knots, fixed, given=None, half=None):
         """Slopes {knot: ([left per channel], [right per channel])} for sorted `knots`;
         `fixed` knots keep their original left/right slopes, or the ones in `given`.
+        `half` {knot: 'L' or 'R'}: only that side is kept, the other one is fitted.
         Only the samples between the first and the last knot are used."""
+        half = half or {}
         lo, hi = knots[0], knots[-1]
         pairs = [(t, y) for t, y in zip(self.S, self.Y) if lo - 1e-9 <= t <= hi + 1e-9]
         S = [p[0] for p in pairs]
         Y = [p[1] for p in pairs]
         vals = [self.value(t) for t in knots]
-        free = [t not in fixed for t in knots]
         slopes = {}
         for t in knots:
-            if t in fixed:
-                slopes[t] = given[t] if given and t in given else self.derivs(t)
+            if t in fixed or t in half:
+                d = given[t] if given and t in given else self.derivs(t)
+                slopes[t] = (list(d[0]), list(d[1]))
         nk = len(knots)
         for c in self.chans:
-            # unknown index per free knot
-            idx = {}
+            # unknown per knot; it is the knot's right slope in the segment after it and its
+            # left slope in the segment before it (a half fixed knot uses only one of them)
+            idx_l, idx_r = {}, {}
+            n = 0
             for i in range(nk):
-                if free[i]:
-                    idx[i] = len(idx)
-            n = len(idx)
+                t = knots[i]
+                if t in fixed and t not in half:
+                    continue
+                side = half.get(t)
+                if side != 'L':
+                    idx_l[i] = n
+                if side != 'R':
+                    idx_r[i] = n
+                n += 1
             A = [0.0] * n
             B = [1e-12] * n
             C = [0.0] * n
@@ -150,8 +167,8 @@ class Fitter:
                 const = h00 * vals[seg][c] + h01 * vals[seg + 1][c]
                 ai = h10 * h
                 aj = h11 * h
-                ui = idx.get(seg)
-                uj = idx.get(seg + 1)
+                ui = idx_r.get(seg)
+                uj = idx_l.get(seg + 1)
                 if ui is None:
                     const += ai * slopes[knots[seg]][1][c]
                 if uj is None:
@@ -167,13 +184,15 @@ class Fitter:
                     C[ui] += ai * aj
                     A[uj] += ai * aj
             m = _thomas(A, B, C, D)
-            for i, u_ in idx.items():
+            for i in range(nk):
                 t = knots[i]
                 if t not in slopes:
                     z = [0.0] * len(vals[0])
                     slopes[t] = (list(z), list(z))
-                slopes[t][0][c] = m[u_]
-                slopes[t][1][c] = m[u_]
+                if i in idx_l:
+                    slopes[t][0][c] = m[idx_l[i]]
+                if i in idx_r:
+                    slopes[t][1][c] = m[idx_r[i]]
         return slopes
 
     def evaluate(self, knots, slopes, t):
@@ -245,6 +264,24 @@ class Fitter:
                 slopes = s
             else:
                 keep.add(knots[i])
+        return knots, slopes
+
+    def refine(self, knots, fixed, tol, half=None, max_add=60):
+        """Keep `knots` and add more where the error is largest until the path fits."""
+        knots = sorted(knots)
+        slopes = self.fit(knots, fixed, None, half)
+        for _ in range(max_add):
+            e, t = self.max_error(knots, slopes)
+            if e <= tol:
+                break
+            # the whole frame nearest to the worst error that isn't a key yet
+            base = float(round(t))
+            cand = [base + d for d in (0.0, -1.0, 1.0, -2.0, 2.0)]
+            cand = [x for x in cand if x not in knots and self.r0 < x < self.r1]
+            if not cand:
+                break
+            bisect.insort(knots, cand[0])
+            slopes = self.fit(knots, fixed, None, half)
         return knots, slopes
 
     def adaptive(self, fixed, tol, max_keys=400):

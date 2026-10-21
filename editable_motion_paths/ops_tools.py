@@ -466,6 +466,8 @@ class _AdjustOp:
             self.report({'WARNING'}, "No editable path: select a bone/object that has a path")
             return {'CANCELLED'}
         self._apply(context, jobs)
+        if getattr(self, "result_text", None):
+            self.report({'INFO'}, self.result_text)
         return {'FINISHED'}
 
     def invoke(self, context, event):
@@ -561,6 +563,8 @@ class _AdjustOp:
             self._update(context, event)
         elif (t == 'LEFTMOUSE' and v == 'PRESS') or (t in {'RET', 'NUMPAD_ENTER', 'SPACE'} and v == 'PRESS'):
             self._finish(context)
+            if getattr(self, "result_text", None):
+                self.report({'INFO'}, self.result_text)
             return {'FINISHED'}
         elif t in {'RIGHTMOUSE', 'ESC'} and v == 'PRESS':
             for s in reversed(self.snapshots):

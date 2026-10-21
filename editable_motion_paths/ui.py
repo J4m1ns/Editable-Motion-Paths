@@ -48,6 +48,7 @@ TOOL_KEYMAP = (
     _k("emp.extrude", 'E'),
     _k("emp.duplicate", 'D', shift=True),
     _k("emp.loopcut", 'R', ctrl=True),
+    _k("emp.bevel", 'B', ctrl=True),
     _k("emp.knife", 'K'),
     _k("emp.merge", 'M'),
     _k("emp.loop_menu", 'C', alt=True),
@@ -317,8 +318,10 @@ class EMP_PT_display(_Panel, bpy.types.Panel):
         layout.use_property_decorate = False
         st = state.settings(context.scene)
         layout.prop(st, "color_mode")
-        if st.color_mode != 'SPEED':
+        if st.color_mode in {'TIME', 'SOLID'}:
             layout.prop(st, "color")
+        elif st.color_mode == 'JITTER':
+            layout.prop(st, "jitter_threshold", text="Threshold")
         col = layout.column(heading="Show")
         col.prop(st, "show_frames")
         col.prop(st, "show_frame_numbers")

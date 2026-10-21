@@ -82,9 +82,17 @@ class EMP_Settings(bpy.types.PropertyGroup):
             ('SPEED', "Speed", "Color the path by speed: blue is slow, red is fast"),
             ('TIME', "Before / After", "Darker before the current frame, brighter after"),
             ('SOLID', "Solid", "One color"),
+            ('JITTER', "Jitter", "Heat map of roughness: smooth motion stays gray, hitches, pops "
+                                 "and wobbles glow yellow to red (select them and smooth)"),
         ],
         default='SPEED', update=_redraw,
     )
+    jitter_threshold: FloatProperty(
+        name="Jitter Threshold",
+        description="How rough the motion has to be to show full red (lower = more sensitive). "
+                    "Roughness is the frame-to-frame change of acceleration relative to the "
+                    "average speed",
+        default=0.4, min=0.01, soft_max=2.0, update=_redraw)
     color: FloatVectorProperty(name="Path Color", subtype='COLOR', size=3,
                                default=(0.35, 0.75, 1.0), min=0.0, max=1.0, update=_redraw)
     show_frames: BoolProperty(name="Frame Dots", default=True,

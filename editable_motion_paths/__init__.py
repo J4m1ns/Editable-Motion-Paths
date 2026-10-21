@@ -13,11 +13,11 @@ import sys
 
 import bpy
 
-from . import (api, draw, ops_keys, ops_select, ops_shape, ops_slide, ops_tools, ops_transform, props,
-               state, ui)
+from . import (api, draw, ops_keys, ops_select, ops_shape, ops_slide, ops_timing, ops_tools,
+               ops_transform, props, state, ui)
 
 _classes = (ops_transform.classes + ops_slide.classes + ops_keys.classes + ops_select.classes +
-            ops_shape.classes + ops_tools.classes)
+            ops_shape.classes + ops_tools.classes + ops_timing.classes)
 
 
 def register():

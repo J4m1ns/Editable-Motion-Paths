@@ -48,6 +48,40 @@ def _speed_color(x):
     return stops[-1][1]
 
 
+COL_CALM = (0.5, 0.58, 0.68)
+
+
+def _jitter_color(x):
+    """0 = smooth (neutral gray-blue), 0.5 = yellow, 1 = rough (red)."""
+    x = max(0.0, min(1.0, x))
+    if x < 0.5:
+        f = x / 0.5
+        return tuple(a + (b - a) * f for a, b in zip(COL_CALM, (1.0, 0.85, 0.2)))
+    f = (x - 0.5) / 0.5
+    return tuple(a + (b - a) * f for a, b in zip((1.0, 0.85, 0.2), (1.0, 0.15, 0.1)))
+
+
+def jitter_values(cache):
+    """Roughness at every sample of the path: |4th difference| of the per-frame positions
+    (zero for any smooth cubic motion) relative to the average speed."""
+    cached = getattr(cache, "_jitter", None)
+    if cached is not None and cached[0] is cache.sig:
+        return cached[1]
+    frames = [(t, p) for t, p in zip(cache.times, cache.points) if abs(t - round(t)) < 1e-6]
+    P = [p for _t, p in frames]
+    n = len(P)
+    d4 = [0.0] * n
+    for i in range(2, n - 2):
+        d4[i] = (P[i - 2] - 4.0 * P[i - 1] + 6.0 * P[i] - 4.0 * P[i + 1] + P[i + 2]).length
+    speed = sum((b - a).length for a, b in zip(P, P[1:])) / max(1, n - 1)
+    ref = max(speed, 1e-9)
+    rough = [max(d4[max(0, i - 1):i + 2]) / ref for i in range(n)]
+    at = {round(t): r for (t, _p), r in zip(frames, rough)}
+    out = [at.get(round(t), 0.0) for t in cache.times]
+    cache._jitter = (cache.sig, out)
+    return out
+
+
 def path_window(scene, st, cache):
     """(lo, hi) frame window to display."""
     lo, hi = cache.fs, cache.fe
@@ -140,10 +174,13 @@ def _path_colors(st, cache, editable, cur, lo, hi):
         vmax = s[min(len(s) - 1, int(len(s) * 0.95))] or max(s) or 1.0
     base = tuple(st.color)
     alpha = 1.0 if editable else 0.6
+    rough = jitter_values(cache) if st.color_mode == 'JITTER' else None
     for i, (t, p) in enumerate(zip(cache.times, cache.points)):
         if not _in(t, lo, hi):
             continue
-        if st.color_mode == 'SPEED':
+        if rough is not None:
+            c = _jitter_color(rough[i] / max(st.jitter_threshold, 1e-6))
+        elif st.color_mode == 'SPEED':
             sp = speeds[min(i, len(speeds) - 1)] if speeds else 0.0
             c = _speed_color(sp / vmax if vmax > 0 else 0.0)
         elif st.color_mode == 'TIME':
@@ -283,10 +320,21 @@ def _draw_points(ctx, st, us):
             if tg is not None:
                 discs.add_outlined(proj(cache.point(tg, cur)), ks * 0.75, COL_CURRENT)
 
-        for k in cache.keys:
+        # dense keys (baked / mocap) get smaller dots, so the path stays readable
+        scr = [proj(k.co) for k in cache.keys]
+        last_label = None
+        for i, k in enumerate(cache.keys):
             if not _in(k.t, lo, hi):
                 continue
-            s = proj(k.co)
+            s = scr[i]
+            near = [(s - q).length for q in (scr[i - 1] if i > 0 else None,
+                                             scr[i + 1] if i + 1 < len(scr) else None)
+                    if q is not None and s is not None]
+            gap = min(near) if near else 1e9
+            kr = ks if gap >= 3.0 * ks else max(2.5 * us, round(gap * 0.33 * 2.0) / 2.0)
+            ks_all = cache.keys
+            if not k.sel and (i == 0 or k.t - ks_all[i - 1].t <= 2.0 + 1e-6) and                     (i + 1 == len(ks_all) or ks_all[i + 1].t - k.t <= 2.0 + 1e-6):
+                kr = min(kr, 3.0 * us)      # baked keys (every frame or two): small dots
             if editable:
                 if handles_shown(st, cache, editable, k):
                     m = pick.handle_min_world(region, rv3d, k.co)
@@ -303,15 +351,16 @@ def _draw_points(ctx, st, us):
                     col = tuple(a + (b - a) * min(1.0, w) * 0.85 for a, b in zip(COL_KEY, COL_KEY_SEL))
                 if k.partial:
                     # keyed on some channels only: smaller, with a dark center
-                    discs.add_outlined(s, ks * 0.8, col)
-                    discs.add(s, ks * 0.35, COL_OUTLINE)
+                    discs.add_outlined(s, kr * 0.8, col)
+                    discs.add(s, kr * 0.35, COL_OUTLINE)
                 else:
-                    discs.add_outlined(s, ks, col)
+                    discs.add_outlined(s, kr, col)
             else:
-                discs.add_outlined(s, ks * 0.7, COL_KEY_LOCKED, 1.0)
-            if (st.show_frame_numbers or state.force_numbers) and s is not None:
+                discs.add_outlined(s, kr * 0.7, COL_KEY_LOCKED, 1.0)
+            if (st.show_frame_numbers or state.force_numbers) and s is not None and                     (last_label is None or (s - last_label).length > 22.0 * us):
                 txt = "%d" % round(k.t) if abs(k.t - round(k.t)) < 1e-3 else "%.2f" % k.t
                 labels.append((s, txt))
+                last_label = s
 
     gpu.state.blend_set('ALPHA')
     discs.draw()
