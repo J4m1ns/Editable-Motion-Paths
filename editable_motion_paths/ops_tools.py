@@ -233,8 +233,9 @@ class _Job:
         if not any(self.mask):
             self.mask = [True] * len(self.keys)
         self.times = [k.t for k in self.keys]
-        self.rot = cache.ptype == core.ROTATION
-        self.quat = self.rot and tg.rot.count == 4
+        # rotation and scale are smoothed in channel space, location / value in world space
+        self.rot = cache.ptype in (core.ROTATION, core.SCALE)
+        self.quat = cache.ptype == core.ROTATION and tg.rot.count == 4
         if self.quat and self.keys:
             self.q_ref = core.vals_to_quat(self.keys[0].vals, tg.rot_mode)
         self.vecs = [self.to_vec(tg, k.vals, k.co) for k in self.keys]
@@ -254,7 +255,7 @@ class _Job:
             return self.cache.solve(tg, k.t, vec, ref_vals)
         if not self.quat:
             vals = [vec[0], vec[1], vec[2]]
-            locks = tg.rot_locks()
+            locks = tg.locks(self.cache.ptype)
             return [ref_vals[i] if locks[i] else vals[i] for i in range(3)]
         q = self.q_ref @ Quaternion(vec)
         return self.cache.rot_vals(tg, q, ref_vals)
@@ -612,6 +613,13 @@ class EMP_OT_smooth(_AdjustOp, bpy.types.Operator):
     fix_corners: BoolProperty(name="Fix Corners", default=True,
                               description="Shape: make broken (Free / Vector) handles of the "
                                           "smoothed keys aligned")
+
+    def invoke(self, context, event):
+        if state.edit_mode(context.scene) == core.SCALE:
+            # Alt+S on scale paths: Shrink / Fatten, like on curves
+            bpy.ops.emp.transform('INVOKE_DEFAULT', mode='SCALE')
+            return {'CANCELLED'}
+        return _AdjustOp.invoke(self, context, event)
 
     def _apply_job(self, job, tg, touched):
         cache = job.cache

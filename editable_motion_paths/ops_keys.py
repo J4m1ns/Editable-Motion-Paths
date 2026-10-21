@@ -62,7 +62,7 @@ class _KeyRemoval:
                 if times:
                     self.remove(fc, times)
                 if len(fc.keyframe_points) == 0:
-                    compat.remove_fcurve(tg.obj, ch.path, c)
+                    compat.remove_fcurve(tg.obj, ch.path, fc.array_index)
             n += len(sel)
             cache.refresh(force=True)
             for t, p in zip(cache.times, cache.points):

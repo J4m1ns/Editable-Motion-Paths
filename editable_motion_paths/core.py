@@ -20,6 +20,9 @@ from . import compat, state
 
 LOCATION = 'LOCATION'
 ROTATION = 'ROTATION'
+SCALE = 'SCALE'
+VALUE = 'VALUE'
+VALUE_HEIGHT = 0.3      # value track: the value range spans this part of the path size
 EPS = 1e-6
 FRAME_ROUND = 3
 
@@ -107,10 +110,58 @@ class Channels:
         return any(fc is not None and len(fc.keyframe_points) for fc in self.fcurves)
 
 
+class ValueChannel:
+    """One animated property (custom property, constraint influence...) as a channel set."""
+
+    __slots__ = ("prop", "path", "count", "fcurves", "live", "static", "index")
+
+    def __init__(self, coll, data_path, index, frame):
+        self.prop = data_path
+        self.path = data_path
+        self.index = index
+        self.count = 1
+        fc = coll.find(data_path, index=index) if coll is not None and data_path else None
+        self.fcurves = [fc]
+        self.live = [fc is not None and not fc.mute and len(fc.keyframe_points) > 0]
+        self.static = [fc.evaluate(frame) if fc is not None else 0.0]
+
+    def values(self, t):
+        fc = self.fcurves[0]
+        return [fc.evaluate(t)] if self.live[0] else list(self.static)
+
+    def any(self):
+        fc = self.fcurves[0]
+        return fc is not None and len(fc.keyframe_points) > 0
+
+
+_TRANSFORMS = {"location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "scale",
+               "delta_location", "delta_rotation_euler", "delta_rotation_quaternion", "delta_scale"}
+
+
+def value_candidates(obj, bone):
+    """[(data_path, index, label)] of the animated values that are not transforms, the bone's
+    own first."""
+    coll = compat.get_fcurves(obj) if obj is not None else None
+    if coll is None:
+        return []
+    prefix = 'pose.bones["%s"]' % bpy.utils.escape_identifier(bone) if bone else ""
+    own, other = [], []
+    for fc in coll:
+        dp = fc.data_path
+        if dp.rsplit('.', 1)[-1] in _TRANSFORMS or not len(fc.keyframe_points):
+            continue
+        label = dp.replace('pose.bones[', '').replace('"]', '').replace('["', ' > ').replace('"', '')
+        if fc.array_index or dp.endswith(('color', 'location')):
+            label += " [%d]" % fc.array_index
+        item = (dp, fc.array_index, label)
+        (own if prefix and dp.startswith(prefix) else other).append(item)
+    return own + other
+
+
 class Target:
     """Resolved bone or object with its animation channels."""
 
-    def __init__(self, obj, owner, is_bone):
+    def __init__(self, obj, owner, is_bone, value=None):
         self.obj = obj
         self.owner = owner
         self.is_bone = is_bone
@@ -126,6 +177,8 @@ class Target:
         self.loc = Channels(self.coll, self.prefix, owner, "location", 3)
         self.rot = Channels(self.coll, self.prefix, owner, rp, rn)
         self.scale = Channels(self.coll, self.prefix, owner, "scale", 3)
+        self.value = ValueChannel(self.coll, value[0], value[1], bpy.context.scene.frame_current) \
+            if value else ValueChannel(None, "", 0, 0)
         if is_bone:
             self.length = owner.bone.length
             self.dloc = None
@@ -143,7 +196,25 @@ class Target:
                 self.drot = Euler(owner.delta_rotation_euler, self.rot_mode).to_quaternion()
 
     def channels(self, ptype):
-        return self.loc if ptype == LOCATION else self.rot
+        if ptype == LOCATION:
+            return self.loc
+        if ptype == ROTATION:
+            return self.rot
+        if ptype == SCALE:
+            return self.scale
+        return self.value
+
+    def scale_locks(self):
+        return tuple(self.owner.lock_scale)
+
+    def locks(self, ptype):
+        if ptype == LOCATION:
+            return self.loc_locks()
+        if ptype == ROTATION:
+            return self.rot_locks()
+        if ptype == SCALE:
+            return self.scale_locks()
+        return (False,)
 
     def basis(self, loc, rot, scale):
         q = vals_to_quat(rot, self.rot_mode)
@@ -283,8 +354,12 @@ def _lock_state(tg, ptype):
             return True, "Connected bone: its location can't move. Press 2 to edit Rotation"
         if all(tg.loc_locks()):
             return True, "Location is locked. Press 2 to edit Rotation"
-    elif tg.rot.count == 3 and all(tg.rot_locks()):
+    elif ptype == ROTATION and tg.rot.count == 3 and all(tg.rot_locks()):
         return True, "Rotation is locked. Press 1 to edit Location"
+    elif ptype == SCALE and all(tg.scale_locks()):
+        return True, "Scale is locked. Press 1 to edit Location"
+    elif ptype == VALUE and not tg.value.any():
+        return True, "Pick an animated value to edit (sidebar > Motion Paths > Value)"
     return False, ""
 
 
@@ -308,6 +383,13 @@ class PathCache:
         self.failed = False
         self.locked = False     # path can't be edited in this mode (e.g. connected bone location)
         self.lock_reason = ""
+        self.value_ref = None   # (data_path, index) of the edited value (VALUE paths)
+        self.vbase = 0.0        # value track: value drawn on the path itself
+        self.vgain = 1.0        # value track: world height per unit of value
+        self.vgain_id = None
+        self.vdir = Vector((0.0, 0.0, 1.0))   # value track: direction "up" (follows the view)
+        self.base_points = []   # scale / value paths: the location path they are drawn on
+        self.sample_vals = []   # scale / value paths: channel values at every sample
 
     @property
     def key(self):
@@ -327,7 +409,7 @@ class PathCache:
         obj, owner = resolve(self.obj_name, self.bone_name)
         if owner is None:
             return None
-        return Target(obj, owner, bool(self.bone_name))
+        return Target(obj, owner, bool(self.bone_name), self.value_ref if self.ptype == VALUE else None)
 
     def owner_selected(self):
         obj, owner = resolve(self.obj_name, self.bone_name)
@@ -370,9 +452,17 @@ class PathCache:
             self.fs -= n
         self.dirty = True
 
+    def head(self, tg, t):
+        return self.B_at(t) @ Vector(tg.loc.values(t))
+
     def point(self, tg, t, vals=None):
         """World position of the path at time t; `vals` overrides the edited channels."""
         B = self.B_at(t)
+        if self.ptype == SCALE:
+            return B @ Vector(tg.loc.values(t))
+        if self.ptype == VALUE:
+            v = vals[0] if vals is not None else tg.value.values(t)[0]
+            return B @ Vector(tg.loc.values(t)) + self.vdir * ((v - self.vbase) * self.vgain)
         if self.ptype == LOCATION:
             v = vals if vals is not None else tg.loc.values(t)
             return B @ Vector(v[:3])
@@ -393,6 +483,13 @@ class PathCache:
             M = M @ tg.drot.to_matrix().to_4x4()
         return M, Vector((0.0, tg.length * self.rot_len * sy, 0.0))
 
+    def measure(self, tg, t, vals):
+        """A point that moves with the channel values, to measure how much an edit changes the
+        motion (scale paths: the scale values themselves, at the size of the path)."""
+        if self.ptype == SCALE:
+            return Vector(vals[:3]) * self.vgain
+        return self.point(tg, t, vals)
+
     def velocity(self, tg, t, vals):
         """Path velocity at t caused by everything except the edited channels."""
         return (self.point(tg, t + 1.0, vals) - self.point(tg, t - 1.0, vals)) * 0.5
@@ -406,6 +503,11 @@ class PathCache:
         """
         if vp is not None and dt:
             W = W - vp * dt
+        if self.ptype == SCALE:
+            return list(ref_vals)
+        if self.ptype == VALUE:
+            base = self.B_at(t) @ Vector(tg.loc.values(t))
+            return [(W - base).dot(self.vdir) / self.vgain + self.vbase]
         if self.ptype == LOCATION:
             v = self.B_at(t).inverted_safe() @ W
             locks = tg.loc_locks()
@@ -442,7 +544,8 @@ class PathCache:
         settings = state.settings()
         self.rot_len = settings.rot_length if settings else 1.0
         self.locked, self.lock_reason = _lock_state(tg, self.ptype)
-        used = (tg.loc,) if self.ptype == LOCATION else (tg.loc, tg.rot, tg.scale)
+        used = {LOCATION: (tg.loc,), SCALE: (tg.loc, tg.scale), VALUE: (tg.loc, tg.value)}.get(
+            self.ptype, (tg.loc, tg.rot, tg.scale))
         sig = (self.bake_id, self.rot_len, tg.rot_mode,
                tuple(tuple(_fc_signature(fc) for fc in ch.fcurves) for ch in used),
                tuple(tuple(ch.static) for ch in used))
@@ -457,6 +560,19 @@ class PathCache:
     def _build(self, tg):
         ch = tg.channels(self.ptype)
         fs, fe = self.fs, self.fe
+        if self.ptype in (SCALE, VALUE) and self.vgain_id != self.bake_id:
+            # the scale of the drawing is fixed per bake, so edits don't make it jump
+            self.vgain_id = self.bake_id
+            heads = [self.head(tg, float(t)) for t in range(fs, fe + 1)]
+            lo = [min(p[i] for p in heads) for i in range(3)]
+            hi = [max(p[i] for p in heads) for i in range(3)]
+            size = max(sum((h - l) ** 2 for h, l in zip(hi, lo)) ** 0.5, tg.length, 0.1)
+            if self.ptype == VALUE:
+                vs = [ch.values(float(t))[0] for t in range(fs, fe + 1)]
+                self.vbase = min(vs) if vs else 0.0
+                self.vgain = size * VALUE_HEIGHT / max(max(vs) - min(vs), 1e-6) if vs else 1.0
+            else:
+                self.vgain = size * VALUE_HEIGHT
         self.cyclic = any(fc is not None and any(m.type == 'CYCLES' for m in fc.modifiers)
                           for fc in ch.fcurves)
         keys = self._collect_keys(ch)
@@ -466,6 +582,14 @@ class PathCache:
                 times.add(k.t)
         self.times = sorted(times)
         self.points = [self.point(tg, t) for t in self.times]
+        if self.ptype in (SCALE, VALUE):
+            self.base_points = [self.head(tg, t) for t in self.times]
+            self.sample_vals = [ch.values(t) for t in self.times]
+            if self.ptype == VALUE:
+                # speed colors show how fast the value changes
+                vs = [v[0] for v in self.sample_vals]
+                self.speeds = [abs(b - a) * self.vgain / (tb - ta) if tb - ta > EPS else 0.0
+                               for a, b, ta, tb in zip(vs, vs[1:], self.times, self.times[1:])]
         self.speeds = []
         for i in range(len(self.points) - 1):
             dt = self.times[i + 1] - self.times[i]
@@ -580,6 +704,8 @@ class PathCache:
         if prev_k is not None and prev_k.interp != 'BEZIER':
             has_left = False
         has_right = k.dt_r > EPS and (i < len(keys) - 1 or self.cyclic) and k.interp == 'BEZIER'
+        if self.ptype == SCALE:
+            has_left = has_right = False    # scale is edited by size, not by handles in space
         k.hl = self.handle_point(tg, k, 'L') if has_left else None
         k.hr = self.handle_point(tg, k, 'R') if has_right else None
 
@@ -719,7 +845,7 @@ def ensure_keys(tg, ptype, frames, created=None, pin=False):
     was added.
     """
     ch = tg.channels(ptype)
-    locks = tg.loc_locks() if ptype == LOCATION else tg.rot_locks()
+    locks = tg.locks(ptype)
     union = key_times(ch)
     sel = _key_selection(ch)
     changed = False
@@ -779,7 +905,7 @@ class FCurveSnapshot:
         self.obj_name = tg.obj.name
         self.items = []
         if items is None:
-            items = [(ch.path, c, fc) for c, fc in enumerate(ch.fcurves)]
+            items = [(ch.path, fc.array_index if fc is not None else c, fc) for c, fc in enumerate(ch.fcurves)]
         for path, c, fc in items:
             if fc is None:
                 self.items.append((path, c, None))

@@ -1,221 +1,192 @@
 # Editable Motion Paths
 
-Edit motion paths of bones and objects right in the 3D Viewport. You get points on the path,
-handles, and the usual Blender hotkeys. Every edit goes straight into the F-Curves, so undo,
-the Graph Editor and the Dope Sheet stay in sync.
+Model your animation like geometry. Motion paths of bones and objects become editable curves
+in the 3D Viewport, with keys as points, Bezier handles and Blender's own modeling tools and
+hotkeys. Every edit goes straight into the F-Curves, so undo, the Graph Editor and the Dope
+Sheet stay in sync. You shouldn't need the Graph Editor at all.
 
 Requires Blender 4.4 or newer (tested on 5.2).
 
 ## Install
 
 Edit > Preferences > Get Extensions > ⌄ (top right) > **Install from Disk…** → choose
-`editable_motion_paths-1.6.2.zip`.
+`editable_motion_paths-2.0.0.zip`.
 
 ## Quick start
 
 1. In Pose Mode, select one or more bones (or objects in Object Mode).
-2. Open Sidebar (N) > **Motion Paths** > **Add**.
+2. Open Sidebar (N) > **Motion Paths** > **+**.
 3. Press **Edit Paths**, or pick the *Edit Motion Path* tool in the toolbar.
-4. Choose what you edit with **1 Location / 2 Rotation**. The switch is also at the top of the
-   panel and in the tool header.
-5. Click a key on the path to show its handles, then drag the key or a handle.
+4. Click a key on the path to show its handles, then drag the key or a handle, or use
+   G / R / S like on a mesh.
 
-Only the paths of *selected* bones/objects can be edited. Other paths are drawn gray. Clicking
-a gray path selects its bone.
+Only the paths of *selected* bones/objects can be edited; other paths are drawn gray, and
+clicking a gray path selects its bone. If nothing on a path is selected, the hotkeys fall back
+to Blender's normal bone / object behaviour.
 
-## Location and Rotation
-
-A path belongs to a bone. The edit mode decides which of its trajectories is shown and edited,
-so the two are never mixed. The mode follows the bone you pick: when the selected bone or
-object only has location keys, it switches to Location, and when it only has rotation keys
-(FK), it switches to Rotation. A message at the bottom of the viewport says so. A path that can't be edited in the current mode (a connected
-bone in Location, locked channels) is drawn gray, and the hint at the bottom tells you what to
-press.
+## Modes: 1 Location, 2 Rotation, 3 Scale, 4 Value
 
 | Mode | What is drawn | What editing changes |
 |---|---|---|
-| **Location** | Trajectory of the bone head / object origin | Location keys. Handles are the F-Curve bezier handles shown in 3D |
-| **Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. **R** rotates handles like on location paths, **R R** twists the bone around its own axis |
+| **1 Location** | Trajectory of the bone head / object origin | Location keys |
+| **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. **Ctrl+T** twists the bone around its own axis |
+| **3 Scale** | The location path as a **ribbon** as wide as the scale | Scale keys: **S** or **Alt+S** (Shrink / Fatten), X / Y / Z for one axis |
+| **4 Value** | A **track** above the path for one animated value (IK/FK switch, custom property, constraint influence…) | That value: move its keys up and down. Pick the value in the sidebar or tool header |
 
-*Rotation Path Length* (Display) makes small rotations easier to see.
+The mode follows the bone you pick: a bone with only rotation keys (FK) switches to Rotation,
+one with only location keys to Location. Paths that can't be edited in the current mode (a
+connected bone in Location, locked channels) are gray, and the hint at the bottom says why.
 
-## Slide keys along the path (G G)
+## Blender's own settings
 
-Select keys and press **G** twice, or use *Slide Along Path* in the panel or the right-click
-menu. Then move the mouse along the path. A blue marker follows the path and shows where the
-key goes and its new frame. It follows the curve without jumping across loops. Past the first
-and last key, the path continues as a dashed line, so a key can go beyond the end (for
-example from frame 60 to 65). Press **T** to switch between the two modes:
+The tool uses the settings you know from modeling, in the header and with the usual keys:
 
-* **Spacing** (the default): the key keeps its frame and slides along the trajectory under
-  the mouse, so the bone gets there earlier or later in space. The shape of the path stays the
-  same.
-* **Timing** (like the timeline): the key keeps its pose and moves to a different frame. The
-  frame dots around it spread out or bunch up. With *Whole Pose* on (the default), the bone's
-  other keys on that frame (rotation, scale, custom properties) move too, like the Dope Sheet
-  summary row. Only the keys you see on the path limit the slide; the other channels stop at
-  their own neighbors.
-
-* **C**, Continue: like G G C in mesh editing. The pose follows the trajectory and keeps
-  going past the first or last key. The motion is extrapolated with the direction and speed
-  of the last segment, so the animation continues.
-
-Nothing is written until you actually move. Pressing G G and confirming leaves the curves
-exactly as they were. The same goes for G, R, S, Smooth, Exaggerate and Ease.
-
-Keys snap to whole frames. Hold **Ctrl** for subframes, or type an offset such as `3` or `-2`.
-A key can't pass the neighboring keys, and the result can be adjusted in the *Adjust Last
-Operation* panel.
-
-## Proportional Editing
-
-Press **O**, or use the toggle in the panel or tool header. Moving, rotating or scaling keys
-then also moves the unselected keys nearby, with a smooth falloff. This works like sculpting
-the path.
-
-* **Mouse wheel** or **Page Up/Down** during G/R/S changes the radius (shown as a circle).
-* **Shift+O** chooses the falloff: Smooth, Sphere, Root, Inverse Square, Sharp, Linear,
-  Constant or Random.
-* **Connected** (chain icon, on by default) measures the distance *along the path*, so only
-  keys of the same path are affected. Turn it off to use straight 3D distance, which affects
-  all editable paths.
-* Affected keys turn orange according to their influence. The settings also appear in the
-  *Adjust Last Operation* panel.
+* **Proportional editing**: **O**, falloff **Shift+O**, connected **Alt+O** (Blender's own
+  toggles). Paths keep their own radius (mouse wheel during G/R/S). Connected measures along
+  the path; Projected measures on the screen.
+* **Pivot point** (**.** pie): Median, Bounding Box, 3D Cursor, Active key. *Individual
+  Origins* turns or scales the handles of every selected key around the key itself.
+* **Transform orientation** (**,** pie): Global, Local (the channel axes), View, Cursor,
+  Parent, Custom, and **Normal = Path**: Y along the motion, X sideways, Z up. Press X / Y / Z
+  once for the header orientation, twice for Local (or Global).
+* **Snapping** (**Shift+Tab**, magnet icon, **Ctrl** while moving): Increment, Vertex (also
+  the keys of other paths), Edge, Face (put a foot key onto the floor). Snap Target and Snap to
+  Self work as usual.
+* **3D cursor**: **Shift+S** pie with Cursor to Selected / Active and Selection to Cursor /
+  Active / Grid.
 
 ## Controls (Edit Motion Path tool)
 
+**Select**
+
 | Input | Action |
 |---|---|
-| **1 / 2** | edit Location / Rotation |
-| Click key | select it and show its handles |
-| Drag key / handle | move it |
-| Shift+Click | add to / toggle the selection |
-| Ctrl+Click on a key | select every key between the active key and this one (like Pick Shortest Path). On a looping path it goes the shorter way along the curve, across the seam if needed |
-| **Ctrl+X** | dissolve: one selected key is removed and its neighbors refitted so the shape stays; with several keys selected, Clean Up that range |
-| Ctrl+Click on the path | insert a key at that frame (the motion is preserved) |
-| Double-click key | jump to its frame |
-| Drag on empty space, **B** | box select (Shift extend, Ctrl subtract) |
-| **G G** | slide keys along the path (**T**: Timing / Spacing, **C**: continue the motion) |
-| **G / R / S** | move / rotate / scale; **X Y Z** constrains to an axis (press twice for local, i.e. the channel axes), **Shift+X/Y/Z** constrains to a plane, type numbers, **Ctrl** snaps, **Shift** is precise |
-| **R** on one key | rotate its handles around the key (flat Auto Clamped handles open up) |
-| **S** on one key | scale its handles (speed through the key) |
-| **R R** on rotation-path keys | twist the bone around its own axis |
-| **E** | ease: slow in / slow out (**I / O / B** while dragging: in, out, both) |
-| **O** / **Shift+O** | proportional editing on/off / falloff (wheel changes radius during G/R/S) |
-| **V** | handle type (Auto Clamped, Auto, Aligned, Free, Vector) |
-| **L** on the first / last key | fix the loop seam (match the other end to this key) |
-| **Alt+S** / **Alt+E** | Smooth / Exaggerate |
-| **X / Delete** | delete keys |
-| **A / Alt+A / Ctrl+I** | select all / none / invert |
-| Right-click | path menu |
+| Click / Shift+Click | select / toggle a key or handle (inside a key's dot the key always wins) |
+| Ctrl+Click on a key | select every key up to it (the shorter way around a loop) |
+| Drag on empty space, **B**, **C** | box select, circle select |
+| **A / Alt+A / Ctrl+I** | all / none / invert |
+| **Ctrl+L / L / Shift+L** | whole path / path under the mouse / deselect it |
+| **Ctrl+NumPad + / -** | grow / shrink the selection along the path |
+| **Shift+G** | select similar: handle type, interpolation, keyframe type, partial keys, holds |
+| **[ / ]** | keys before / after the current frame |
+| **H / Shift+H / Alt+H** | hide paths / hide the others / reveal |
+| Double-click a key | jump to its frame |
 
-If nothing on a path is selected, **G/R/S/A/X** fall back to Blender's normal bone/object
-behaviour.
+**Transform**
 
-## Ease (E): slow in / slow out
+| Input | Action |
+|---|---|
+| **G / R / S** | move / rotate / scale. X Y Z: axis, Shift+X/Y/Z: plane, type numbers, Shift: precise |
+| **R R** | trackball |
+| **Ctrl+T** | twist the bone (rotation paths) |
+| **G G**, **Shift+V** | slide in time: move the mouse right for later, left for earlier |
+| **R / S** on one key | turn / stretch its handles (speed through the key) |
+| **Ctrl+M** | mirror (then X / Y / Z) |
+| **Shift+Ctrl+Alt+S** | shear |
 
-Bezier keys control easing with two things: the handle's slope and its length *in time*. A
-handle you drag in 3D only changes the slope, so on its own it gives just a soft ease. **Ease**
-changes both, so the motion really comes to rest at the key.
+**Keys (topology)**
 
-* Select keys, press **E** (or the Ease button) and drag right. The frame dots bunch up at the
-  key, and at 1.0 the bone comes to rest there.
-* Drag left (negative values) to move through the key at a more constant speed.
-* While dragging, **I** eases only the arrival, **O** only the departure, and **B** both.
+| Input | Action |
+|---|---|
+| Ctrl+Click on the path | insert a key; the motion doesn't change |
+| **E** | extrude: a new key that continues the motion; the mouse places it, the wheel sets how many frames later |
+| **Shift+D** | duplicate the selected keys to other frames (left / right); one key makes a hold |
+| **Ctrl+R** | loop cut: evenly spaced keys in the segment under the mouse (wheel: number of cuts) |
+| **K** | knife: draw a line, keys are inserted where it crosses the path |
+| **Ctrl+B** | bevel: round a key into an arc (mouse: width, wheel: segments, P: profile, 0.5 = circle) |
+| **M** | merge at center / first / last |
+| **X**, **Delete**, **Ctrl+X** | delete menu / delete / dissolve |
+| **V**, **T** | handle type / interpolation |
+| **Alt+C** | loop menu: toggle Cycles, fix the loop seam |
 
-## Smooth and Exaggerate
+**Shape and timing**
 
-These work on the selected keys, or on all keys if none are selected. Drag the mouse left and
-right to set the amount, then click. You can fine-tune the result in the *Adjust Last Operation*
-panel at the bottom left.
+| Input | Action |
+|---|---|
+| **Alt+S** | smooth (in Scale mode: shrink / fatten) |
+| **Alt+E** | exaggerate |
+| **Shift+E** | ease (I / O / B while dragging: slow in, slow out, both) |
+| Right-click | path menu: Subdivide, Spin, Space, LoopTools, Snap, Curves, … |
 
-* **Smooth**: positive values smooth, and higher values smooth more. Negative values sharpen
-  (anti-smooth).
-  * **Method: Shape** (the default) smooths the form. Each key is pulled toward where a smooth
-    curve through its neighbors would pass, so bumps and corners go away and arcs keep their
-    size. Keys only move across the path, never along it, so the timing and spacing stay the
-    same. *Fix Corners* also aligns broken handles.
-  * **Method: Time** averages the keys in time. It evens out the spacing but flattens arcs.
-* **Exaggerate**: scales how far the path bends away from a baseline, so 0.5 means 50% bigger.
-  Negative values tone it down, and -1 flattens it.
-  * **Relative To: Neighbors** uses the straight line between the keys around the selection.
-  * **Relative To: Center** uses the average of the selection, which makes a whole motion
-    bigger or smaller.
+Nothing is written until you actually move: starting a tool and confirming without moving
+leaves the curves exactly as they were.
+
+## Predictable topology
+
+* **Insert** (Ctrl+Click, Loop Cut, Knife, Subdivide) never changes the motion. New keys get
+  Auto Clamped handles when that keeps the path within 0.5% of its size; otherwise the curve
+  is split exactly and the new key gets Aligned handles.
+* **Delete** removes keys; the other keys keep their handle types.
+* **Dissolve** removes keys and refits only the handle *lengths* of the two keys around them,
+  keeping their direction, so nothing outside those two keys moves. If plain Delete would be
+  as close, it does that instead, so Dissolve is never worse than Delete (in tests usually
+  5–10× closer to the original).
+* Moving rotation keys moves their handles with them on every channel, exactly like in the
+  Graph Editor.
+
+Blender 5's default F-Curve smoothing, *Continuous Acceleration*, re-solves all auto handles
+of a curve together. So with it, editing one key also nudges the auto handles a few keys away.
+That is Blender's own behaviour; set the smoothing to *None* if you want edits to stay local.
+
+## Timing and speed
+
+* **Slide (G G)**: *Timing* (default) keeps the poses and moves keys in time; the frame dots
+  spread out or bunch up. *Spacing* (T) keeps the frames and slides the poses along the path.
+  **C** continues the motion past the first / last key. With *Whole Pose*, the bone's other
+  keys on those frames move too.
+* **Space** (Timing & Speed panel, right-click menu): changes the spacing between the selected
+  keys (or of the whole path) while the path keeps its shape. *Even* gives constant speed, and
+  *Slow In*, *Slow Out* and *Slow In & Out* give clean eases (wheel: strength). Drag right to
+  blend in. Keys are added only where the old ones can't follow; the report shows how close
+  the result is.
+* **Ease (Shift+E)**: slow in / slow out at the selected keys, by changing the handle slope and
+  its length in time.
+
+## Shape tools
+
+* **Smooth** (Shape: removes bumps, keeps arcs and timing; Time: evens out the keys) and
+  **Exaggerate** (more or less bend relative to the neighbors or the center). Drag left /
+  right; negative values sharpen or tone down.
+* **Bevel**, **Spin** (continue the motion on an arc around the 3D cursor: orbits, swings).
+* **LoopTools**: *Circle* (a perfect arc), *Flatten* (one plane), *Straighten* (a line,
+  keeping the spacing), *Follow Stroke* (draw the motion with the Annotate tool, D + drag, and
+  the selected part of the path follows it), *Relax* and *Space*.
+* **Curves**: *Path to Curve* makes a Curve object (a Bezier point per key, or a point per
+  frame). *Follow Curve* makes the path follow any curve object: keep the timing, even speed,
+  or one key per curve point. That way you can export, edit as a curve and bring it back.
+
+## Clean Up and loops
+
+* **Clean Up** (Keys panel, or X > Limited Dissolve) reduces keys while keeping the path in 3D
+  within a tolerance. It refits handles, keeps corners and holds, and keeps loops intact.
+  *Clean* removes keys; *Adaptive* rebuilds them with as few as possible.
+* **Cycles**: no key is ever added outside a looping curve's range, and the first and last
+  keys stay in sync. **Fix Loop** (Alt+C) matches the other end of the loop to the selected
+  first or last key.
 
 ## Display
 
-* **Color: Speed** shows slow parts in blue and fast parts in red. The dots show spacing
-  (one per frame).
-* The green dot is the current frame.
-* Turning off **Show Overlays** hides the paths too, so you can watch the animation clean.
-  While they're hidden, viewport hotkeys work as in plain Blender. Panel buttons still work.
-* While you drag, a ghost of the original path is shown.
-* A key with a dark center is keyed on only some of its channels. With *Pin Partial Keys* on
-  (the default), such keys near an edited key get keyed on their other channels too, so they
-  stay where they are instead of following the edit.
-* Handles shorter than about 36 px are drawn longer so you can still grab them. Long handles
-  are drawn at their true length.
-
-## Looping animation (Cycles modifier)
-
-Curves with a Cycles modifier keep their loop:
-
-* No key is ever added outside a looping curve's key range, because that would change its
-  period. A key the path needs at frame 0 of a 1–97 loop goes to frame 96, which is the same
-  pose.
-* Editing the first key of a loop also moves the last one by the same amount, so the seam
-  stays closed. *Repeat with Offset* is supported.
-
-### Fix Loop (L)
-
-When a loop has a jump or a hitch at the seam, select the first or the last key of the path,
-whichever is right, and press **L** (or use *Fix Loop* in the panel or menu). The key at the
-other end of the loop is matched to it: same pose and same handles, so the seam has neither a
-jump nor a speed change.
-
-* With *Whole Pose* on (the default), every channel of the bone is fixed: location, rotation,
-  scale and custom properties.
-* On *Repeat with Offset* curves (moving loops, such as a walk that goes forward), only the
-  handles are matched. The offset is kept.
-
-## Clean Up
-
-Reduces the number of keys while keeping the motion. Use *Clean Up* in the panel or the
-right-click menu. It works on the selected range (2 or more keys selected) or on the whole
-path. Unlike cleaning in the Graph Editor, it:
-
-* measures the error **in 3D**, as how far the path (the bone head, or the tip on rotation
-  paths) moves away from the original. *Tolerance* is a percentage of the path size;
-* **refits the handles** of the keys that remain (least squares over all frames), so the same
-  shape needs fewer keys;
-* keeps **corners** (Vector or broken handles, linear segments, impacts) and, with *Keep
-  Holds*, the places where the motion stops (contacts, held poses) exactly as they were;
-* keeps loops intact (Cycles period and seam).
-
-There are two methods:
-
-* **Clean** removes the keys that aren't needed.
-* **Adaptive** rebuilds the keys from scratch. It adds keys where the shape needs them most,
-  then removes the extra ones. This gives the fewest keys, and they don't have to sit on the
-  old frames.
-
-For example, a baked motion with a key on every frame (60 keys) goes down to 8–10 keys at 1%
-tolerance. Adjust *Method* and *Tolerance* in the *Adjust Last Operation* panel. The report
-shows the key count before and after and the largest deviation.
+* **Color**: *Speed* (blue slow, red fast), *Before / After*, *Solid*, and **Jitter**: a heat
+  map of roughness. Smooth motion stays gray; hitches, pops and noisy wobbles glow yellow to
+  red. Select the red part and smooth it. *Threshold* sets the sensitivity.
+* Baked keys (a key every frame or two) are drawn as small dots, so dense motion stays
+  readable.
+* Turning off **Show Overlays** hides the paths, and viewport hotkeys then work as in plain
+  Blender.
+* A key with a dark center is keyed on only some channels. *Pin Partial Keys* keeps such keys
+  in place when a neighbor is edited.
 
 ## Range and updates
 
-The path is calculated over the Scene, Action or a Manual frame range. Scene and Action always
-include every key of the path, so a key slid past the end stays visible. You can also draw only
-part of it around the current frame. Paths update in real time while you edit them. If you
-change other animation, such as a parent bone, the paths recalculate on their own (*Auto
-Update*). The refresh button forces a recalculation.
+Paths are calculated over the Scene, Action or a Manual frame range (always including every
+key of the path) and update in real time. When other animation such as a parent changes, they
+recalculate on their own (*Auto Update*).
 
 ## Scripting and AI assistants
 
-`import editable_motion_paths_api as emp` gives a Python API. You can add paths, read
-trajectories, and run `analyze()`, a readable summary of holds, pops, sharp turns and eases.
-You can also move keys in world space, smooth, exaggerate and slide. `preview_objects()`
-builds the paths as real geometry so they show up in any screenshot. See
-[AI_GUIDE.md](AI_GUIDE.md); you can give it to Claude in a chat connected to Blender through
-MCP.
+`import editable_motion_paths_api as emp` gives a Python API: add paths, read and `analyze()`
+trajectories, `jitter()`, move keys in world space, smooth, exaggerate, ease, slide, `space`,
+`subdivide`, `dissolve_keys`, `bevel`, `extrude`, `loop_tool`, `path_to_curve`,
+`follow_curve`, Clean Up and more. `preview_objects()` builds the paths as real geometry so
+they show up in screenshots. See [AI_GUIDE.md](AI_GUIDE.md); you can give it to Claude in a
+chat connected to Blender through MCP.

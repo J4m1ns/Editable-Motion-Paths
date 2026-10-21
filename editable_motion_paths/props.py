@@ -34,6 +34,9 @@ class EMP_PathEntry(bpy.types.PropertyGroup):
     path_type: EnumProperty(items=[('LOCATION', "Location", ""), ('ROTATION', "Rotation", "")],
                             options={'HIDDEN'})
     show: BoolProperty(name="Show", default=True, update=_redraw)
+    value_path: StringProperty(name="Value", description="F-Curve shown and edited in Value mode (4)",
+                               update=_mode_changed)
+    value_index: IntProperty(name="Index", update=_mode_changed)
 
 
 class EMP_Settings(bpy.types.PropertyGroup):
@@ -48,6 +51,11 @@ class EMP_Settings(bpy.types.PropertyGroup):
              "Editing it changes the location keys (1)", 'CON_LOCLIKE', 0),
             ('ROTATION', "Rotation", "Trajectory of the bone tip. Editing it changes the rotation "
              "keys: Euler, Quaternion or Axis Angle (2)", 'CON_ROTLIKE', 1),
+            ('SCALE', "Scale", "The location path drawn as a ribbon as wide as the scale. S or "
+             "Alt+S (Shrink / Fatten) changes the scale keys (3)", 'CON_SIZELIKE', 2),
+            ('VALUE', "Value", "One animated value (custom property, IK/FK switch, constraint "
+             "influence...) drawn as a track above the path; move its keys up and down (4)",
+             'DRIVER', 3),
         ],
         default='LOCATION', update=_mode_changed,
     )
@@ -110,6 +118,8 @@ class EMP_Settings(bpy.types.PropertyGroup):
     on_top: BoolProperty(name="In Front", default=True,
                          description="Draw paths in front of geometry", update=_redraw)
     line_width: FloatProperty(name="Line Width", default=2.0, min=1.0, max=10.0, update=_redraw)
+    ribbon_width: FloatProperty(name="Ribbon Width", default=1.0, min=0.05, soft_max=5.0,
+                                description="Scale paths: how wide the ribbon is drawn", update=_redraw)
     key_size: FloatProperty(name="Key Size", default=9.0, min=3.0, max=30.0, update=_redraw)
     rot_length: FloatProperty(
         name="Rotation Path Length",

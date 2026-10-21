@@ -67,7 +67,7 @@ def path_frame(cache, t):
 
 def element_basis(cache, tg, k):
     """Channel axes of a key in world space."""
-    if cache.ptype == core.LOCATION:
+    if cache.ptype != core.ROTATION:
         return _normalized(cache.B_at(k.t).to_3x3())
     M, _u = cache.rot_frame(tg, k.t)
     q = core.vals_to_quat(k.vals, tg.rot_mode)
@@ -75,7 +75,7 @@ def element_basis(cache, tg, k):
 
 
 def parent_basis(cache, tg, k):
-    if cache.ptype == core.LOCATION:
+    if cache.ptype != core.ROTATION:
         return _normalized(cache.B_at(k.t).to_3x3())
     return _normalized(cache.rot_frame(tg, k.t)[0].to_3x3())
 

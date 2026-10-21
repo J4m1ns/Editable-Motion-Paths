@@ -103,13 +103,28 @@ def sync_caches(scene=None):
         if k[:2] not in targets:
             del caches[k]
     need = []
+    refs = {entry_key(e, mode): (e.value_path, e.value_index) for e in st.paths if e.object is not None}
     for k in wanted:
         c = caches.get(k)
         if c is None:
             c = caches[k] = core.PathCache(*k)
-            other = caches.get((k[0], k[1], core.ROTATION if k[2] == core.LOCATION else core.LOCATION))
-            if other is not None and other.B:
+            other = next((o for o in caches.values() if o is not c and o.key[:2] == k[:2] and o.B), None)
+            if other is not None:
                 c.fs, c.B, c.bake_id = other.fs, other.B, other.bake_id
+        if mode == core.VALUE:
+            ref = refs.get(k)
+            if not (ref and ref[0]):
+                # nothing picked yet: the first animated value of the bone / object
+                e = next((e for e in st.paths if entry_key(e, mode) == k), None)
+                cands = core.value_candidates(e.object, e.bone_name) if e is not None else []
+                if cands and not baking:
+                    e.value_path, e.value_index = cands[0][0], cands[0][1]
+                    ref = (cands[0][0], cands[0][1])
+            ref = ref if ref and ref[0] else None
+            if ref != c.value_ref:
+                c.value_ref = ref
+                c.vgain_id = None
+                c.dirty = True
         if not c.B:
             need.append(c)
     return need

@@ -194,6 +194,55 @@ def _path_colors(st, cache, editable, cur, lo, hi):
     return pts, cols
 
 
+COL_RIBBON = (1.0, 0.75, 0.3)
+
+
+def _draw_ribbon(st, cache, rv3d, lo, hi, editable, us):
+    """Scale paths: a ribbon around the path, as wide as the scale."""
+    view = (rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))).normalized()
+    pts = cache.points
+    idx = [i for i, t in enumerate(cache.times) if _in(t, lo, hi)]
+    if len(idx) < 2 or len(cache.sample_vals) != len(pts):
+        return
+    half = cache.vgain * 0.12 * st.ribbon_width
+    left, right = [], []
+    for i in idx:
+        a = pts[max(0, i - 1)]
+        b = pts[min(len(pts) - 1, i + 1)]
+        side = (b - a).cross(view)
+        if side.length < 1e-9:
+            side = view.orthogonal()
+        side.normalize()
+        v = cache.sample_vals[i]
+        w = half * sum(abs(x) for x in v) / len(v)
+        left.append(pts[i] + side * w)
+        right.append(pts[i] - side * w)
+    alpha = 0.22 if editable else 0.1
+    col = COL_RIBBON + (alpha,)
+    tris = []
+    for j in range(len(left) - 1):
+        tris += [left[j], right[j], left[j + 1], left[j + 1], right[j], right[j + 1]]
+    sh = gpu.shader.from_builtin('UNIFORM_COLOR')
+    sh.uniform_float("color", col)
+    batch_for_shader(sh, 'TRIS', {"pos": tris}).draw(sh)
+    edge = COL_RIBBON + (0.8 if editable else 0.35,)
+    _lines(left, [edge] * len(left), 1.2 * us, 'LINE_STRIP')
+    _lines(right, [edge] * len(right), 1.2 * us, 'LINE_STRIP')
+
+
+def _draw_value_base(cache, lo, hi, us):
+    """Value paths: the location path the value track floats above, and stems at the keys."""
+    base = [p for t, p in zip(cache.times, cache.base_points) if _in(t, lo, hi)]
+    _lines(base, [(0.6, 0.6, 0.6, 0.35)] * len(base), 1.0 * us, 'LINE_STRIP')
+    stems = []
+    by_t = dict(zip(cache.times, cache.base_points))
+    for k in cache.keys:
+        b = by_t.get(k.t)
+        if b is not None and _in(k.t, lo, hi):
+            stems += [b, k.co]
+    _lines(stems, [(0.7, 0.7, 0.7, 0.45)] * len(stems), 1.0 * us)
+
+
 def _draw_view():
     from . import pick
     ctx = bpy.context
@@ -211,7 +260,12 @@ def _draw_view():
     gpu.state.depth_mask_set(False)
     cur = scene.frame_current + scene.frame_subframe
 
+    up = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
     for cache in caches:
+        if cache.ptype == core.VALUE and not state.modal_running and cache.vdir.angle(up, 0.0) > 0.35:
+            # the value track stands "up" on the screen; it turns with the view (not while editing)
+            cache.vdir = up.normalized()
+            cache.dirty = True
         if not cache.refresh():
             continue
         obj = bpy.data.objects.get(cache.obj_name)
@@ -224,6 +278,10 @@ def _draw_view():
         if ghost and st.show_ghost:
             _lines(ghost, [COL_GHOST] * len(ghost), st.line_width * us, 'LINE_STRIP')
 
+        if cache.ptype == core.SCALE:
+            _draw_ribbon(st, cache, rv3d, lo, hi, editable, us)
+        elif cache.ptype == core.VALUE:
+            _draw_value_base(cache, lo, hi, us)
         pts, cols = _path_colors(st, cache, editable, cur, lo, hi)
         _lines(pts, cols, st.line_width * us * (1.0 if editable else 0.75), 'LINE_STRIP')
 
@@ -357,8 +415,15 @@ def _draw_points(ctx, st, us):
                     discs.add_outlined(s, kr, col)
             else:
                 discs.add_outlined(s, kr * 0.7, COL_KEY_LOCKED, 1.0)
-            if (st.show_frame_numbers or state.force_numbers) and s is not None and                     (last_label is None or (s - last_label).length > 22.0 * us):
-                txt = "%d" % round(k.t) if abs(k.t - round(k.t)) < 1e-3 else "%.2f" % k.t
+            show_val = cache.ptype in (core.SCALE, core.VALUE) and editable
+            if (st.show_frame_numbers or state.force_numbers or show_val) and s is not None and                     (last_label is None or (s - last_label).length > 22.0 * us):
+                txt = ""
+                if st.show_frame_numbers or state.force_numbers:
+                    txt = "%d" % round(k.t) if abs(k.t - round(k.t)) < 1e-3 else "%.2f" % k.t
+                if show_val:
+                    v = k.vals or []
+                    val = ("%.2f" % v[0]) if len(v) == 1 or max(v) - min(v) < 1e-3 else                         " ".join("%.2f" % x for x in v)
+                    txt = (txt + "  " if txt else "") + val
                 labels.append((s, txt))
                 last_label = s
 
@@ -450,8 +515,9 @@ def _draw_mode_indicator(ctx, st, us):
     region = ctx.region
     font = 0
     blf.size(font, 12 * us)
-    loc = st.edit_mode == 'LOCATION'
-    parts = [("1 Location", loc), ("   2 Rotation", not loc)]
+    m = st.edit_mode
+    parts = [("1 Location", m == 'LOCATION'), ("   2 Rotation", m == 'ROTATION'),
+             ("   3 Scale", m == 'SCALE'), ("   4 Value", m == 'VALUE')]
     ts = ctx.scene.tool_settings
     if ts.use_proportional_edit:
         name = ts.bl_rna.properties['proportional_edit_falloff'].enum_items[ts.proportional_edit_falloff].name

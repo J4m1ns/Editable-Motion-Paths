@@ -89,6 +89,25 @@ emp.set_handle_type("Zombie_Rig", "CTRL_Foot_L", frames=[25], handle_type='VECTO
 emp.update()   # recalculate after you change animation by other means
 ```
 
+Timing and topology (2.0):
+
+```python
+emp.space("Zombie_Rig", "CTRL_Hand_L", frames=[10, 30], profile='EVEN')        # constant speed, same shape
+emp.space("Zombie_Rig", "CTRL_Hand_L", frames=[10, 30], profile='SLOW_IN_OUT', strength=2.5)
+emp.dissolve_keys("Zombie_Rig", "CTRL_Torso", frames=[14, 18])  # remove keys, keep the shape
+emp.subdivide("Zombie_Rig", "CTRL_Foot_L", frames=[13, 25], cuts=2)
+emp.bevel("Zombie_Rig", "CTRL_Hand_L", frames=[20], width=3, segments=2)   # round a sharp corner
+emp.extrude("Zombie_Rig", "CTRL_Foot_L", frame=97, frames_later=6)      # continue the motion
+emp.loop_tool("Zombie_Rig", "CTRL_Hand_L", frames=[8, 12, 16, 20], tool='CIRCLE')  # clean arc
+emp.path_to_curve("Zombie_Rig", "CTRL_Foot_L")                           # -> object "Path CTRL_Foot_L"
+emp.follow_curve("Zombie_Rig", "CTRL_Foot_L", curve="MyCurve", timing='KEEP')
+print(max(emp.jitter("Zombie_Rig", "CTRL_Head"), key=lambda fv: fv[1]))  # roughest frame
+emp.set_mode('VALUE'); emp.set_value_channel("Zombie_Rig", "CTRL_Hand_L", '["ik_fk"]')
+```
+
+Roughness from `jitter()` above about 0.4 usually reads as a hitch or noise: smooth those
+frames.
+
 In ROTATION mode, `move_key` turns the bone so its tip points at the target. Points are
 world coordinates of the bone tip (or of the head in LOCATION mode).
 
@@ -97,6 +116,6 @@ world coordinates of the bone tip (or of the head in LOCATION mode).
 1. Run `analyze` on the important controls (feet, hands, hips, head) and check for pops,
    unwanted sharp turns, and arcs.
 2. Use `preview_objects` and a screenshot to check the arcs and the spacing visually.
-3. Make one targeted edit (`move_key`, `smooth`, `ease`, `slide`...). For a hit or stop
+3. Make one targeted edit (`move_key`, `smooth`, `ease`, `space`, `slide`...). For a hit or stop
    that reads too linear, use `ease` on that key. For a wobbly arc, use `smooth`.
 4. Analyze and look again. Undo if it got worse.

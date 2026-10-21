@@ -61,7 +61,7 @@ class Fitter:
         n = max(1, int(round((r1 - r0) / STEP)))
         self.S = [r0 + (r1 - r0) * i / n for i in range(n + 1)]
         self.Y = [self.value(t) for t in self.S]
-        self.P = [cache.point(tg, t, v) for t, v in zip(self.S, self.Y)]
+        self.P = [cache.measure(tg, t, v) for t, v in zip(self.S, self.Y)]
         # slope scale per channel, to tell corners from smooth keys
         self.scale = {}
         for c in self.chans:
@@ -106,12 +106,12 @@ class Fitter:
         out = set()
         limit = self.size * 1e-3
         for a, b in zip(keys, keys[1:]):
-            pa = self.cache.point(self.tg, a, self.value(a))
+            pa = self.cache.measure(self.tg, a, self.value(a))
             still = True
             t = a
             while t < b:
                 t = min(t + STEP, b)
-                if (self.cache.point(self.tg, t, self.ch.values(t)) - pa).length > limit:
+                if (self.cache.measure(self.tg, t, self.ch.values(t)) - pa).length > limit:
                     still = False
                     break
             if still:
@@ -217,7 +217,7 @@ class Fitter:
             if (lo is not None and t < lo) or (hi is not None and t > hi):
                 continue
             v = self.evaluate(knots, slopes, t)
-            errs.append(((self.cache.point(self.tg, t, v) - p).length, t))
+            errs.append(((self.cache.measure(self.tg, t, v) - p).length, t))
         return errs
 
     def max_error(self, knots, slopes, lo=None, hi=None):
@@ -322,9 +322,10 @@ def write(fitter, knots, slopes, select=True):
         for kp in kps:
             x = kp.co[0]
             if abs(x - r0) < 1e-3:
-                outer_l = (tuple(kp.handle_left), kp.handle_left_type)
+                # relative to the key: it moves with the key if the key's value changes
+                outer_l = ((kp.handle_left[0] - x, kp.handle_left[1] - kp.co[1]), kp.handle_left_type)
             if abs(x - r1) < 1e-3:
-                outer_r = (tuple(kp.handle_right), kp.handle_right_type)
+                outer_r = ((kp.handle_right[0] - x, kp.handle_right[1] - kp.co[1]), kp.handle_right_type)
                 interp_end = kp.interpolation
             if x < r0 - 1e-3:
                 prev_x = x
@@ -367,12 +368,12 @@ def write(fitter, knots, slopes, select=True):
             if i == 0 and outer_l is not None:
                 kp.handle_left_type = 'FREE'
                 kp.handle_right_type = 'FREE'
-                kp.handle_left = outer_l[0]
+                kp.handle_left = (t + outer_l[0][0], y + outer_l[0][1])
             if i == n - 1:
                 if outer_r is not None:
                     kp.handle_left_type = 'FREE'
                     kp.handle_right_type = 'FREE'
-                    kp.handle_right = outer_r[0]
+                    kp.handle_right = (t + outer_r[0][0], y + outer_r[0][1])
                 if interp_end is not None:
                     kp.interpolation = interp_end
             kp.select_control_point = select

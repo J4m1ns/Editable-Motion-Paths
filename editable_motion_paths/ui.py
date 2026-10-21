@@ -2,7 +2,7 @@
 
 import bpy
 
-from . import state
+from . import core, state
 
 
 def _k(op, key, props=None, **mods):
@@ -62,38 +62,58 @@ TOOL_KEYMAP = (
     # modes, proportional editing (Blender's own settings)
     _k("wm.context_set_enum", 'ONE', {"data_path": "scene.emp.edit_mode", "value": 'LOCATION'}),
     _k("wm.context_set_enum", 'TWO', {"data_path": "scene.emp.edit_mode", "value": 'ROTATION'}),
+    _k("wm.context_set_enum", 'THREE', {"data_path": "scene.emp.edit_mode", "value": 'SCALE'}),
+    _k("wm.context_set_enum", 'FOUR', {"data_path": "scene.emp.edit_mode", "value": 'VALUE'}),
     _k("wm.context_toggle", 'O', {"data_path": "tool_settings.use_proportional_edit"}),
     _k("wm.context_pie_enum", 'O', {"data_path": "tool_settings.proportional_edit_falloff"}, shift=True),
     _k("wm.context_toggle", 'O', {"data_path": "tool_settings.use_proportional_connected"}, alt=True),
 )
 
 HELP = (
-    ("1 / 2", "edit Location / Rotation"),
-    ("Click key", "select, shows handles"),
-    ("Drag key / handle", "move it"),
-    ("Shift+Click", "add to selection"),
-    ("Ctrl+Click key", "select keys up to it (shortest way)"),
-    ("Ctrl+Click path", "insert key"),
-    ("Double-click key", "jump to its frame"),
-    ("Drag empty / B", "box select"),
-    ("G / R / S", "move / rotate / scale"),
-    ("G G", "slide keys along the path"),
-    ("  then T", "Timing / Spacing"),
-    ("  then X Y Z", "axis (twice = local)"),
-    ("R on one key", "rotate its handles"),
-    ("S on one key", "handle length (speed)"),
-    ("R R on rotation path", "twist the bone"),
-    ("O", "proportional editing"),
-    ("  Wheel, PgUp/PgDn", "radius (during G/R/S)"),
-    ("Shift+O", "proportional falloff"),
-    ("V", "handle type"),
-    ("E", "ease (slow in / out)"),
-    ("  then I / O / B", "in / out / both"),
-    ("L on first/last key", "fix the loop seam"),
-    ("Alt+S / Alt+E", "smooth / exaggerate"),
-    ("X / Delete", "delete keys"),
-    ("Ctrl+X", "dissolve key / clean up selection"),
-    ("Right-click", "path menu"),
+    ("Modes", (
+        ("1 2 3 4", "Location / Rotation / Scale / Value"),
+    )),
+    ("Select", (
+        ("Click / Shift+Click", "select a key or handle"),
+        ("Ctrl+Click key", "select the keys up to it"),
+        ("Drag empty, B, C", "box / circle select"),
+        ("A, Alt+A, Ctrl+I", "all / none / invert"),
+        ("Ctrl+L, L", "whole path / path under mouse"),
+        ("Ctrl+NumPad + / -", "grow / shrink"),
+        ("Shift+G", "select similar"),
+        ("[  ]", "before / after current frame"),
+        ("H, Shift+H, Alt+H", "hide / hide others / reveal"),
+        ("Double-click key", "jump to its frame"),
+    )),
+    ("Transform", (
+        ("G R S", "move / rotate / scale (X Y Z: axis)"),
+        ("R R", "trackball"),
+        ("Ctrl+T", "twist (rotation paths)"),
+        ("G G, Shift+V", "slide in time (left / right)"),
+        ("R / S on one key", "turn / stretch its handles"),
+        ("Ctrl+M", "mirror"),
+        ("Shift+Ctrl+Alt+S", "shear"),
+        ("Shift+S", "snap / 3D cursor pie"),
+        ("O, Shift+O, Alt+O", "proportional: on, falloff, connected"),
+        ("Ctrl (while moving)", "snap (Blender's snap settings)"),
+    )),
+    ("Keys", (
+        ("Ctrl+Click path", "insert a key"),
+        ("E", "extrude: continue the motion (wheel: frames)"),
+        ("Shift+D", "duplicate to other frames"),
+        ("Ctrl+R, K", "loop cut / knife"),
+        ("Ctrl+B", "bevel (wheel: segments, P: profile)"),
+        ("M", "merge"),
+        ("X, Delete, Ctrl+X", "delete menu / delete / dissolve"),
+        ("V, T", "handle type / interpolation"),
+        ("Alt+C", "loop: cycles, fix seam"),
+    )),
+    ("Shape & Timing", (
+        ("Alt+S", "smooth (Scale mode: shrink / fatten)"),
+        ("Alt+E", "exaggerate"),
+        ("Shift+E", "ease (I / O / B)"),
+        ("Right-click", "path menu (Space, LoopTools...)"),
+    )),
 )
 
 
@@ -102,7 +122,9 @@ def _draw_tool_settings(context, layout, tool):
     if st is None:
         return
     row = layout.row(align=True)
-    row.prop(st, "edit_mode", expand=True)
+    row.prop(st, "edit_mode", expand=True, icon_only=True)
+    if st.edit_mode == 'VALUE':
+        _draw_value_picker(layout, context)
     layout.separator()
     _draw_proportional(layout, st, compact=True)
     layout.separator()
@@ -126,13 +148,34 @@ def _draw_proportional(layout, st, compact=False):
              else 'UNLINKED', toggle=True)
 
 
+def _active_entry(context):
+    st = state.settings(context.scene)
+    if st is None or not st.paths:
+        return None
+    if 0 <= st.active_index < len(st.paths):
+        return st.paths[st.active_index]
+    return st.paths[0]
+
+
+def _draw_value_picker(layout, context):
+    e = _active_entry(context)
+    if e is None:
+        return
+    label = "Pick a value"
+    for dp, idx, name in core.value_candidates(e.object, e.bone_name):
+        if dp == e.value_path and idx == e.value_index:
+            label = name
+            break
+    layout.menu("EMP_MT_value_channel", text=label, icon='DRIVER')
+
+
 class EMP_PoseTool(bpy.types.WorkSpaceTool):
     bl_space_type = 'VIEW_3D'
     bl_context_mode = 'POSE'
     bl_idname = "emp.edit_path_pose"
     bl_label = "Edit Motion Path"
-    bl_description = ("Edit motion paths: click a key to see its handles, drag keys and handles, "
-                      "G/R/S with X/Y/Z, Ctrl+Click on a path to insert a key")
+    bl_description = ("Edit motion paths like curves: click keys, drag keys and handles, G R S, "
+                      "E extrude, Ctrl+Click on a path to insert a key")
     bl_icon = "ops.curve.pen"
     bl_widget = None
     bl_keymap = TOOL_KEYMAP
@@ -171,30 +214,122 @@ class EMP_MT_interpolation(bpy.types.Menu):
         self.layout.operator_enum("emp.interpolation", "type")
 
 
+class EMP_MT_value_channel(bpy.types.Menu):
+    bl_label = "Value"
+    bl_idname = "EMP_MT_value_channel"
+
+    def draw(self, context):
+        layout = self.layout
+        e = _active_entry(context)
+        cands = core.value_candidates(e.object, e.bone_name) if e is not None else []
+        if not cands:
+            layout.label(text="No animated values (custom properties, influences...)")
+        for dp, idx, name in cands:
+            op = layout.operator("emp.set_value_channel", text=name)
+            op.data_path = dp
+            op.index = idx
+
+
+class EMP_OT_set_value_channel(bpy.types.Operator):
+    """Show and edit this animated value in Value mode (4)"""
+    bl_idname = "emp.set_value_channel"
+    bl_label = "Set Value Channel"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    data_path: bpy.props.StringProperty()
+    index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        e = _active_entry(context)
+        if e is None:
+            return {'CANCELLED'}
+        e.value_path = self.data_path
+        e.value_index = self.index
+        state.bake_all(context.scene)
+        return {'FINISHED'}
+
+
+class EMP_MT_space(bpy.types.Menu):
+    bl_label = "Space"
+    bl_idname = "EMP_MT_space"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator_context = 'INVOKE_DEFAULT'
+        for ident, name, _d in (('EVEN', "Even (constant speed)", ""), ('SLOW_IN_OUT', "Slow In & Out", ""),
+                                ('SLOW_IN', "Slow In (decelerate)", ""), ('SLOW_OUT', "Slow Out (accelerate)", "")):
+            layout.operator("emp.space", text=name).profile = ident
+
+
+class EMP_MT_looptools(bpy.types.Menu):
+    bl_label = "LoopTools"
+    bl_idname = "EMP_MT_looptools"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("emp.circle", icon='MESH_CIRCLE')
+        layout.operator("emp.flatten", icon='MESH_PLANE')
+        layout.operator("emp.straighten", icon='IPO_LINEAR')
+        layout.operator("emp.gstretch", icon='GREASEPENCIL')
+        layout.operator_context = 'INVOKE_DEFAULT'
+        layout.operator("emp.smooth", text="Relax", icon='SMOOTHCURVE')
+        layout.operator("emp.space", text="Space", icon='ALIGN_JUSTIFY').profile = 'EVEN'
+
+
+class EMP_MT_snap(bpy.types.Menu):
+    bl_label = "Snap"
+    bl_idname = "EMP_MT_snap"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("emp.selection_to_cursor", text="Selection to Cursor").use_offset = False
+        layout.operator("emp.selection_to_cursor", text="Selection to Cursor (Keep Offset)").use_offset = True
+        layout.operator("emp.selection_to_active", text="Selection to Active")
+        layout.operator("emp.selection_to_grid", text="Selection to Grid")
+        layout.separator()
+        layout.operator("emp.cursor_to_selected", text="Cursor to Selected")
+        layout.operator("emp.cursor_to_active", text="Cursor to Active")
+
+
+class EMP_MT_curves(bpy.types.Menu):
+    bl_label = "Curves"
+    bl_idname = "EMP_MT_curves"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator_menu_enum("emp.export_curve", "kind", text="Path to Curve", icon='CURVE_BEZCURVE')
+        layout.operator_context = 'INVOKE_DEFAULT'
+        layout.operator("emp.import_curve", text="Follow Curve...", icon='CURVE_PATH')
+
+
 class EMP_MT_context(bpy.types.Menu):
+    """Right-click menu, laid out like the mesh vertex context menu."""
     bl_label = "Motion Path"
     bl_idname = "EMP_MT_context"
 
     def draw(self, context):
         layout = self.layout
         layout.operator_context = 'INVOKE_DEFAULT'
-        layout.operator("emp.smooth", icon='SMOOTHCURVE')
-        layout.operator("emp.exaggerate", icon='SHARPCURVE')
-        layout.operator("emp.ease", text="Ease (E)", icon='IPO_EASE_IN_OUT')
-        layout.operator("emp.fix_loop", text="Fix Loop (L)", icon='LOOP_BACK')
-        layout.operator_menu_enum("emp.cleanup", "method", text="Clean Up", icon='BRUSH_DATA')
-        layout.operator("emp.slide", text="Slide Along Path (G G)", icon='TRACKING_FORWARDS')
+        layout.operator("emp.subdivide", icon='SNAP_EDGE')
+        layout.operator("emp.extrude", text="Extrude", icon='EXPORT')
+        layout.operator("emp.duplicate", text="Duplicate", icon='DUPLICATE')
+        layout.operator("emp.bevel", text="Bevel", icon='MOD_BEVEL')
+        layout.operator("emp.spin", text="Spin", icon='MOD_SCREW')
+        layout.menu("EMP_MT_merge", icon='AUTOMERGE_OFF')
+        layout.separator()
+        layout.operator("emp.smooth", text="Smooth", icon='SMOOTHCURVE')
+        layout.operator("emp.exaggerate", text="Exaggerate", icon='SHARPCURVE')
+        layout.operator("emp.ease", text="Ease", icon='IPO_EASE_IN_OUT')
+        layout.menu("EMP_MT_space", icon='ALIGN_JUSTIFY')
+        layout.menu("EMP_MT_looptools", icon='MESH_CIRCLE')
         layout.separator()
         layout.menu("EMP_MT_handle_type", icon='HANDLE_ALIGNED')
         layout.menu("EMP_MT_interpolation", icon='IPO_BEZIER')
+        layout.menu("EMP_MT_loop", icon='FILE_REFRESH')
+        layout.menu("EMP_MT_snap", icon='SNAP_ON')
+        layout.menu("EMP_MT_curves", icon='CURVE_DATA')
         layout.separator()
-        layout.operator("emp.insert_key", text="Insert Key at Current Frame", icon='KEY_HLT')
-        layout.operator("emp.delete_keys", text="Delete Keys", icon='X')
-        layout.separator()
-        layout.operator("emp.select_all", text="Select All").action = 'SELECT'
-        layout.operator("emp.select_all", text="Invert Selection").action = 'INVERT'
-        layout.separator()
-        layout.operator("emp.path_update", icon='FILE_REFRESH')
+        layout.menu("EMP_MT_delete", icon='X')
 
 
 def _context_menu_entry(self, context):
@@ -207,7 +342,7 @@ def _context_menu_entry(self, context):
 
 
 # ----------------------------------------------------------------------------
-# Panel
+# Panels
 # ----------------------------------------------------------------------------
 
 class EMP_UL_paths(bpy.types.UIList):
@@ -241,19 +376,22 @@ class EMP_PT_main(_Panel, bpy.types.Panel):
         layout = self.layout
         st = state.settings(context.scene)
 
-        row = layout.row(align=True)
-        row.scale_y = 1.3
-        row.prop(st, "edit_mode", expand=True)
-
-        row = layout.row(align=True)
-        row.operator("emp.path_add", text="Add", icon='ADD')
-        row.operator("emp.path_remove", text="", icon='REMOVE').scope = 'SELECTED'
-        row.operator("emp.path_update", text="", icon='FILE_REFRESH')
+        col = layout.column(align=True)
+        col.scale_y = 1.2
+        for pair in (('LOCATION', 'ROTATION'), ('SCALE', 'VALUE')):
+            row = col.row(align=True)
+            for m in pair:
+                row.prop_enum(st, "edit_mode", m)
+        if st.edit_mode == 'VALUE':
+            _draw_value_picker(layout, context)
 
         row = layout.row()
         row.template_list("EMP_UL_paths", "", st, "paths", st, "active_index", rows=3)
         col = row.column(align=True)
-        col.operator("emp.path_remove", text="", icon='X').scope = 'ACTIVE'
+        col.operator("emp.path_add", text="", icon='ADD')
+        col.operator("emp.path_remove", text="", icon='REMOVE').scope = 'ACTIVE'
+        col.separator()
+        col.operator("emp.path_update", text="", icon='FILE_REFRESH')
         col.operator("emp.path_remove", text="", icon='TRASH').scope = 'ALL'
 
         tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
@@ -262,26 +400,65 @@ class EMP_PT_main(_Panel, bpy.types.Panel):
         row.scale_y = 1.4
         row.operator("emp.edit_tool", text="Editing Paths" if active else "Edit Paths",
                      icon='CURVE_BEZCURVE', depress=active)
-
         _draw_proportional(layout, st)
 
+
+class EMP_PT_shape(_Panel, bpy.types.Panel):
+    bl_label = "Shape"
+    bl_parent_id = "EMP_PT_main"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator_context = 'INVOKE_DEFAULT'
         col = layout.column(align=True)
-        col.label(text="Selected Keys (all if none):")
         row = col.row(align=True)
-        op = row.operator("emp.smooth", icon='SMOOTHCURVE')
-        op = row.operator("emp.exaggerate", icon='SHARPCURVE')
+        row.operator("emp.smooth", text="Smooth", icon='SMOOTHCURVE')
+        row.operator("emp.exaggerate", text="Exaggerate", icon='SHARPCURVE')
         row = col.row(align=True)
-        row.operator("emp.ease", text="Ease", icon='IPO_EASE_IN_OUT')
+        row.operator("emp.bevel", text="Bevel", icon='MOD_BEVEL')
+        row.operator("emp.spin", text="Spin", icon='MOD_SCREW')
+        row = col.row(align=True)
+        row.menu("EMP_MT_looptools", text="LoopTools", icon='MESH_CIRCLE')
+        row.menu("EMP_MT_curves", text="Curves", icon='CURVE_DATA')
+
+
+class EMP_PT_timing(_Panel, bpy.types.Panel):
+    bl_label = "Timing & Speed"
+    bl_parent_id = "EMP_PT_main"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator_context = 'INVOKE_DEFAULT'
+        col = layout.column(align=True)
+        row = col.row(align=True)
+        row.operator("emp.space", text="Even Spacing", icon='ALIGN_JUSTIFY').profile = 'EVEN'
+        row.menu("EMP_MT_space", text="Profile", icon='IPO_EASE_IN_OUT')
+        row = col.row(align=True)
+        row.operator("emp.ease", text="Ease", icon='IPO_SINE')
         row.operator("emp.slide", text="Slide", icon='TRACKING_FORWARDS')
+
+
+class EMP_PT_keys(_Panel, bpy.types.Panel):
+    bl_label = "Keys"
+    bl_parent_id = "EMP_PT_main"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator_context = 'INVOKE_DEFAULT'
+        col = layout.column(align=True)
         row = col.row(align=True)
-        row.operator("emp.fix_loop", text="Fix Loop", icon='LOOP_BACK')
+        row.operator("emp.insert_key", text="Insert", icon='KEY_HLT')
+        row.operator("emp.subdivide", text="Subdivide", icon='SNAP_EDGE')
+        row = col.row(align=True)
+        row.operator("emp.dissolve_keys", text="Dissolve", icon='X')
         row.operator_menu_enum("emp.cleanup", "method", text="Clean Up", icon='BRUSH_DATA')
         row = col.row(align=True)
         row.menu("EMP_MT_handle_type", text="Handles", icon='HANDLE_ALIGNED')
         row.menu("EMP_MT_interpolation", text="Interpolation", icon='IPO_BEZIER')
         row = col.row(align=True)
-        row.operator("emp.insert_key", text="Insert Key", icon='KEY_HLT')
-        row.operator("emp.delete_keys", text="Delete", icon='X')
+        row.operator("emp.toggle_cycles", text="Cycles", icon='FILE_REFRESH')
+        row.operator("emp.fix_loop", text="Fix Loop", icon='LOOP_BACK')
 
 
 class EMP_PT_range(_Panel, bpy.types.Panel):
@@ -332,6 +509,7 @@ class EMP_PT_display(_Panel, bpy.types.Panel):
         layout.prop(st, "line_width")
         layout.prop(st, "key_size")
         layout.prop(st, "rot_length")
+        layout.prop(st, "ribbon_width")
         layout.prop(st, "pin_partial")
 
 
@@ -342,19 +520,23 @@ class EMP_PT_help(_Panel, bpy.types.Panel):
 
     def draw(self, context):
         col = self.layout.column(align=True)
-        col.label(text="With the Edit Paths tool active:")
-        for a, b in HELP:
-            row = col.row()
-            split = row.split(factor=0.48)
-            split.label(text=a)
-            split.label(text=b)
+        col.label(text="With the Edit Motion Path tool:")
+        for title, rows in HELP:
+            col.separator()
+            col.label(text=title, icon='DOT')
+            for a, b in rows:
+                split = col.row().split(factor=0.45)
+                split.label(text=a)
+                split.label(text=b)
         col.separator()
         col.label(text="Only paths of selected bones/objects", icon='INFO')
         col.label(text="are editable; click a gray path to pick it.")
 
 
-classes = (EMP_MT_handle_type, EMP_MT_interpolation, EMP_MT_context, EMP_UL_paths,
-           EMP_PT_main, EMP_PT_range, EMP_PT_display, EMP_PT_help)
+classes = (EMP_MT_handle_type, EMP_MT_interpolation, EMP_MT_value_channel, EMP_OT_set_value_channel,
+           EMP_MT_space, EMP_MT_looptools, EMP_MT_snap, EMP_MT_curves, EMP_MT_context, EMP_UL_paths,
+           EMP_PT_main, EMP_PT_shape, EMP_PT_timing, EMP_PT_keys, EMP_PT_range, EMP_PT_display,
+           EMP_PT_help)
 
 
 def register():

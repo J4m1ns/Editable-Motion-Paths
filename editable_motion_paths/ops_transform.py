@@ -582,6 +582,15 @@ class EMP_OT_transform(bpy.types.Operator):
     def _apply_key(self, cache, tg, ch, e, X, touched):
         k = e.k
         handle_mode = self.handle_mode and e.src is None
+        if cache.ptype == core.SCALE:
+            # scale paths: S / Alt+S make the ribbon wider or thinner (X / Y / Z: one axis)
+            if self.mode != 'SCALE':
+                return
+            locks = tg.scale_locks()
+            vals = [v if locks[i] else v * (1.0 + (f - 1.0) * e.weight)
+                    for i, (v, f) in enumerate(zip(k.vals, self.value))]
+            core.write_key(ch, k, vals, True, touched)
+            return
         if cache.ptype == core.LOCATION:
             vals = cache.solve(tg, k.t, X @ k.co, k.vals)
             core.write_key(ch, k, vals, True, touched)
@@ -688,6 +697,10 @@ class EMP_OT_transform(bpy.types.Operator):
             return {'PASS_THROUGH'}
         if self.twist and not any(c.ptype == core.ROTATION for c in caches):
             return {'PASS_THROUGH'}     # Ctrl+T twists bones on rotation paths only
+        if all(c.ptype == core.SCALE for c in caches) and self.mode != 'SCALE':
+            if self.mode == 'TRANSLATE':
+                return bpy.ops.emp.slide('INVOKE_DEFAULT')     # G on scale paths: timing
+            return {'PASS_THROUGH'}
         ts = context.scene.tool_settings
         st = state.settings(context.scene)
         self.use_proportional = ts.use_proportional_edit

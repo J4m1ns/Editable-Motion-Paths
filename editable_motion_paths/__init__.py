@@ -3,7 +3,7 @@ bl_info = {
     "description": "Edit bone and object motion paths directly in the viewport: drag keys and "
                    "handles, smooth and exaggerate paths, edit location and rotation",
     "author": "Editable Motion Paths",
-    "version": (1, 6, 2),
+    "version": (2, 0, 0),
     "blender": (4, 4, 0),
     "location": "3D Viewport > Sidebar > Motion Paths, Toolbar > Edit Motion Path",
     "category": "Animation",
@@ -13,11 +13,11 @@ import sys
 
 import bpy
 
-from . import (api, draw, ops_keys, ops_select, ops_shape, ops_slide, ops_timing, ops_tools,
+from . import (api, draw, ops_io, ops_keys, ops_select, ops_shape, ops_slide, ops_timing, ops_tools,
                ops_transform, props, state, ui)
 
 _classes = (ops_transform.classes + ops_slide.classes + ops_keys.classes + ops_select.classes +
-            ops_shape.classes + ops_tools.classes + ops_timing.classes)
+            ops_shape.classes + ops_tools.classes + ops_timing.classes + ops_io.classes)
 
 
 def register():

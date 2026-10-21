@@ -9,7 +9,7 @@
 
 Every function takes object names / bone names (not RNA references) and works no matter
 which tool, mode or selection is active. `mode` is 'LOCATION' or 'ROTATION' (default: the
-current edit mode).
+current edit mode); 'SCALE' and 'VALUE' are the scale ribbon and the value track.
 """
 
 import math
@@ -98,7 +98,7 @@ def remove_paths(obj=None, bones=None):
 
 
 def set_mode(mode):
-    """'LOCATION' or 'ROTATION'."""
+    """'LOCATION', 'ROTATION', 'SCALE' or 'VALUE'."""
     state.settings(_scene()).edit_mode = mode
     state.sync_caches(_scene())
     update()
@@ -281,15 +281,16 @@ def insert_key(obj, bone=None, frame=None, mode=None):
     return k is not None
 
 
-def _run_op(op, frames, obj, bone, mode, **props):
-    c = _cache(obj, bone, mode)
-    _select_owner_and_keys(c, frames)
+def _run_op(_op, _frames, _obj, _bone, _mode, **props):
+    # (underscored names: operator properties like `frames` or `mode` go through **props)
+    c = _cache(_obj, _bone, _mode)
+    _select_owner_and_keys(c, _frames)
     win, area, region = _view3d()
     if area is not None:
         with bpy.context.temp_override(window=win, area=area, region=region):
-            r = op('EXEC_DEFAULT', **props)
+            r = _op('EXEC_DEFAULT', **props)
     else:
-        r = op('EXEC_DEFAULT', **props)
+        r = _op('EXEC_DEFAULT', **props)
     c.refresh(force=True)
     return r
 
@@ -337,6 +338,77 @@ def cleanup(obj, bone=None, frames=None, method='CLEAN', tolerance=1.0, mode=Non
 
 def set_handle_type(obj, bone=None, frames=None, handle_type='AUTO_CLAMPED', mode=None):
     return _run_op(bpy.ops.emp.handle_type, frames, obj, bone, mode, type=handle_type)
+
+
+def space(obj, bone=None, frames=None, profile='EVEN', factor=1.0, strength=2.0, mode=None):
+    """Re-space the motion between the first and last of `frames` (None: whole path) while
+    the path keeps its shape. profile: 'EVEN' (constant speed), 'SLOW_IN', 'SLOW_OUT',
+    'SLOW_IN_OUT'."""
+    return _run_op(bpy.ops.emp.space, frames if frames is not None else [], obj, bone, mode,
+                   profile=profile, factor=factor, power=strength)
+
+
+def delete_keys(obj, bone=None, frames=None, mode=None):
+    return _run_op(bpy.ops.emp.delete_keys, frames, obj, bone, mode)
+
+
+def dissolve_keys(obj, bone=None, frames=None, mode=None):
+    """Remove keys but keep the shape (refits the neighbors' handles)."""
+    return _run_op(bpy.ops.emp.dissolve_keys, frames, obj, bone, mode)
+
+
+def subdivide(obj, bone=None, frames=None, cuts=1, mode=None):
+    """Insert `cuts` evenly spaced keys in every segment between selected `frames`."""
+    return _run_op(bpy.ops.emp.subdivide, frames, obj, bone, mode, cuts=cuts)
+
+
+def bevel(obj, bone=None, frames=None, width=3.0, segments=2, profile=0.5, mode=None):
+    """Round the keys at `frames` into arcs `width` frames to each side."""
+    return _run_op(bpy.ops.emp.bevel, frames, obj, bone, mode, width=width, segments=segments,
+                   profile=profile)
+
+
+def extrude(obj, bone=None, frame=None, frames_later=6, offset=(0.0, 0.0, 0.0), mode=None):
+    """New key `frames_later` after the end key at `frame` (before it for the first key),
+    continuing the motion, moved by `offset` (world)."""
+    return _run_op(bpy.ops.emp.extrude, [frame], obj, bone, mode, frames=frames_later, offset=offset)
+
+
+def loop_tool(obj, bone=None, frames=None, tool='CIRCLE', influence=1.0, mode=None):
+    """tool: 'CIRCLE', 'FLATTEN' or 'STRAIGHTEN' on the keys at `frames`."""
+    op = {'CIRCLE': bpy.ops.emp.circle, 'FLATTEN': bpy.ops.emp.flatten,
+          'STRAIGHTEN': bpy.ops.emp.straighten}[tool]
+    return _run_op(op, frames, obj, bone, mode, influence=influence)
+
+
+def path_to_curve(obj, bone=None, kind='KEYS', mode=None):
+    """Make a Curve object of the path ('KEYS': Bezier per key, 'FRAMES': poly per frame)."""
+    return _run_op(bpy.ops.emp.export_curve, [], obj, bone, mode, kind=kind)
+
+
+def follow_curve(obj, bone=None, curve=None, frames=None, timing='KEEP', mode=None):
+    """Make the path (between the first and last of `frames`) follow a curve object.
+    timing: 'KEEP', 'EVEN' or 'POINTS'."""
+    return _run_op(bpy.ops.emp.import_curve, frames if frames is not None else [], obj, bone, mode,
+                   curve=curve, timing=timing)
+
+
+def set_value_channel(obj, bone=None, data_path='', index=0):
+    """Which animated value Value mode (4) shows, e.g. '["ik_fk"]' or
+    'pose.bones["Hand"].constraints["IK"].influence'."""
+    st = state.settings(_scene())
+    for e in st.paths:
+        if e.object is not None and e.object.name == (obj if isinstance(obj, str) else obj.name)                 and e.bone_name == (bone or ""):
+            e.value_path, e.value_index = data_path, index
+    update()
+
+
+def jitter(obj, bone=None, mode=None):
+    """Roughness per frame [(frame, value)]; values above ~0.4 look like hitches or noise."""
+    from . import draw as d
+    c = _cache(obj, bone, mode)
+    return [(round(t, 2), round(v, 3)) for t, v in zip(c.times, d.jitter_values(c))
+            if abs(t - round(t)) < 1e-6]
 
 
 def _push(message):

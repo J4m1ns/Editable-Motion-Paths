@@ -151,11 +151,11 @@ def insert_path_keys(cache, tg, frames, exact=None):
         lo = min(p[4][0] + t - p[1] for p in per)
         hi = max(p[4][1] + t - p[1] for p in per)
         ts = _frange(min(lo, t), max(hi, t))
-        before = [cache.point(tg, s, ch.values(s)) for s in ts]
+        before = [cache.measure(tg, s, ch.values(s)) for s in ts]
         for fc, tt, da, db, _span in per:
             insert_channel(fc, tt, exact=bool(exact))
         if exact is None:
-            dev = max((cache.point(tg, s, ch.values(s)) - p).length for s, p in zip(ts, before))
+            dev = max((cache.measure(tg, s, ch.values(s)) - p).length for s, p in zip(ts, before))
             if dev > tol:
                 for fc, tt, da, db, _span in per:
                     if da is not None and db is not None and da[5] == 'BEZIER':
