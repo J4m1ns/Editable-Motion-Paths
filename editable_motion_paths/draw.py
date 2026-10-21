@@ -1,0 +1,472 @@
+"""Viewport drawing of the editable paths.
+
+Lines are drawn in 3D (POST_VIEW); points (frames, keys, handle ends) are drawn as
+2D discs on top (POST_PIXEL) so they are always round, crisp and clickable.
+"""
+
+import math
+
+import blf
+import bpy
+import gpu
+from bpy_extras.view3d_utils import location_3d_to_region_2d
+from gpu_extras.batch import batch_for_shader
+from mathutils import Vector
+
+from . import compat, core, state
+
+_handles = []
+_error_reported = False
+
+COL_KEY = (0.95, 0.95, 0.95, 1.0)
+COL_KEY_SEL = (1.0, 0.55, 0.1, 1.0)
+COL_KEY_LOCKED = (0.6, 0.6, 0.6, 0.85)
+COL_OUTLINE = (0.0, 0.0, 0.0, 0.85)
+COL_FRAME = (0.9, 0.9, 0.9, 0.8)
+COL_CURRENT = (0.3, 1.0, 0.45, 1.0)
+COL_GHOST = (0.65, 0.65, 0.65, 0.35)
+COL_SPOKE = (1.0, 0.6, 0.2, 0.55)
+HANDLE_COLORS = {
+    'FREE': (0.1, 0.1, 0.1, 1.0),
+    'ALIGNED': (0.9, 0.35, 0.75, 1.0),
+    'VECTOR': (0.35, 0.85, 0.35, 1.0),
+    'AUTO': (0.95, 0.85, 0.2, 1.0),
+    'AUTO_CLAMPED': (0.95, 0.45, 0.4, 1.0),
+}
+COL_HANDLE_SEL = (1.0, 0.8, 0.5, 1.0)
+
+
+def _speed_color(x):
+    """0 = slow (blue), 0.5 = green/yellow, 1 = fast (red)."""
+    stops = ((0.0, (0.2, 0.45, 1.0)), (0.35, (0.2, 0.9, 0.9)), (0.6, (0.4, 1.0, 0.3)),
+             (0.8, (1.0, 0.85, 0.2)), (1.0, (1.0, 0.25, 0.2)))
+    x = max(0.0, min(1.0, x))
+    for (a, ca), (b, cb) in zip(stops, stops[1:]):
+        if x <= b:
+            f = (x - a) / (b - a)
+            return tuple(ca[i] + (cb[i] - ca[i]) * f for i in range(3))
+    return stops[-1][1]
+
+
+def path_window(scene, st, cache):
+    """(lo, hi) frame window to display."""
+    lo, hi = cache.fs, cache.fe
+    if st.use_window:
+        cur = scene.frame_current
+        lo = max(lo, cur - st.window_before)
+        hi = min(hi, cur + st.window_after)
+    return lo, hi
+
+
+def handles_shown(st, cache, editable, k):
+    if not editable:
+        return False
+    return st.show_all_handles or k.any_sel
+
+
+def _in(t, lo, hi):
+    return lo - 1e-4 <= t <= hi + 1e-4
+
+
+# ----------------------------------------------------------------------------
+# Primitives
+# ----------------------------------------------------------------------------
+
+def _lines(coords, colors, width, kind='LINES'):
+    if len(coords) < 2:
+        return
+    region = bpy.context.region
+    sh = gpu.shader.from_builtin('POLYLINE_SMOOTH_COLOR')
+    sh.uniform_float("viewportSize", (region.width, region.height))
+    sh.uniform_float("lineWidth", width)
+    batch_for_shader(sh, kind, {"pos": coords, "color": colors}).draw(sh)
+
+
+_CIRCLE = [(math.cos(a * 2 * math.pi / 16), math.sin(a * 2 * math.pi / 16)) for a in range(16)]
+
+
+class Discs:
+    """Collects 2D discs per color and draws them in one batch per color."""
+
+    def __init__(self):
+        self.groups = {}
+
+    def add(self, p, radius, color):
+        if p is None:
+            return
+        tris = self.groups.setdefault((radius, tuple(color)), [])
+        x, y = p
+        for i in range(16):
+            a = _CIRCLE[i]
+            b = _CIRCLE[(i + 1) % 16]
+            tris += [(x, y), (x + a[0] * radius, y + a[1] * radius), (x + b[0] * radius, y + b[1] * radius)]
+
+    def add_outlined(self, p, radius, color, outline=1.5):
+        self.add(p, radius + outline, COL_OUTLINE)
+        self.add(p, radius, color)
+
+    def draw(self):
+        if not self.groups:
+            return
+        sh = gpu.shader.from_builtin('UNIFORM_COLOR')
+        # bigger (outline) discs first
+        for (radius, color), tris in sorted(self.groups.items(), key=lambda kv: -kv[0][0]):
+            sh.uniform_float("color", color)
+            batch_for_shader(sh, 'TRIS', {"pos": tris}).draw(sh)
+
+
+# ----------------------------------------------------------------------------
+# 3D pass
+# ----------------------------------------------------------------------------
+
+def draw_view():
+    global _error_reported
+    try:
+        _draw_view()
+    except Exception as ex:
+        if not _error_reported:
+            _error_reported = True
+            import traceback
+            traceback.print_exc()
+            print("Editable Motion Paths: drawing failed:", ex)
+
+
+def _path_colors(st, cache, editable, cur, lo, hi):
+    pts, cols = [], []
+    speeds = cache.speeds
+    vmax = 0.0
+    if st.color_mode == 'SPEED' and speeds:
+        s = sorted(speeds)
+        vmax = s[min(len(s) - 1, int(len(s) * 0.95))] or max(s) or 1.0
+    base = tuple(st.color)
+    alpha = 1.0 if editable else 0.6
+    for i, (t, p) in enumerate(zip(cache.times, cache.points)):
+        if not _in(t, lo, hi):
+            continue
+        if st.color_mode == 'SPEED':
+            sp = speeds[min(i, len(speeds) - 1)] if speeds else 0.0
+            c = _speed_color(sp / vmax if vmax > 0 else 0.0)
+        elif st.color_mode == 'TIME':
+            c = base if t >= cur else tuple(x * 0.45 for x in base)
+        else:
+            c = base
+        if not editable:
+            c = tuple(0.35 + 0.4 * x for x in c)
+        pts.append(p)
+        cols.append((c[0], c[1], c[2], alpha))
+    return pts, cols
+
+
+def _draw_view():
+    from . import pick
+    ctx = bpy.context
+    scene = ctx.scene
+    st = state.settings(scene)
+    if st is None or not st.paths or state.overlays_hidden():
+        return
+    caches = state.visible_caches(scene)
+    if not caches:
+        return
+    region, rv3d = ctx.region, ctx.region_data
+    us = compat.ui_scale()
+    gpu.state.blend_set('ALPHA')
+    gpu.state.depth_test_set('NONE' if st.on_top else 'LESS_EQUAL')
+    gpu.state.depth_mask_set(False)
+    cur = scene.frame_current + scene.frame_subframe
+
+    for cache in caches:
+        if not cache.refresh():
+            continue
+        obj = bpy.data.objects.get(cache.obj_name)
+        if obj is None or not obj.visible_get():
+            continue
+        editable = cache.owner_selected() and not cache.locked
+        lo, hi = path_window(scene, st, cache)
+
+        ghost = state.ghosts.get(cache.key)
+        if ghost and st.show_ghost:
+            _lines(ghost, [COL_GHOST] * len(ghost), st.line_width * us, 'LINE_STRIP')
+
+        pts, cols = _path_colors(st, cache, editable, cur, lo, hi)
+        _lines(pts, cols, st.line_width * us * (1.0 if editable else 0.75), 'LINE_STRIP')
+
+        if not editable:
+            continue
+        keys = [k for k in cache.keys if _in(k.t, lo, hi)]
+
+        if cache.ptype == core.ROTATION and st.show_spokes:
+            tg = cache.target()
+            if tg is not None:
+                sp = []
+                for k in keys:
+                    if k.sel:
+                        M, _u = cache.rot_frame(tg, k.t)
+                        sp += [M.translation.copy(), k.co]
+                _lines(sp, [COL_SPOKE] * len(sp), 1.2 * us)
+
+        hl_coords, hl_cols = [], []
+        for k in keys:
+            if not handles_shown(st, cache, editable, k):
+                continue
+            m = pick.handle_min_world(region, rv3d, k.co)
+            for side, htype in (('L', k.type_l), ('R', k.type_r)):
+                h = pick.display_handle(k, side, m)
+                if h is None:
+                    continue
+                col = HANDLE_COLORS.get(htype, HANDLE_COLORS['FREE'])
+                hl_coords += [k.co, h]
+                hl_cols += [col, col]
+        _lines(hl_coords, hl_cols, 1.6 * us)
+
+    if state.slide_extension is not None:
+        dashed = []
+        for line in state.slide_extension:
+            for i in range(0, len(line) - 1, 2):
+                dashed += [line[i], line[i + 1]]
+        _lines(dashed, [(0.4, 0.85, 1.0, 0.6)] * len(dashed), 1.5 * us)
+
+    if state.constraint is not None:
+        p, ax, col = state.constraint
+        ln = 1000.0
+        _lines([p - ax * ln, p + ax * ln], [col, col], 1.5 * us)
+
+    gpu.state.depth_test_set('NONE')
+    gpu.state.blend_set('NONE')
+
+
+# ----------------------------------------------------------------------------
+# 2D pass
+# ----------------------------------------------------------------------------
+
+def draw_pixel():
+    global _error_reported
+    try:
+        _draw_pixel()
+    except Exception as ex:
+        if not _error_reported:
+            _error_reported = True
+            import traceback
+            traceback.print_exc()
+            print("Editable Motion Paths: overlay drawing failed:", ex)
+
+
+def _draw_points(ctx, st, us):
+    from . import pick
+    scene = ctx.scene
+    region, rv3d = ctx.region, ctx.region_data
+    discs = Discs()
+    labels = []
+    cur = scene.frame_current + scene.frame_subframe
+    ks = st.key_size * 0.5 * us
+
+    def proj(p):
+        return location_3d_to_region_2d(region, rv3d, p)
+
+    for cache in state.visible_caches(scene):
+        if not cache.valid:
+            continue
+        obj = bpy.data.objects.get(cache.obj_name)
+        if obj is None or not obj.visible_get():
+            continue
+        editable = cache.owner_selected() and not cache.locked
+        lo, hi = path_window(scene, st, cache)
+
+        if st.show_frames:
+            col = COL_FRAME if editable else (0.7, 0.7, 0.7, 0.5)
+            r = 1.8 * us
+            for t, p in zip(cache.times, cache.points):
+                if _in(t, lo, hi) and abs(t - round(t)) < 1e-4:
+                    discs.add(proj(p), r, col)
+
+        if cache.fs <= cur <= cache.fe and _in(cur, lo, hi):
+            tg = cache.target()
+            if tg is not None:
+                discs.add_outlined(proj(cache.point(tg, cur)), ks * 0.75, COL_CURRENT)
+
+        for k in cache.keys:
+            if not _in(k.t, lo, hi):
+                continue
+            s = proj(k.co)
+            if editable:
+                if handles_shown(st, cache, editable, k):
+                    m = pick.handle_min_world(region, rv3d, k.co)
+                    for side, htype, hsel in (('L', k.type_l, k.sel_l), ('R', k.type_r, k.sel_r)):
+                        h = pick.display_handle(k, side, m)
+                        if h is None:
+                            continue
+                        col = COL_HANDLE_SEL if hsel else HANDLE_COLORS.get(htype, HANDLE_COLORS['FREE'])
+                        discs.add_outlined(proj(h), ks * 0.7, col)
+                col = COL_KEY_SEL if k.sel else COL_KEY
+                w = state.prop_weights.get((cache.key, round(k.t, 3)))
+                if w and not k.sel:
+                    # proportional editing influence: white -> orange
+                    col = tuple(a + (b - a) * min(1.0, w) * 0.85 for a, b in zip(COL_KEY, COL_KEY_SEL))
+                if k.partial:
+                    # keyed on some channels only: smaller, with a dark center
+                    discs.add_outlined(s, ks * 0.8, col)
+                    discs.add(s, ks * 0.35, COL_OUTLINE)
+                else:
+                    discs.add_outlined(s, ks, col)
+            else:
+                discs.add_outlined(s, ks * 0.7, COL_KEY_LOCKED, 1.0)
+            if (st.show_frame_numbers or state.force_numbers) and s is not None:
+                txt = "%d" % round(k.t) if abs(k.t - round(k.t)) < 1e-3 else "%.2f" % k.t
+                labels.append((s, txt))
+
+    gpu.state.blend_set('ALPHA')
+    discs.draw()
+    if labels:
+        font = 0
+        blf.size(font, 11 * us)
+        blf.color(font, 1.0, 1.0, 1.0, 0.9)
+        blf.enable(font, blf.SHADOW)
+        blf.shadow(font, 3, 0.0, 0.0, 0.0, 0.9)
+        for s, txt in labels:
+            blf.position(font, s.x + ks + 3 * us, s.y + ks * 0.5, 0)
+            blf.draw(font, txt)
+        blf.disable(font, blf.SHADOW)
+
+
+def _draw_prop_circle(ctx, us):
+    if state.prop_circle is None:
+        return
+    region, rv3d = ctx.region, ctx.region_data
+    center, radius = state.prop_circle
+    c = location_3d_to_region_2d(region, rv3d, center)
+    right = rv3d.view_rotation @ Vector((1.0, 0.0, 0.0))
+    e = location_3d_to_region_2d(region, rv3d, center + right * radius)
+    if c is None or e is None:
+        return
+    r = (e - c).length
+    pts = [(c.x + math.cos(a * 2 * math.pi / 64) * r, c.y + math.sin(a * 2 * math.pi / 64) * r)
+           for a in range(64)]
+    sh = gpu.shader.from_builtin('UNIFORM_COLOR')
+    gpu.state.blend_set('ALPHA')
+    sh.uniform_float("color", (1.0, 1.0, 1.0, 0.7))
+    batch_for_shader(sh, 'LINE_LOOP', {"pos": pts}).draw(sh)
+
+
+def _draw_slide_marker(ctx, us):
+    if state.slide_marker is None:
+        return
+    p, label = state.slide_marker
+    s = location_3d_to_region_2d(ctx.region, ctx.region_data, p)
+    if s is None:
+        return
+    gpu.state.blend_set('ALPHA')
+    discs = Discs()
+    discs.add(s, 9 * us, (0.3, 0.85, 1.0, 1.0))
+    discs.add(s, 6 * us, COL_OUTLINE)
+    discs.add(s, 3 * us, (0.3, 0.85, 1.0, 1.0))
+    discs.draw()
+    font = 0
+    blf.size(font, 13 * us)
+    blf.enable(font, blf.SHADOW)
+    blf.shadow(font, 3, 0.0, 0.0, 0.0, 1.0)
+    blf.color(font, 0.4, 0.9, 1.0, 1.0)
+    blf.position(font, s.x + 12 * us, s.y - 18 * us, 0)
+    blf.draw(font, label)
+    blf.disable(font, blf.SHADOW)
+
+
+def _tool_active(ctx):
+    try:
+        tool = ctx.workspace.tools.from_space_view3d_mode(ctx.mode, create=False)
+    except Exception:
+        return False
+    return tool is not None and tool.idname in {"emp.edit_path_pose", "emp.edit_path_object"}
+
+
+def _draw_mode_indicator(ctx, st, us):
+    """Bottom-center hint: which trajectory is being edited, how to switch."""
+    if not _tool_active(ctx):
+        return
+    region = ctx.region
+    font = 0
+    blf.size(font, 12 * us)
+    loc = st.edit_mode == 'LOCATION'
+    parts = [("1 Location", loc), ("   2 Rotation", not loc)]
+    if st.use_proportional:
+        name = st.bl_rna.properties['proportional_falloff'].enum_items[st.proportional_falloff].name
+        parts.append(("      O Proportional: %s %.2f" % (name, st.proportional_size), True))
+    hint = ""
+    for cache in state.visible_caches(ctx.scene):
+        if cache.locked and cache.owner_selected():
+            hint = cache.lock_reason
+            break
+    widths = [blf.dimensions(font, t)[0] for t, _a in parts]
+    x = (region.width - sum(widths)) * 0.5
+    y = 24 * us
+    blf.enable(font, blf.SHADOW)
+    blf.shadow(font, 3, 0.0, 0.0, 0.0, 0.9)
+    for (text, active), w in zip(parts, widths):
+        if active:
+            blf.color(font, 1.0, 0.65, 0.2, 1.0)
+        else:
+            blf.color(font, 0.75, 0.75, 0.75, 0.8)
+        blf.position(font, x, y, 0)
+        blf.draw(font, text)
+        x += w
+    if state.flash is not None:
+        import time
+        if time.time() < state.flash[1]:
+            hint = state.flash[0]
+        else:
+            state.flash = None
+    if hint:
+        w = blf.dimensions(font, hint)[0]
+        blf.color(font, 1.0, 0.85, 0.4, 1.0)
+        blf.position(font, (region.width - w) * 0.5, y + 20 * us, 0)
+        blf.draw(font, hint)
+    blf.disable(font, blf.SHADOW)
+
+
+def _draw_pixel():
+    ctx = bpy.context
+    st = state.settings(ctx.scene)
+    us = compat.ui_scale()
+    font = 0
+
+    if st is not None and st.paths and not state.overlays_hidden():
+        _draw_points(ctx, st, us)
+        _draw_prop_circle(ctx, us)
+        _draw_slide_marker(ctx, us)
+        _draw_mode_indicator(ctx, st, us)
+
+    if state.box is not None and ctx.area is not None and ctx.area.as_pointer() == state.box_area:
+        x0, y0, x1, y1, mode = state.box
+        sh = gpu.shader.from_builtin('UNIFORM_COLOR')
+        gpu.state.blend_set('ALPHA')
+        coords = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        sh.uniform_float("color", (1.0, 1.0, 1.0, 0.06))
+        batch_for_shader(sh, 'TRI_FAN', {"pos": coords}).draw(sh)
+        sh.uniform_float("color", (1.0, 1.0, 1.0, 0.8) if mode != 'SUB' else (1.0, 0.4, 0.4, 0.8))
+        batch_for_shader(sh, 'LINE_LOOP', {"pos": coords}).draw(sh)
+
+    if state.hud is not None and ctx.area is not None and ctx.area.as_pointer() == state.hud_area:
+        text, (x, y) = state.hud
+        blf.size(font, 13 * us)
+        w, h = blf.dimensions(font, text)
+        sh = gpu.shader.from_builtin('UNIFORM_COLOR')
+        gpu.state.blend_set('ALPHA')
+        pad = 5 * us
+        x += 18 * us
+        y += 14 * us
+        coords = [(x - pad, y - pad), (x + w + pad, y - pad), (x + w + pad, y + h + pad), (x - pad, y + h + pad)]
+        sh.uniform_float("color", (0.0, 0.0, 0.0, 0.6))
+        batch_for_shader(sh, 'TRI_FAN', {"pos": coords}).draw(sh)
+        blf.color(font, 1.0, 1.0, 1.0, 1.0)
+        blf.position(font, x, y, 0)
+        blf.draw(font, text)
+    gpu.state.blend_set('NONE')
+
+
+def register():
+    _handles.append(bpy.types.SpaceView3D.draw_handler_add(draw_view, (), 'WINDOW', 'POST_VIEW'))
+    _handles.append(bpy.types.SpaceView3D.draw_handler_add(draw_pixel, (), 'WINDOW', 'POST_PIXEL'))
+
+
+def unregister():
+    for h in _handles:
+        bpy.types.SpaceView3D.draw_handler_remove(h, 'WINDOW')
+    _handles.clear()

@@ -1,0 +1,14 @@
+schema_version = "1.0.0"
+
+id = "editable_motion_paths"
+version = "1.6.2"
+name = "Editable Motion Paths"
+tagline = "Edit bone and object motion paths directly in the viewport"
+maintainer = "Editable Motion Paths"
+type = "add-on"
+
+tags = ["Animation", "Rigging"]
+
+blender_version_min = "4.4.0"
+
+license = ["SPDX:GPL-3.0-or-later"]

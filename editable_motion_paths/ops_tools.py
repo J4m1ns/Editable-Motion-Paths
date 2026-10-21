@@ -1,0 +1,1075 @@
+"""Path management and key operations: Smooth, Exaggerate, handles, delete, insert."""
+
+import math
+
+import bpy
+from bpy.props import BoolProperty, EnumProperty, FloatProperty
+from mathutils import Quaternion, Vector
+
+from . import compat, core, pick, state
+from .ops_transform import NumInput
+
+
+# ----------------------------------------------------------------------------
+# Path management
+# ----------------------------------------------------------------------------
+
+def _varies(fc):
+    if fc is None or len(fc.keyframe_points) < 2:
+        return False
+    ys = [kp.co[1] for kp in fc.keyframe_points]
+    return max(ys) - min(ys) > 1e-5
+
+
+def auto_type(tg):
+    if tg.is_bone and tg.owner.bone.use_connect:
+        return core.ROTATION
+    if all(tg.loc_locks()):
+        return core.ROTATION
+    if any(_varies(fc) for fc in tg.loc.fcurves):
+        return core.LOCATION
+    if any(_varies(fc) for fc in tg.rot.fcurves):
+        return core.ROTATION
+    return core.LOCATION
+
+
+def _targets(context):
+    out = []
+    if context.mode == 'POSE':
+        for pb in context.selected_pose_bones or []:
+            out.append((pb.id_data, pb.name, pb))
+    else:
+        for obj in context.selected_objects:
+            out.append((obj, "", obj))
+    return out
+
+
+class EMP_OT_path_add(bpy.types.Operator):
+    """Show an editable motion path for the selected bones (Pose Mode) or objects. """         """Location or Rotation is chosen with the edit mode (1 / 2)"""
+    bl_idname = "emp.path_add"
+    bl_label = "Add Motion Path"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode in {'POSE', 'OBJECT'}
+
+    def execute(self, context):
+        st = state.settings(context.scene)
+        existing = {(e.object.name if e.object else None, e.bone_name) for e in st.paths}
+        added = []
+        for obj, bone_name, owner in _targets(context):
+            if (obj.name, bone_name) in existing:
+                continue
+            e = st.paths.add()
+            e.object = obj
+            e.bone_name = bone_name
+            st.active_index = len(st.paths) - 1
+            added.append(core.Target(obj, owner, bool(bone_name)))
+        if not added:
+            self.report({'INFO'}, "Nothing new to add: select bones (Pose Mode) or objects")
+            return {'CANCELLED'}
+        # only rotation is animated (FK bones...): show what can actually be edited
+        if st.edit_mode == 'LOCATION' and all(auto_type(tg) == core.ROTATION for tg in added):
+            st.edit_mode = 'ROTATION'
+            self.report({'INFO'}, "Switched to Rotation paths (1 / 2 switches Location / Rotation)")
+        elif st.edit_mode == 'ROTATION' and all(not tg.rot.any() and tg.loc.any() for tg in added):
+            st.edit_mode = 'LOCATION'
+            self.report({'INFO'}, "Switched to Location paths (1 / 2 switches Location / Rotation)")
+        state.sync_caches(context.scene)
+        state.bake_all(context.scene)
+        return {'FINISHED'}
+
+
+class EMP_OT_path_remove(bpy.types.Operator):
+    """Remove motion paths"""
+    bl_idname = "emp.path_remove"
+    bl_label = "Remove Motion Paths"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    scope: EnumProperty(items=[
+        ('ACTIVE', "Active", "Remove the active path in the list"),
+        ('SELECTED', "Selected", "Remove paths of the selected bones / objects"),
+        ('ALL', "All", "Remove all paths")], default='ACTIVE')
+
+    def execute(self, context):
+        st = state.settings(context.scene)
+        if self.scope == 'ALL':
+            st.paths.clear()
+        elif self.scope == 'ACTIVE':
+            if 0 <= st.active_index < len(st.paths):
+                st.paths.remove(st.active_index)
+                st.active_index = min(st.active_index, len(st.paths) - 1)
+        else:
+            sel = {(o.name, b) for o, b, _ in _targets(context)}
+            for i in reversed(range(len(st.paths))):
+                e = st.paths[i]
+                if e.object is None or (e.object.name, e.bone_name) in sel:
+                    st.paths.remove(i)
+            st.active_index = min(st.active_index, len(st.paths) - 1)
+        state.sync_caches(context.scene)
+        state.tag_redraw()
+        return {'FINISHED'}
+
+
+class EMP_OT_path_update(bpy.types.Operator):
+    """Recalculate all motion paths"""
+    bl_idname = "emp.path_update"
+    bl_label = "Update Motion Paths"
+
+    def execute(self, context):
+        state.sync_caches(context.scene)
+        for c in state.caches.values():
+            c.B = []
+        state.bake_all(context.scene)
+        return {'FINISHED'}
+
+
+class EMP_OT_edit_tool(bpy.types.Operator):
+    """Activate the Edit Motion Path tool (click keys to see handles, drag them, G/R/S...)"""
+    bl_idname = "emp.edit_tool"
+    bl_label = "Edit Paths"
+
+    def execute(self, context):
+        tool = "emp.edit_path_pose" if context.mode == 'POSE' else "emp.edit_path_object"
+        if context.mode not in {'POSE', 'OBJECT'}:
+            self.report({'WARNING'}, "Switch to Pose or Object Mode")
+            return {'CANCELLED'}
+        area = next((a for a in context.screen.areas if a.type == 'VIEW_3D'), None)
+        if context.area is not None and context.area.type == 'VIEW_3D':
+            area = context.area
+        if area is None:
+            return {'CANCELLED'}
+        with context.temp_override(area=area, region=next(r for r in area.regions if r.type == 'WINDOW')):
+            bpy.ops.wm.tool_set_by_id(name=tool)
+        return {'FINISHED'}
+
+
+# ----------------------------------------------------------------------------
+# Key operations
+# ----------------------------------------------------------------------------
+
+def _sel_keys(cache):
+    return [k for k in cache.keys if k.sel]
+
+
+class EMP_OT_delete_keys(bpy.types.Operator):
+    """Delete the selected path keys"""
+    bl_idname = "emp.delete_keys"
+    bl_label = "Delete Path Keys"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def invoke(self, context, event):
+        caches = state.editable_caches(context.scene)
+        if not any(_sel_keys(c) for c in caches):
+            return {'PASS_THROUGH'}
+        return self.execute(context)
+
+    def execute(self, context):
+        n = 0
+        for cache in state.editable_caches(context.scene):
+            sel = _sel_keys(cache)
+            if not sel:
+                continue
+            tg = cache.target()
+            ch = tg.channels(cache.ptype)
+            for c, fc in enumerate(ch.fcurves):
+                if fc is None:
+                    continue
+                idxs = sorted((k.idx[c] for k in sel if k.idx[c] >= 0), reverse=True)
+                kps = fc.keyframe_points
+                for i in idxs:
+                    kps.remove(kps[i], fast=True)
+                fc.update()
+                if len(kps) == 0:
+                    compat.remove_fcurve(tg.obj, ch.path, c)
+            n += len(sel)
+            cache.dirty = True
+        if not n:
+            return {'CANCELLED'}
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+
+class EMP_OT_insert_key(bpy.types.Operator):
+    """Insert a key on the editable paths at the current frame (keeps the motion)"""
+    bl_idname = "emp.insert_key"
+    bl_label = "Insert Path Key"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        from .ops_select import insert_key
+        t = float(context.scene.frame_current)
+        caches = state.editable_caches(context.scene)
+        if not caches:
+            self.report({'WARNING'}, "Select a bone/object that has a path")
+            return {'CANCELLED'}
+        pick.deselect_all(caches)
+        for cache in caches:
+            k = insert_key(cache, t)
+            if k is not None:
+                pick.select_part(cache, k, 'KEY', True)
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+
+class EMP_OT_handle_type(bpy.types.Operator):
+    """Set the handle type of the selected path keys"""
+    bl_idname = "emp.handle_type"
+    bl_label = "Set Path Handle Type"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    type: EnumProperty(name="Type", items=[
+        ('AUTO_CLAMPED', "Auto Clamped", "Smooth, without overshoot", 'HANDLE_AUTOCLAMPED', 0),
+        ('AUTO', "Automatic", "Smooth", 'HANDLE_AUTO', 1),
+        ('ALIGNED', "Aligned", "Handles stay in line (smooth motion)", 'HANDLE_ALIGNED', 2),
+        ('FREE', "Free (Break)", "Handles move independently (sharp corner possible)", 'HANDLE_FREE', 3),
+        ('VECTOR', "Vector", "Handles point to the neighbors (sharp corner)", 'HANDLE_VECTOR', 4),
+    ])
+
+    def execute(self, context):
+        touched = set()
+        for cache in state.editable_caches(context.scene):
+            tg = cache.target()
+            ch = tg.channels(cache.ptype)
+            for k in cache.keys:
+                left = self.type if (k.sel or k.sel_l) else None
+                right = self.type if (k.sel or k.sel_r) else None
+                if left or right:
+                    core.set_handle_types(ch, k, left, right, touched)
+            cache.dirty = True
+        if not touched:
+            return {'CANCELLED'}
+        core.update_fcurves(touched)
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+
+class EMP_OT_interpolation(bpy.types.Operator):
+    """Set the interpolation of the selected path keys"""
+    bl_idname = "emp.interpolation"
+    bl_label = "Set Path Interpolation"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    type: EnumProperty(name="Interpolation", items=[
+        ('BEZIER', "Bezier", "Smooth curves", 'IPO_BEZIER', 0),
+        ('LINEAR', "Linear", "Straight lines between keys", 'IPO_LINEAR', 1),
+        ('CONSTANT', "Constant", "Stepped (blocking)", 'IPO_CONSTANT', 2),
+    ])
+
+    def execute(self, context):
+        touched = set()
+        for cache in state.editable_caches(context.scene):
+            tg = cache.target()
+            ch = tg.channels(cache.ptype)
+            for k in _sel_keys(cache):
+                for c, fc in enumerate(ch.fcurves):
+                    if fc is not None and k.idx[c] >= 0:
+                        fc.keyframe_points[k.idx[c]].interpolation = self.type
+                        touched.add(fc)
+            cache.dirty = True
+        if not touched:
+            return {'CANCELLED'}
+        core.update_fcurves(touched)
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+
+# ----------------------------------------------------------------------------
+# Smooth / Exaggerate
+# ----------------------------------------------------------------------------
+
+class _Job:
+    """Keys of one path converted to vectors the algorithms work on.
+
+    Location paths work on world positions, rotation paths on Euler values or on
+    the quaternion log map relative to the path's first key.
+    """
+
+    def __init__(self, cache, tg):
+        self.cache = cache
+        self.keys = list(cache.keys)
+        self.mask = [k.sel for k in self.keys]
+        if not any(self.mask):
+            self.mask = [True] * len(self.keys)
+        self.times = [k.t for k in self.keys]
+        self.rot = cache.ptype == core.ROTATION
+        self.quat = self.rot and tg.rot.count == 4
+        if self.quat and self.keys:
+            self.q_ref = core.vals_to_quat(self.keys[0].vals, tg.rot_mode)
+        self.vecs = [self.to_vec(tg, k.vals, k.co) for k in self.keys]
+
+    def to_vec(self, tg, vals, world=None):
+        if not self.rot:
+            return world.copy() if world is not None else self.cache.point(tg, 0.0, vals)
+        if not self.quat:
+            return Vector(vals[:3])
+        q = core.vals_to_quat(vals, tg.rot_mode)
+        if q.dot(self.q_ref) < 0.0:
+            q = -q
+        return (self.q_ref.inverted() @ q).to_exponential_map()
+
+    def to_vals(self, tg, k, vec, ref_vals):
+        if not self.rot:
+            return self.cache.solve(tg, k.t, vec, ref_vals)
+        if not self.quat:
+            vals = [vec[0], vec[1], vec[2]]
+            locks = tg.rot_locks()
+            return [ref_vals[i] if locks[i] else vals[i] for i in range(3)]
+        q = self.q_ref @ Quaternion(vec)
+        return self.cache.rot_vals(tg, q, ref_vals)
+
+
+def _lin(vecs, times, i, a, b):
+    t0, t1 = times[a], times[b]
+    f = 0.5 if abs(t1 - t0) < 1e-9 else (times[i] - t0) / (t1 - t0)
+    return vecs[a].lerp(vecs[b], f)
+
+
+def smooth_vectors(vecs, times, mask, amount):
+    n = len(vecs)
+    if n < 3:
+        return list(vecs)
+
+    def step(x, lam=0.5):
+        y = list(x)
+        for i in range(1, n - 1):
+            if mask[i]:
+                y[i] = x[i] + (_lin(x, times, i, i - 1, i + 1) - x[i]) * lam
+        return y
+
+    if amount < 0.0:
+        out = list(vecs)
+        for i in range(1, n - 1):
+            if mask[i]:
+                out[i] = vecs[i] + (_lin(vecs, times, i, i - 1, i + 1) - vecs[i]) * amount
+        return out
+    amount = min(amount, 50.0)
+    whole = int(math.floor(amount))
+    frac = amount - whole
+    x = list(vecs)
+    for _ in range(whole):
+        x = step(x)
+    if frac > 1e-6:
+        y = step(x)
+        x = [a + (b - a) * frac for a, b in zip(x, y)]
+    return x
+
+
+def _lagrange(ss, xs, t):
+    out = xs[0] * 0.0
+    for j, (sj, xj) in enumerate(zip(ss, xs)):
+        w = 1.0
+        for m, sm in enumerate(ss):
+            if m != j:
+                w *= (t - sm) / (sj - sm)
+        out = out + xj * w
+    return out
+
+
+def _shape_prediction(x, i):
+    """Where key i would be on a smooth curve through its neighbors (2 on each side when
+    available), using chord length along the keys as the curve parameter."""
+    n = len(x)
+    left = [j for j in (i - 2, i - 1) if j >= 0]
+    right = [j for j in (i + 1, i + 2) if j < n]
+    if not left or not right:
+        return None
+    s = {}
+    acc = 0.0
+    lo, hi = left[0], right[-1]
+    for j in range(lo, hi + 1):
+        if j > lo:
+            acc += max((x[j] - x[j - 1]).length, 1e-9)
+        s[j] = acc
+    idx = left + right
+    ss = [s[j] for j in idx]
+    close = any(abs(ss[a] - ss[b]) < 1e-9 for a in range(len(ss)) for b in range(a + 1, len(ss)))
+    if close or len(idx) == 2:
+        a, b = i - 1, i + 1
+        f = 0.5 if s[b] - s[a] < 1e-9 else (s[i] - s[a]) / (s[b] - s[a])
+        return x[a].lerp(x[b], f)
+    return _lagrange(ss, [x[j] for j in idx], s[i])
+
+
+def _shape_displacements(x, mask, keep_timing=True):
+    d = [None] * len(x)
+    for i in range(1, len(x) - 1):
+        if not mask[i]:
+            continue
+        p = _shape_prediction(x, i)
+        if p is None:
+            continue
+        v = p - x[i]
+        if keep_timing:
+            # only move across the path, never along it: spacing / timing stay the same
+            tng = x[i + 1] - x[i - 1]
+            if tng.length > 1e-12:
+                tng = tng.normalized()
+                v = v - tng * v.dot(tng)
+        d[i] = v
+    return d
+
+
+def shape_smooth_vectors(vecs, mask, amount, keep_timing=True):
+    """Smooth the *shape*: bumps and corners go away, arcs keep their size (a cubic
+    prediction from the neighbors is exact on smooth curves, so they barely move)."""
+    n = len(vecs)
+    if n < 3:
+        return list(vecs)
+
+    def step(x, lam=0.5):
+        d = _shape_displacements(x, mask, keep_timing)
+        return [xi + di * lam if di is not None else xi for xi, di in zip(x, d)]
+
+    if amount < 0.0:
+        d = _shape_displacements(vecs, mask, keep_timing)
+        return [xi + di * amount if di is not None else xi for xi, di in zip(vecs, d)]
+    amount = min(amount, 50.0)
+    whole = int(math.floor(amount))
+    frac = amount - whole
+    x = list(vecs)
+    for _ in range(whole * 2):
+        x = step(x)
+    if frac > 1e-6:
+        y = step(step(x))
+        x = [a + (b - a) * frac for a, b in zip(x, y)]
+    return x
+
+
+def exaggerate_vectors(vecs, times, mask, factor, pivot='AUTO', extra=None):
+    """Scale the deviation of selected runs from a baseline by (1 + factor).
+
+    `extra` is an optional list of (index, time, vector) samples (handles) that
+    get the same mapping as the run their index belongs to.  Returns the new
+    vectors and the mapped extras.
+    """
+    n = len(vecs)
+    out = list(vecs)
+    ex_out = {}
+    i = 0
+    runs = []
+    while i < n:
+        if mask[i]:
+            j = i
+            while j + 1 < n and mask[j + 1]:
+                j += 1
+            runs.append((i, j))
+            i = j + 1
+        else:
+            i += 1
+    s = 1.0 + factor
+    for i0, i1 in runs:
+        a = i0 - 1 if i0 > 0 else None
+        b = i1 + 1 if i1 < n - 1 else None
+        mode = pivot
+        if mode == 'AUTO':
+            mode = 'LINE' if (a is not None or b is not None) else 'CENTER'
+        if mode == 'LINE':
+            a = i0 if a is None else a
+            b = i1 if b is None else b
+            if a == b:
+                mode = 'CENTER'
+        if mode == 'CENTER':
+            c = Vector((0.0, 0.0, 0.0))
+            for k in range(i0, i1 + 1):
+                c += vecs[k]
+            c /= (i1 - i0 + 1)
+
+            def base(t, c=c):
+                return c
+        else:
+            ta, tb, va, vb = times[a], times[b], vecs[a], vecs[b]
+
+            def base(t, ta=ta, tb=tb, va=va, vb=vb):
+                f = 0.5 if abs(tb - ta) < 1e-9 else (t - ta) / (tb - ta)
+                return va.lerp(vb, f)
+        for k in range(i0, i1 + 1):
+            bk = base(times[k])
+            out[k] = bk + (vecs[k] - bk) * s
+        if extra:
+            for idx, t, v in extra:
+                if i0 <= idx <= i1:
+                    bt = base(t)
+                    ex_out[(idx, t)] = bt + (v - bt) * s
+    return out, ex_out
+
+
+class _AdjustOp:
+    """Shared modal "drag left/right to set the amount" behaviour."""
+    bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
+    label = ""
+    pixels_per_unit = 250.0
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode in {'POSE', 'OBJECT'}
+
+    def _jobs(self, context, snapshots=None, ensure=True):
+        jobs = []
+        for cache in state.editable_caches(context.scene):
+            tg = cache.target()
+            if tg is None or len(cache.keys) < 2:
+                continue
+            if snapshots is not None:
+                snapshots.append(core.FCurveSnapshot(tg, tg.channels(cache.ptype)))
+            frames = [k.t for k in cache.keys if k.sel] or [k.t for k in cache.keys]
+            if ensure and core.ensure_keys(tg, cache.ptype, frames, None, state.settings(context.scene).pin_partial):
+                cache.refresh(force=True)
+                tg = cache.target()
+            jobs.append(_Job(cache, tg))
+        return jobs
+
+    def execute(self, context):
+        jobs = self._jobs(context)
+        if not jobs:
+            self.report({'WARNING'}, "No editable path: select a bone/object that has a path")
+            return {'CANCELLED'}
+        self._apply(context, jobs)
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        self.snapshots = []
+        self.jobs = self._jobs(context, self.snapshots, ensure=False)
+        self.ensured = False
+        if not self.jobs:
+            self.report({'WARNING'}, "No editable path: select a bone/object that has a path")
+            return {'CANCELLED'}
+        self.x0 = event.mouse_x
+        self.x_virtual = float(event.mouse_x)
+        self.x_last = event.mouse_x
+        self.numinput = NumInput(1)
+        self.factor = 0.0
+        self.area = context.area
+        for job in self.jobs:
+            state.ghosts[job.cache.key] = list(job.cache.points)
+        state.modal_running += 1
+        state.hud_area = self._view_area(context)
+        context.window_manager.modal_handler_add(self)
+        self._update(context, event)
+        return {'RUNNING_MODAL'}
+
+    def _label(self):
+        return self.label
+
+    def _modal_key(self, context, event):
+        """Extra keys while dragging; return True if handled."""
+        return False
+
+    def _hud_pos(self, context, event):
+        """Mouse position in the 3D view's main region (the operator may run from the sidebar)."""
+        area = context.area
+        if area is None or area.type != 'VIEW_3D':
+            return (60, 60)
+        wr = next((r for r in area.regions if r.type == 'WINDOW'), None)
+        if wr is None:
+            return (60, 60)
+        x = min(max(event.mouse_x - wr.x, 10), wr.width - 220)
+        y = min(max(event.mouse_y - wr.y, 10), wr.height - 40)
+        return (x, y)
+
+    def _view_area(self, context):
+        if context.area is not None and context.area.type == 'VIEW_3D':
+            return context.area.as_pointer()
+        for a in context.screen.areas:
+            if a.type == 'VIEW_3D':
+                return a.as_pointer()
+        return 0
+
+    def _update(self, context, event):
+        if self.numinput.active:
+            v = self.numinput.value(0)
+            self.factor = v if v is not None else 0.0
+        else:
+            f = (self.x_virtual - self.x0) / (self.pixels_per_unit * compat.ui_scale())
+            if event.ctrl:
+                inc = 0.01 if event.shift else 0.1
+                f = round(f / inc) * inc
+            self.factor = f
+        if abs(self.factor) > 1e-9 and not self.ensured:
+            # first real change: only now add missing channel keys (an untouched curve
+            # must not change just because the tool was started)
+            self.ensured = True
+            for c in [j.cache for j in self.jobs]:
+                c.refresh(force=True)
+            self.jobs = self._jobs(context, None, ensure=True)
+        if self.ensured:
+            self._apply(context, self.jobs)
+        txt = "%s: %s" % (self._label(), self.numinput.text(0, self.factor, "%.3f"))
+        state.hud = (txt, self._hud_pos(context, event))
+        if self.area is not None:
+            self.area.header_text_set(txt + "   (drag left/right, Ctrl: snap, Shift: precise, "
+                                            "type a value, LMB/Enter: confirm, RMB/Esc: cancel)")
+        state.tag_redraw()
+
+    def _finish(self, context):
+        state.modal_running = max(0, state.modal_running - 1)
+        state.ghosts.clear()
+        state.hud = None
+        if self.area is not None:
+            self.area.header_text_set(None)
+        state.tag_redraw()
+
+    def modal(self, context, event):
+        t, v = event.type, event.value
+        if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            d = event.mouse_x - self.x_last
+            self.x_last = event.mouse_x
+            self.x_virtual += d * (0.1 if event.shift else 1.0)
+            self._update(context, event)
+        elif t in {'LEFT_CTRL', 'RIGHT_CTRL', 'LEFT_SHIFT', 'RIGHT_SHIFT'}:
+            self._update(context, event)
+        elif (t == 'LEFTMOUSE' and v == 'PRESS') or (t in {'RET', 'NUMPAD_ENTER', 'SPACE'} and v == 'PRESS'):
+            self._finish(context)
+            return {'FINISHED'}
+        elif t in {'RIGHTMOUSE', 'ESC'} and v == 'PRESS':
+            for s in reversed(self.snapshots):
+                s.restore()
+            for c in state.caches.values():
+                c.dirty = True
+            self._finish(context)
+            return {'CANCELLED'}
+        elif v == 'PRESS' and self._modal_key(context, event):
+            self._update(context, event)
+        elif self.numinput.handle(event):
+            self._update(context, event)
+        return {'RUNNING_MODAL'}
+
+    def _apply(self, context, jobs):
+        touched = set()
+        core.cycle_skip = {round(k.t, 3) for job in jobs for k, m in zip(job.keys, job.mask) if m}
+        for job in jobs:
+            tg = job.cache.target()
+            if tg is None:
+                continue
+            self._apply_job(job, tg, touched)
+            job.cache.dirty = True
+        core.update_fcurves(touched)
+        pick.tag_anim_editors()
+
+
+class EMP_OT_smooth(_AdjustOp, bpy.types.Operator):
+    """Smooth the selected path keys (all keys if none selected). Drag right to smooth more, """ \
+        """left (negative) to sharpen"""
+    bl_idname = "emp.smooth"
+    bl_label = "Smooth Path"
+    bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
+    label = "Smooth"
+
+    factor: FloatProperty(name="Factor", default=0.0, soft_min=-1.0, soft_max=4.0,
+                          description="Positive values smooth (higher = stronger), negative values "
+                                      "sharpen (anti-smooth)")
+    method: EnumProperty(name="Method", items=[
+        ('SHAPE', "Shape", "Smooth the form of the path: removes bumps and corners, keeps arcs "
+                           "and timing (keys only move across the path)"),
+        ('TIME', "Time", "Pull keys toward the in-between of their neighbors in time (also "
+                         "evens out the spacing, but flattens arcs)"),
+    ], default='SHAPE')
+    fix_corners: BoolProperty(name="Fix Corners", default=True,
+                              description="Shape: make broken (Free / Vector) handles of the "
+                                          "smoothed keys aligned")
+
+    def _apply_job(self, job, tg, touched):
+        cache = job.cache
+        ch = tg.channels(cache.ptype)
+        if self.method == 'TIME':
+            new = smooth_vectors(job.vecs, job.times, job.mask, self.factor)
+        else:
+            new = shape_smooth_vectors(job.vecs, job.mask, self.factor)
+        n = len(job.keys)
+        for i, (k, m, v) in enumerate(zip(job.keys, job.mask, new)):
+            if not m:
+                continue
+            vals = job.to_vals(tg, k, v, k.vals)
+            core.write_key(ch, k, vals, True, touched)
+            if self.method != 'SHAPE' or not self.fix_corners or self.factor <= 0.0 or not (0 < i < n - 1):
+                continue
+            if k.type_l not in {'FREE', 'VECTOR'} and k.type_r not in {'FREE', 'VECTOR'}:
+                continue
+            if k.hl is None or k.hr is None:
+                continue
+            # align broken handles along the path direction, keeping their lengths
+            vl, vr = k.hl - k.co, k.hr - k.co
+            tng = vr - vl
+            if tng.length < 1e-12:
+                continue
+            tng = tng.normalized()
+            f = min(1.0, self.factor)
+            co = cache.point(tg, k.t, vals)
+            for side, vec in (('L', vl), ('R', vr)):
+                aligned = tng * (vec.length if side == 'R' else -vec.length)
+                target = vec.lerp(aligned, f)
+                dt = k.dt_r if side == 'R' else k.dt_l
+                if dt < core.EPS:
+                    continue
+                slopes = cache.slopes_from_point(tg, k, side, co + target, vals, dt)
+                core.write_handle(ch, k, side, slopes, dt, vals, 'ALIGNED' if f >= 1.0 else 'FREE', touched)
+
+
+class EMP_OT_exaggerate(_AdjustOp, bpy.types.Operator):
+    """Exaggerate the shape of the selected part of the path (all keys if none selected). """ \
+        """Negative values tone it down"""
+    bl_idname = "emp.exaggerate"
+    bl_label = "Exaggerate Path"
+    bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
+    label = "Exaggerate"
+
+    factor: FloatProperty(name="Factor", default=0.0, soft_min=-1.0, soft_max=2.0, subtype='FACTOR',
+                          description="0.5 = 50% bigger deviation from the baseline, -1 = flatten")
+    pivot: EnumProperty(name="Relative To", items=[
+        ('AUTO', "Auto", "Line between the unselected neighbor keys, or the center when "
+                         "everything is selected"),
+        ('LINE', "Neighbors", "Straight line between the keys around the selection"),
+        ('CENTER', "Center", "Average position of the selected keys (makes the whole motion "
+                             "bigger/smaller)"),
+    ], default='AUTO')
+
+    def _apply_job(self, job, tg, touched):
+        cache = job.cache
+        ch = tg.channels(cache.ptype)
+        extra = []
+        for i, k in enumerate(job.keys):
+            if not job.mask[i]:
+                continue
+            for side, h in (('L', k.hl), ('R', k.hr)):
+                dt = k.dt_r if side == 'R' else k.dt_l
+                if dt < core.EPS:
+                    continue
+                th = k.t + (dt if side == 'R' else -dt)
+                hv = cache.handle_vals(k, side)
+                vec = h.copy() if (not job.rot and h is not None) else job.to_vec(tg, hv)
+                extra.append((i, th, vec))
+        new, ex = exaggerate_vectors(job.vecs, job.times, job.mask, self.factor, self.pivot, extra)
+        for i, k in enumerate(job.keys):
+            if not job.mask[i]:
+                continue
+            vals = job.to_vals(tg, k, new[i], k.vals)
+            core.write_key(ch, k, vals, True, touched)
+            for side in ('L', 'R'):
+                dt = k.dt_r if side == 'R' else k.dt_l
+                if dt < core.EPS:
+                    continue
+                th = k.t + (dt if side == 'R' else -dt)
+                hvec = ex.get((i, th))
+                if hvec is None:
+                    continue
+                sign = 1.0 if side == 'R' else -1.0
+                if job.rot:
+                    hv = job.to_vals(tg, k, hvec, cache.handle_vals(k, side))
+                    slopes = [(h - v) * sign / dt for h, v in zip(hv, vals)]
+                else:
+                    slopes = cache.slopes_from_point(tg, k, side, hvec, vals, dt)
+                core.write_handle(ch, k, side, slopes, dt, vals, None, touched)
+
+
+class EMP_OT_fix_loop(bpy.types.Operator):
+    """Close a broken loop: select the first or last key of the path (the one that is """         """right) and the key at the other end of the loop is matched to it: same pose and """         """same handles, so there is no jump or hitch at the seam"""
+    bl_idname = "emp.fix_loop"
+    bl_label = "Fix Loop"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    whole_pose: BoolProperty(
+        name="Whole Pose", default=True,
+        description="Fix every channel of the bone/object (location, rotation, scale, custom "
+                    "properties), not just the ones of the current path type")
+
+    @staticmethod
+    def _source_key(cache):
+        if not cache.keys:
+            return None
+        first, last = cache.keys[0].t, cache.keys[-1].t
+        for k in cache.keys:
+            if k.sel and (abs(k.t - first) < 1e-3 or abs(k.t - last) < 1e-3):
+                return k
+        return None
+
+    def invoke(self, context, event):
+        caches = state.editable_caches(context.scene)
+        if not any(self._source_key(c) for c in caches):
+            return {'PASS_THROUGH'}
+        return self.execute(context)
+
+    def execute(self, context):
+        fixed = 0
+        for cache in state.editable_caches(context.scene):
+            src = self._source_key(cache)
+            if src is None:
+                continue
+            tg = cache.target()
+            use_first = abs(src.t - cache.keys[0].t) < 1e-3
+            if self.whole_pose and tg.coll is not None:
+                fcs = [fc for fc in tg.coll if fc.data_path.startswith(tg.prefix)] if tg.prefix                     else list(tg.coll)
+            else:
+                fcs = [fc for fc in tg.channels(cache.ptype).fcurves if fc is not None]
+            touched = set()
+            for fc in fcs:
+                kps = fc.keyframe_points
+                n = len(kps)
+                if n < 2:
+                    continue
+                a, b = (0, n - 1) if use_first else (n - 1, 0)
+                s, t = kps[a], kps[b]
+                sx, sy = s.co
+                tx, ty = t.co
+                offset = any(m.type == 'CYCLES' and not m.mute and
+                             'OFFSET' in (m.mode_after + m.mode_before) for m in fc.modifiers)
+                # with "Repeat with Offset" the values differ on purpose (e.g. walking forward):
+                # only the handles (speed through the seam) are matched
+                y = ty if offset else sy
+                shl, shr = tuple(s.handle_left), tuple(s.handle_right)
+                t.handle_left_type = s.handle_left_type
+                t.handle_right_type = s.handle_right_type
+                t.interpolation = s.interpolation
+                t.co = (tx, y)
+                t.handle_left = (tx - (sx - shl[0]), y - (sy - shl[1]))
+                t.handle_right = (tx + (shr[0] - sx), y + (shr[1] - sy))
+                touched.add(fc)
+            core.update_fcurves(touched)
+            cache.dirty = True
+            fixed += 1
+        if not fixed:
+            self.report({'WARNING'}, "Select the first or last key of a path: the one the loop "
+                                     "should match")
+            return {'CANCELLED'}
+        pick.tag_anim_editors()
+        self.report({'INFO'}, "Loop fixed on %d path%s" % (fixed, "" if fixed == 1 else "s"))
+        return {'FINISHED'}
+
+
+class EMP_OT_cleanup(bpy.types.Operator):
+    """Reduce the keys of the path while keeping its shape in 3D (selected range, or the whole """ \
+        """path). Handles are refitted, corners are kept. Clean: remove existing keys. """ \
+        """Adaptive: rebuild with as few keys as possible, placed where the shape needs them"""
+    bl_idname = "emp.cleanup"
+    bl_label = "Clean Up Path"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    method: EnumProperty(name="Method", items=[
+        ('CLEAN', "Clean", "Remove keys that are not needed and refit the handles of the rest"),
+        ('ADAPTIVE', "Adaptive", "Rebuild the keys from scratch: as few as possible, on the frames "
+                                 "where the shape needs them"),
+    ], default='CLEAN')
+    tolerance: FloatProperty(
+        name="Tolerance", subtype='PERCENTAGE', default=1.0, min=0.01, soft_max=10.0, precision=2,
+        description="How far the cleaned path may move away from the original, in percent of "
+                    "the path size (lower keeps more keys)")
+    keep_holds: BoolProperty(
+        name="Keep Holds", default=True,
+        description="Keys where the motion stops (contacts, held poses) stay exactly as they are")
+    dissolve: BoolProperty(
+        name="Dissolve", default=False, options={'SKIP_SAVE'},
+        description="Ctrl+X: one selected key is removed and its neighbors refitted to keep the "
+                    "shape; several selected keys are cleaned up")
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode in {'POSE', 'OBJECT'}
+
+    def invoke(self, context, event):
+        if self.dissolve and not any(k.sel for c in state.editable_caches(context.scene) for k in c.keys):
+            return {'PASS_THROUGH'}
+        return self.execute(context)
+
+    def _dissolve(self, cache, tg, keys, i):
+        """Remove key i, refitting its neighbors (two on each side) to keep the shape."""
+        from . import fit
+        ch = tg.channels(cache.ptype)
+        if i == 0 or i == len(keys) - 1:
+            for c, fc in enumerate(ch.fcurves):
+                if fc is not None and keys[i].idx[c] >= 0:
+                    fc.keyframe_points.remove(fc.keyframe_points[keys[i].idx[c]])
+                    fc.update()
+            return 1, 0, 0.0, None
+        w = keys[max(0, i - 2):i + 3]
+        r0, r1 = w[0].t, w[-1].t
+        for fc in ch.fcurves:
+            if fc is not None and len(fc.keyframe_points):
+                r0 = max(r0, fc.keyframe_points[0].co[0])
+                r1 = min(r1, fc.keyframe_points[-1].co[0])
+        target = float(keys[i].t)
+        if not (r0 + 1e-3 < target < r1 - 1e-3):
+            return 0, 0, 0.0, None
+        fitter = fit.Fitter(cache, tg, float(r0), float(r1))
+        inside = sorted({float(k.t) for k in w if r0 - 1e-3 <= k.t <= r1 + 1e-3} | {float(r0), float(r1)})
+        knots = [t for t in inside if abs(t - target) > 1e-3]
+        fixed = ({t for t in knots if fitter.is_corner(t)} | {float(r0), float(r1)})
+        if self.keep_holds:
+            fixed |= fitter.hold_keys(knots) - {target}
+        slopes = fitter.fit(knots, fixed)
+        err = fitter.max_error(knots, slopes)[0]
+        fit.write(fitter, knots, slopes, select=False)
+        return len(inside), len(knots), err / fitter.size * 100.0, fitter
+
+    def execute(self, context):
+        from . import fit
+        before = after = 0
+        worst = 0.0
+        skipped = []
+        for cache in state.editable_caches(context.scene):
+            tg = cache.target()
+            keys = cache.keys
+            if tg is None or len(keys) < 2:
+                continue
+            sel = [k.t for k in keys if k.sel]
+            if self.dissolve and len(sel) == 1:
+                i = next(j for j, k in enumerate(keys) if k.sel)
+                b, a, e, _f = self._dissolve(cache, tg, keys, i)
+                before += b
+                after += a
+                worst = max(worst, e)
+                cache.dirty = True
+                continue
+            if self.dissolve and not sel:
+                continue
+            r0, r1 = (min(sel), max(sel)) if len(sel) >= 2 else (keys[0].t, keys[-1].t)
+            ch = tg.channels(cache.ptype)
+            fcs = [fc for fc in ch.fcurves if fc is not None and len(fc.keyframe_points)]
+            if not fcs:
+                continue
+            # every refitted channel has to have keys over the whole range
+            for fc in fcs:
+                r0 = max(r0, fc.keyframe_points[0].co[0])
+                r1 = min(r1, fc.keyframe_points[-1].co[0])
+            if r1 - r0 < 2.0:
+                continue
+            if any(kp.interpolation == 'CONSTANT' and r0 - 1e-3 <= kp.co[0] < r1 - 1e-3
+                   for fc in fcs for kp in fc.keyframe_points):
+                skipped.append(cache.label)
+                continue
+            fitter = fit.Fitter(cache, tg, float(r0), float(r1))
+            tol = fitter.size * self.tolerance / 100.0
+            inside = sorted({float(k.t) for k in keys if r0 - 1e-3 <= k.t <= r1 + 1e-3} | {float(r0), float(r1)})
+            fixed = {t for t in inside if fitter.is_corner(t)} | {float(r0), float(r1)}
+            if self.keep_holds:
+                fixed |= fitter.hold_keys([t for t in inside])
+            if self.method == 'CLEAN':
+                knots, slopes = fitter.prune(inside, fixed, tol)
+            else:
+                knots, slopes = fitter.adaptive(fixed, tol)
+            err = fitter.max_error(knots, slopes)[0]
+            worst = max(worst, err / fitter.size * 100.0)
+            fit.write(fitter, knots, slopes)
+            cache.dirty = True
+            before += len(inside)
+            after += len(knots)
+        if skipped:
+            self.report({'WARNING'}, "Stepped (Constant) keys are left alone: " + ", ".join(skipped))
+        if not before:
+            if not skipped:
+                self.report({'WARNING'}, "Nothing to clean: select a bone/object with a path "
+                                         "(and 2+ keys for a range)")
+            return {'CANCELLED'}
+        pick.tag_anim_editors()
+        self.report({'INFO'}, "Clean Up: %d -> %d keys, max deviation %.2f%% of the path size" % (
+            before, after, worst))
+        return {'FINISHED'}
+
+
+class EMP_OT_ease(_AdjustOp, bpy.types.Operator):
+    """Ease (slow in / slow out) at the selected keys: drag right for a stronger ease (the """ \
+        """frame dots bunch up at the key), left to move through the key more evenly. """ \
+        """I / O / B while dragging: ease in, out or both"""
+    bl_idname = "emp.ease"
+    bl_label = "Ease"
+    bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
+    label = "Ease"
+    pixels_per_unit = 300.0
+
+    factor: FloatProperty(name="Factor", default=0.0, soft_min=-1.0, soft_max=1.0, min=-1.0, max=1.0,
+                          description="1: full ease (the bone comes to rest at the key), "
+                                      "-1: constant speed through the key")
+    side: EnumProperty(name="Side", items=[
+        ('BOTH', "In & Out", "Slow in and slow out"),
+        ('IN', "In", "Slow in: arrive gently (the part before the key)"),
+        ('OUT', "Out", "Slow out: leave gently (the part after the key)"),
+    ], default='BOTH')
+
+    def _label(self):
+        return {"BOTH": "Ease In & Out", "IN": "Ease In", "OUT": "Ease Out"}[self.side] + \
+            "  (I / O / B)"
+
+    def _modal_key(self, context, event):
+        m = {'I': 'IN', 'O': 'OUT', 'B': 'BOTH'}.get(event.type)
+        if m is None:
+            return False
+        self.side = m
+        return True
+
+    def _originals(self, job, tg):
+        """Handle data of the selected keys before easing (captured once per job)."""
+        if getattr(job, "ease_orig", None) is not None:
+            return job.ease_orig
+        ch = tg.channels(job.cache.ptype)
+        orig = []
+        for k, m in zip(job.keys, job.mask):
+            if not m:
+                continue
+            for c, fc in enumerate(ch.fcurves):
+                i = k.idx[c] if c < len(k.idx) else -1
+                if fc is None or i < 0:
+                    continue
+                kps = fc.keyframe_points
+                kp = kps[i]
+                prev = kps[i - 1] if i > 0 else None
+                nxt = kps[i + 1] if i + 1 < len(kps) else None
+                orig.append(dict(
+                    path=fc.data_path, index=fc.array_index, i=i, x=kp.co[0], y=kp.co[1],
+                    hl=tuple(kp.handle_left), hr=tuple(kp.handle_right),
+                    tl=kp.handle_left_type, tr=kp.handle_right_type,
+                    prev=(prev.co[0], prev.co[1], prev.handle_right[0] - prev.co[0]) if prev else None,
+                    next=(nxt.co[0], nxt.co[1], nxt.co[0] - nxt.handle_left[0]) if nxt else None))
+        job.ease_orig = orig
+        return orig
+
+    @staticmethod
+    def _eased(e, x, y, h, nb, side):
+        """New handle (x, y) for one side. nb = neighbor (x, y, its facing handle length)."""
+        sign = 1.0 if side == 'R' else -1.0
+        dt0 = (h[0] - x) * sign
+        if nb is None or dt0 <= 1e-6:
+            return h
+        interval = abs(nb[0] - x)
+        s0 = (h[1] - y) / (h[0] - x)
+        if e >= 0.0:
+            cap = max(interval - max(nb[2], 0.0), interval / 3.0) * 0.98
+            dt = dt0 + e * (max(cap, dt0) - dt0)
+            s = s0 * (1.0 - e)
+        else:
+            a = min(-e, 1.0)
+            secant = (nb[1] - y) / (nb[0] - x)
+            s = s0 + a * (secant - s0)
+            dt = dt0 + a * (interval / 3.0 - dt0)
+        return (x + sign * dt, y + s * sign * dt)
+
+    def _apply_job(self, job, tg, touched):
+        coll = tg.coll
+        e = self.factor
+        for o in self._originals(job, tg):
+            fc = coll.find(o['path'], index=o['index'])
+            if fc is None:
+                continue
+            kp = fc.keyframe_points[o['i']]
+            do_l = self.side in {'BOTH', 'IN'}
+            do_r = self.side in {'BOTH', 'OUT'}
+            hl = self._eased(e, o['x'], o['y'], o['hl'], o['prev'], 'L') if do_l else o['hl']
+            hr = self._eased(e, o['x'], o['y'], o['hr'], o['next'], 'R') if do_r else o['hr']
+            collinear = o['tl'] in {'AUTO', 'AUTO_CLAMPED', 'ALIGNED'} and \
+                o['tr'] in {'AUTO', 'AUTO_CLAMPED', 'ALIGNED'}
+            if do_l and do_r:
+                tl = tr = 'ALIGNED' if collinear else 'FREE'
+            else:
+                # one side only: break the handles, keep the other side as it was
+                tl = 'FREE' if do_l else ('FREE' if o['tl'] == 'ALIGNED' else o['tl'])
+                tr = 'FREE' if do_r else ('FREE' if o['tr'] == 'ALIGNED' else o['tr'])
+            if abs(e) < 1e-9:
+                tl, tr, hl, hr = o['tl'], o['tr'], o['hl'], o['hr']
+            kp.handle_left_type = tl
+            kp.handle_right_type = tr
+            kp.handle_left = hl
+            kp.handle_right = hr
+            touched.add(fc)
+
+
+classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_path_update, EMP_OT_edit_tool,
+           EMP_OT_delete_keys, EMP_OT_insert_key, EMP_OT_handle_type, EMP_OT_interpolation,
+           EMP_OT_smooth, EMP_OT_exaggerate, EMP_OT_ease, EMP_OT_fix_loop, EMP_OT_cleanup)

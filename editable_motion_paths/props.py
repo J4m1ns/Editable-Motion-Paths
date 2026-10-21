@@ -1,0 +1,157 @@
+import bpy
+from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProperty,
+                       FloatVectorProperty, IntProperty, PointerProperty, StringProperty)
+
+from . import state
+
+
+def _redraw(self, context):
+    state.tag_redraw()
+
+
+def _rebake(self, context):
+    for c in state.caches.values():
+        c.B = []
+    state.schedule_rebake(0.05, force=True)
+
+
+def _mode_changed(self, context):
+    state.sync_caches(context.scene)
+    state.tag_redraw()
+
+
+def _refresh(self, context):
+    for c in state.caches.values():
+        c.dirty = True
+    state.tag_redraw()
+
+
+class EMP_PathEntry(bpy.types.PropertyGroup):
+    object: PointerProperty(type=bpy.types.Object)
+    bone_name: StringProperty()
+    # kept for files saved with 1.0 (paths were per type then); the type now comes from
+    # the global Location / Rotation edit mode
+    path_type: EnumProperty(items=[('LOCATION', "Location", ""), ('ROTATION', "Rotation", "")],
+                            options={'HIDDEN'})
+    show: BoolProperty(name="Show", default=True, update=_redraw)
+
+
+class EMP_Settings(bpy.types.PropertyGroup):
+    paths: CollectionProperty(type=EMP_PathEntry)
+    active_index: IntProperty()
+
+    edit_mode: EnumProperty(
+        name="Edit",
+        description="Which trajectory is shown and edited (1 / 2 with the Edit Motion Path tool)",
+        items=[
+            ('LOCATION', "Location", "Trajectory of the bone head / object origin. "
+             "Editing it changes the location keys (1)", 'CON_LOCLIKE', 0),
+            ('ROTATION', "Rotation", "Trajectory of the bone tip. Editing it changes the rotation "
+             "keys: Euler, Quaternion or Axis Angle (2)", 'CON_ROTLIKE', 1),
+        ],
+        default='LOCATION', update=_mode_changed,
+    )
+
+    use_proportional: BoolProperty(
+        name="Proportional Editing",
+        description="Moving keys also moves the nearby unselected keys with a falloff (O). "
+                    "Mouse wheel or Page Up/Down changes the radius while transforming",
+        default=False, update=_redraw)
+    proportional_falloff: EnumProperty(
+        name="Falloff",
+        description="Falloff type for proportional editing (Shift+O)",
+        items=[
+            ('SMOOTH', "Smooth", "", 'SMOOTHCURVE', 0),
+            ('SPHERE', "Sphere", "", 'SPHERECURVE', 1),
+            ('ROOT', "Root", "", 'ROOTCURVE', 2),
+            ('INVERSE_SQUARE', "Inverse Square", "", 'INVERSESQUARECURVE', 3),
+            ('SHARP', "Sharp", "", 'SHARPCURVE', 4),
+            ('LINEAR', "Linear", "", 'LINCURVE', 5),
+            ('CONSTANT', "Constant", "", 'NOCURVE', 6),
+            ('RANDOM', "Random", "", 'RNDCURVE', 7),
+        ], default='SMOOTH')
+    proportional_size: FloatProperty(
+        name="Proportional Size", description="Radius of the proportional falloff",
+        default=0.3, min=1e-4, soft_max=10.0, subtype='DISTANCE', unit='LENGTH')
+    proportional_connected: BoolProperty(
+        name="Connected",
+        description="Measure the distance along the path (only keys of the same path are "
+                    "affected) instead of straight through space",
+        default=True)
+
+    range_mode: EnumProperty(
+        name="Range",
+        description="Frame range the paths are calculated for",
+        items=[
+            ('SCENE', "Scene", "Scene frame range (or preview range when enabled)"),
+            ('ACTION', "Action", "Frame range of the animated action"),
+            ('MANUAL', "Manual", "Custom frame range"),
+        ],
+        default='SCENE', update=_rebake,
+    )
+    frame_start: IntProperty(name="Start", default=1, update=_rebake)
+    frame_end: IntProperty(name="End", default=100, update=_rebake)
+    use_window: BoolProperty(
+        name="Around Current Frame",
+        description="Only draw the part of the path around the current frame",
+        default=False, update=_redraw)
+    window_before: IntProperty(name="Before", default=15, min=0, update=_redraw)
+    window_after: IntProperty(name="After", default=15, min=0, update=_redraw)
+
+    color_mode: EnumProperty(
+        name="Color",
+        items=[
+            ('SPEED', "Speed", "Color the path by speed: blue is slow, red is fast"),
+            ('TIME', "Before / After", "Darker before the current frame, brighter after"),
+            ('SOLID', "Solid", "One color"),
+        ],
+        default='SPEED', update=_redraw,
+    )
+    color: FloatVectorProperty(name="Path Color", subtype='COLOR', size=3,
+                               default=(0.35, 0.75, 1.0), min=0.0, max=1.0, update=_redraw)
+    show_frames: BoolProperty(name="Frame Dots", default=True,
+                              description="Show a dot on every frame (spacing)", update=_redraw)
+    show_frame_numbers: BoolProperty(name="Key Numbers", default=False,
+                                     description="Show frame numbers next to keys", update=_redraw)
+    show_all_handles: BoolProperty(name="All Handles", default=False,
+                                   description="Show handles of all keys, not only selected ones",
+                                   update=_redraw)
+    show_ghost: BoolProperty(name="Ghost While Editing", default=True,
+                             description="Show the original path while dragging", update=_redraw)
+    show_spokes: BoolProperty(name="Bone Lines", default=True,
+                              description="Rotation paths: draw lines from the bone head to selected keys",
+                              update=_redraw)
+    on_top: BoolProperty(name="In Front", default=True,
+                         description="Draw paths in front of geometry", update=_redraw)
+    line_width: FloatProperty(name="Line Width", default=2.0, min=1.0, max=10.0, update=_redraw)
+    key_size: FloatProperty(name="Key Size", default=9.0, min=3.0, max=30.0, update=_redraw)
+    rot_length: FloatProperty(
+        name="Rotation Path Length",
+        description="Rotation paths trace a point along the bone axis at this multiple of the bone "
+                    "length (object: in meters). Larger values make small rotations easier to see",
+        default=1.0, min=0.05, soft_max=5.0, update=_refresh)
+    pin_partial: BoolProperty(
+        name="Pin Partial Keys",
+        description="Path keys that are keyed on some channels only (dark center) get keyed on "
+                    "the other channels too when a neighbor is edited, so they stay in place "
+                    "instead of following it",
+        default=True)
+    auto_update: BoolProperty(
+        name="Auto Update",
+        description="Recalculate paths automatically when other animation (e.g. parents) changes",
+        default=True)
+
+
+classes = (EMP_PathEntry, EMP_Settings)
+
+
+def register():
+    for c in classes:
+        bpy.utils.register_class(c)
+    bpy.types.Scene.emp = PointerProperty(type=EMP_Settings)
+
+
+def unregister():
+    del bpy.types.Scene.emp
+    for c in reversed(classes):
+        bpy.utils.unregister_class(c)

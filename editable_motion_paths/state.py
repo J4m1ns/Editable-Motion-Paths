@@ -1,0 +1,420 @@
+"""Runtime state (not saved in the .blend) and change tracking."""
+
+import re
+import time
+from array import array
+
+import bpy
+from bpy.app.handlers import persistent
+
+from . import compat
+
+caches = {}          # (obj_name, bone_name, type) -> core.PathCache
+baking = False       # True while frame-stepping for a bake
+modal_running = 0    # >0 while one of our modal operators is editing
+hud = None           # (text, (x, y)) shown next to the cursor
+hud_area = 0         # as_pointer() of the area showing the HUD
+box = None           # (x0, y0, x1, y1, mode) box-select rectangle in region space
+box_area = 0
+constraint = None    # (pivot, axis, color) axis line shown while transforming
+prop_circle = None   # (center, radius) proportional editing circle while transforming
+prop_weights = {}    # (path key, frame) -> proportional influence, for drawing
+slide_marker = None  # (world point, label) target of a key slide
+slide_extension = None  # (before, after) world polylines: where a slide can go past the ends
+active_key = None    # (path key, frame) of the last clicked key (Ctrl+Click range anchor)
+flash = None         # (text, until_time)
+force_draw = False   # draw even with overlays off (render_view for scripts) short message shown at the bottom of the viewport
+_watch_last = None
+force_numbers = False  # show key frame numbers (while sliding)
+ghosts = {}          # path key -> list of world points shown while dragging
+_action_hashes = {}  # action name -> {(data_path, index): hash}
+_bake_due = 0.0
+_bake_timer_on = False
+_force_bake = False
+
+
+def settings(scene=None):
+    scene = scene or bpy.context.scene
+    return getattr(scene, "emp", None) if scene else None
+
+
+def overlays_hidden():
+    """True when the 3D view we are drawing / working in has Show Overlays turned off."""
+    if force_draw:
+        return False
+    sd = getattr(bpy.context, "space_data", None)
+    return sd is not None and sd.type == 'VIEW_3D' and not sd.overlay.show_overlays
+
+
+def _viewport_input():
+    """True for hotkeys / clicks in the 3D view itself (not buttons in the sidebar)."""
+    region = getattr(bpy.context, "region", None)
+    return region is not None and region.type == 'WINDOW'
+
+
+def tag_redraw():
+    wm = bpy.context.window_manager
+    if wm is None:
+        return
+    for win in wm.windows:
+        for area in win.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+
+# ----------------------------------------------------------------------------
+# Cache management
+# ----------------------------------------------------------------------------
+
+def edit_mode(scene=None):
+    st = settings(scene)
+    return st.edit_mode if st is not None else 'LOCATION'
+
+
+def entry_key(entry, mode=None):
+    if entry.object is None:
+        return None
+    return (entry.object.name, entry.bone_name, mode or edit_mode(entry.id_data))
+
+
+def sync_caches(scene=None):
+    """Make the cache dict match the scene's path list and edit mode.
+
+    Caches of the other edit mode are kept (switching back is instant) and a new
+    cache reuses the baked parent space of its sibling. Returns caches needing a bake.
+    """
+    from . import core
+    st = settings(scene)
+    if st is None:
+        return []
+    mode = st.edit_mode
+    targets = set()
+    wanted = []
+    for e in st.paths:
+        k = entry_key(e, mode)
+        if k is not None:
+            targets.add(k[:2])
+            wanted.append(k)
+    for k in list(caches):
+        if k[:2] not in targets:
+            del caches[k]
+    need = []
+    for k in wanted:
+        c = caches.get(k)
+        if c is None:
+            c = caches[k] = core.PathCache(*k)
+            other = caches.get((k[0], k[1], core.ROTATION if k[2] == core.LOCATION else core.LOCATION))
+            if other is not None and other.B:
+                c.fs, c.B, c.bake_id = other.fs, other.B, other.bake_id
+        if not c.B:
+            need.append(c)
+    return need
+
+
+def visible_caches(scene=None):
+    st = settings(scene)
+    if st is None:
+        return []
+    out = []
+    seen = set()
+    for e in st.paths:
+        if not e.show:
+            continue
+        k = entry_key(e, st.edit_mode)
+        if k in seen:
+            continue
+        seen.add(k)
+        c = caches.get(k)
+        if c is not None and c.B:
+            out.append(c)
+        elif c is None or not c.failed:
+            # new / renamed entry: calculate it soon (never from inside drawing)
+            schedule_rebake(0.1)
+    return out
+
+
+def editable_caches(scene=None):
+    if overlays_hidden() and _viewport_input():
+        return []       # paths are hidden with the overlays: viewport hotkeys go to Blender
+    out = []
+    for c in visible_caches(scene):
+        if c.owner_selected() and c.refresh() and not c.locked:
+            out.append(c)
+    return out
+
+
+def bake_all(scene=None, only=None):
+    from . import core
+    scene = scene or bpy.context.scene
+    need = sync_caches(scene)
+    targets = list(caches.values()) if only is None else only
+    if only == 'MISSING':
+        targets = need
+    core.bake(scene, targets)
+    tag_redraw()
+
+
+# ----------------------------------------------------------------------------
+# Auto update: re-bake when animation other than a path's own channels changed
+# ----------------------------------------------------------------------------
+
+def _fcurve_hashes(obj):
+    coll = compat.get_fcurves(obj)
+    out = {}
+    if coll is None:
+        return out
+    for fc in coll:
+        kps = fc.keyframe_points
+        n = len(kps)
+        co = array('f', bytes(8 * n))
+        kps.foreach_get("co", co)
+        hl = array('f', bytes(8 * n))
+        hr = array('f', bytes(8 * n))
+        kps.foreach_get("handle_left", hl)
+        kps.foreach_get("handle_right", hr)
+        out[(fc.data_path, fc.array_index)] = hash((co.tobytes(), hl.tobytes(), hr.tobytes(),
+                                                    fc.mute, len(fc.modifiers)))
+    return out
+
+
+def _tracked_objects():
+    objs = {}
+    for c in caches.values():
+        obj = bpy.data.objects.get(c.obj_name)
+        while obj is not None:
+            objs[obj.name] = obj
+            obj = obj.parent
+    return objs
+
+
+def remember_action_hashes():
+    _action_hashes.clear()
+    for name, obj in _tracked_objects().items():
+        _action_hashes[name] = _fcurve_hashes(obj)
+
+
+_TRANSFORM_PROPS = {"location", "rotation_quaternion", "rotation_euler", "rotation_axis_angle", "scale"}
+_BONE_PATH = re.compile(r'^pose\.bones\["(.*)"\]\.(\w+)$')
+
+
+def _harmless(obj, data_path):
+    """True if changing this channel can't move any path's parent space.
+
+    That is the case for transform channels of a path target that has no other
+    path target below it in the hierarchy.
+    """
+    targets = [c for c in caches.values() if c.obj_name == obj.name]
+    if obj.type == 'ARMATURE' and obj.pose is not None:
+        m = _BONE_PATH.match(data_path)
+        if not m or m.group(2) not in _TRANSFORM_PROPS:
+            return False
+        bname = m.group(1).replace('\\"', '"').replace('\\\\', '\\')
+        if not any(c.bone_name == bname for c in targets):
+            return False
+        for c in targets:
+            pb = obj.pose.bones.get(c.bone_name) if c.bone_name else None
+            if pb is not None and pb.name != bname and any(p.name == bname for p in pb.parent_recursive):
+                return False
+        return True
+    if data_path not in _TRANSFORM_PROPS or not any(not c.bone_name for c in targets):
+        return False
+    return not any(c.obj_name != obj.name and _is_child(c.obj_name, obj) for c in caches.values())
+
+
+def _is_child(name, parent):
+    o = bpy.data.objects.get(name)
+    o = o.parent if o else None
+    while o is not None:
+        if o == parent:
+            return True
+        o = o.parent
+    return False
+
+
+def _range_changed():
+    """True if the frame range to calculate changed (e.g. a key was slid past the end)."""
+    from . import core
+    st = settings()
+    cs = [c for c in caches.values() if c.B]
+    if st is None or not cs:
+        return False
+    fs, fe = core.bake_range(bpy.context.scene, st, cs)
+    return any(c.fs != fs or c.fe != fe for c in cs)
+
+
+def _needs_rebake():
+    """True if some F-Curve that is not a path's own channel changed since the bake."""
+    for name, obj in _tracked_objects().items():
+        new = _fcurve_hashes(obj)
+        old = _action_hashes.get(name)
+        if old is None:
+            return True
+        for k in set(new) | set(old):
+            if new.get(k) != old.get(k) and not _harmless(obj, k[0]):
+                return True
+        # only own channels changed: keep hashes current so later comparisons stay precise
+        _action_hashes[name] = new
+    return False
+
+
+def schedule_rebake(delay=0.35, force=False):
+    global _bake_due, _bake_timer_on, _force_bake
+    _force_bake = _force_bake or force
+    _bake_due = time.time() + delay
+    if not _bake_timer_on:
+        _bake_timer_on = True
+        bpy.app.timers.register(_bake_timer, first_interval=delay)
+
+
+def _any_modal():
+    """True while an interactive edit (Blender's transform, scrubbing, graph editing...)
+    is running. Other add-ons' permanent modal operators are ignored."""
+    wm = bpy.context.window_manager
+    if wm is None:
+        return False
+    for win in wm.windows:
+        for op in getattr(win, "modal_operators", ()):
+            if op.bl_idname.split("_OT_")[0] in _BLOCKING_MODALS:
+                return True
+    return False
+
+
+_BLOCKING_MODALS = {"TRANSFORM", "EMP", "ANIM", "GRAPH", "ACTION", "VIEW3D", "POSE", "OBJECT", "WM"}
+
+
+def _bake_timer():
+    global _bake_timer_on, _force_bake
+    remaining = _bake_due - time.time()
+    if remaining > 0.01:
+        return remaining
+    ctx = bpy.context
+    screen = getattr(ctx, "screen", None)
+    if modal_running or baking or (screen is not None and screen.is_animation_playing) or _any_modal():
+        return 0.3
+    _bake_timer_on = False
+    force = _force_bake
+    _force_bake = False
+    try:
+        st = settings()
+        if st is not None and st.paths:
+            if force or any(not c.B for c in caches.values()) or sync_caches() or _range_changed()                     or _needs_rebake():
+                bake_all()
+            else:
+                tag_redraw()
+    except Exception as ex:  # never let a timer die silently with a traceback storm
+        print("Editable Motion Paths: auto update failed:", ex)
+    return None
+
+
+@persistent
+def _on_depsgraph(scene, depsgraph):
+    if baking or not caches:
+        return
+    st = settings(scene)
+    if st is None or not st.auto_update:
+        return
+    for u in depsgraph.updates:
+        if isinstance(u.id, bpy.types.Action):
+            schedule_rebake()
+            return
+
+
+@persistent
+def _on_undo(*_args):
+    for c in caches.values():
+        c.dirty = True
+    st = settings()
+    if st is not None and st.auto_update and caches:
+        schedule_rebake(0.2)
+
+
+@persistent
+def _on_load(*_args):
+    caches.clear()
+    ghosts.clear()
+    _action_hashes.clear()
+    st = settings()
+    if st is not None and st.paths:
+        bpy.app.timers.register(_load_bake, first_interval=0.2)
+
+
+def _load_bake():
+    try:
+        bake_all()
+    except Exception as ex:
+        print("Editable Motion Paths: bake after load failed:", ex)
+    return None
+
+
+def flash_message(text, seconds=3.0):
+    global flash
+    flash = (text, time.time() + seconds)
+    tag_redraw()
+
+
+def _watch_active():
+    """Auto edit mode: when the active bone/object has a path but nothing to edit in the
+    current mode (e.g. only location is animated while editing Rotation), switch modes."""
+    global _watch_last
+    try:
+        st = settings()
+        if st is None or not st.paths or modal_running:
+            return 0.25
+        vl = bpy.context.view_layer
+        obj = vl.objects.active if vl is not None else None
+        if obj is None:
+            return 0.25
+        bone = ""
+        if obj.type == 'ARMATURE' and obj.mode == 'POSE' and obj.data.bones.active is not None:
+            bone = obj.data.bones.active.name
+        key = (obj.name, bone)
+        if key == _watch_last:
+            return 0.25
+        _watch_last = key
+        if not any(e.object == obj and e.bone_name == bone for e in st.paths):
+            return 0.25
+        from . import core
+        _o, owner = core.resolve(obj.name, bone)
+        if owner is None:
+            return 0.25
+        tg = core.Target(obj, owner, bool(bone))
+        has_loc = tg.loc.any() and not core._lock_state(tg, core.LOCATION)[0]
+        has_rot = tg.rot.any() and not core._lock_state(tg, core.ROTATION)[0]
+        mode = st.edit_mode
+        new = None
+        if mode == 'ROTATION' and has_loc and not has_rot:
+            new = 'LOCATION'
+        elif mode == 'LOCATION' and has_rot and not has_loc:
+            new = 'ROTATION'
+        if new:
+            st.edit_mode = new
+            flash_message("Switched to %s: %s has no %s keys" % (
+                new.title(), bone or obj.name, mode.lower()))
+    except Exception:
+        pass
+    return 0.25
+
+
+def register():
+    bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph)
+    bpy.app.handlers.undo_post.append(_on_undo)
+    bpy.app.handlers.redo_post.append(_on_undo)
+    bpy.app.handlers.load_post.append(_on_load)
+    bpy.app.timers.register(_load_bake, first_interval=0.5)
+    bpy.app.timers.register(_watch_active, first_interval=1.0, persistent=True)
+
+
+def unregister():
+    for lst, fn in ((bpy.app.handlers.depsgraph_update_post, _on_depsgraph),
+                    (bpy.app.handlers.undo_post, _on_undo),
+                    (bpy.app.handlers.redo_post, _on_undo),
+                    (bpy.app.handlers.load_post, _on_load)):
+        if fn in lst:
+            lst.remove(fn)
+    if bpy.app.timers.is_registered(_bake_timer):
+        bpy.app.timers.unregister(_bake_timer)
+    if bpy.app.timers.is_registered(_load_bake):
+        bpy.app.timers.unregister(_load_bake)
+    if bpy.app.timers.is_registered(_watch_active):
+        bpy.app.timers.unregister(_watch_active)
+    caches.clear()

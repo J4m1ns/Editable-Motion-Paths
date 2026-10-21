@@ -1,0 +1,398 @@
+"""Clicking, dragging and selecting path keys."""
+
+import time
+
+import bpy
+from bpy.props import BoolProperty, EnumProperty
+from mathutils import Vector
+
+from . import compat, core, pick, state
+
+
+def _region_mouse(context, event):
+    return event.mouse_region_x, event.mouse_region_y
+
+
+class EMP_OT_click(bpy.types.Operator):
+    """Select a path key or handle; drag to move it. Ctrl+Click on a path inserts a key"""
+    bl_idname = "emp.click"
+    bl_label = "Select Path Key"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.area is not None and context.area.type == 'VIEW_3D'
+
+    def invoke(self, context, event):
+        if event.alt or not state.visible_caches(context.scene) or context.region_data is None:
+            return {'PASS_THROUGH'}
+        mx, my = _region_mouse(context, event)
+        hit = pick.hit_test(context, mx, my)
+
+        if hit is None and event.ctrl:
+            lh = pick.line_hit(context, mx, my)
+            if lh is not None:
+                t = float(round(lh.t))
+                cache = lh.cache
+                pick.deselect_all(state.editable_caches(context.scene))
+                k = insert_key(cache, t)
+                if k is not None:
+                    pick.select_part(cache, k, 'KEY', True)
+                    cache.refresh(force=True)
+                    hit = pick.Hit(cache, k, 'KEY', 0.0)
+                    self._start_wait(context, event, hit, None)
+                    state.tag_redraw()
+                    return {'RUNNING_MODAL'}
+
+        if hit is None:
+            if not event.shift and not event.ctrl:
+                if pick.deselect_all(state.editable_caches(context.scene)):
+                    pick.tag_anim_editors()
+            return {'PASS_THROUGH'}
+
+        cache = hit.cache
+        if cache.locked:
+            if not cache.owner_selected():
+                pick.select_owner(context, cache, event.shift)
+            self.report({'INFO'}, cache.lock_reason)
+            state.tag_redraw()
+            return {'FINISHED'}
+        if hit.part == 'KEY' and not event.shift and not event.ctrl and self._is_double(context, event, hit):
+            context.scene.frame_set(int(round(hit.t)))
+            return {'FINISHED'}
+        if not cache.owner_selected():
+            if not pick.select_owner(context, cache, event.shift):
+                return {'PASS_THROUGH'}
+            cache.refresh(force=True)
+            hit = pick.hit_test(context, mx, my)
+            if hit is None:
+                return {'FINISHED'}
+            cache = hit.cache
+
+        if event.ctrl and hit.part == 'KEY':
+            # like Pick Shortest Path: select every key between the active key and this one
+            self._select_range(cache, hit.key)
+            pick.tag_anim_editors()
+            return {'FINISHED'}
+
+        k = hit.key
+        if hit.part == 'KEY':
+            state.active_key = (cache.key, k.t)
+        release_action = None
+        if hit.part != 'KEY' and not event.shift:
+            # grabbing a handle edits only that handle (like the Graph Editor)
+            pick.deselect_all(state.editable_caches(context.scene))
+            pick.select_part(cache, k, hit.part, True)
+            cache.refresh(force=True)
+        elif pick.part_selected(k, hit.part):
+            release_action = 'TOGGLE' if event.shift else 'ONLY'
+        else:
+            if not event.shift:
+                pick.deselect_all(state.editable_caches(context.scene))
+            pick.select_part(cache, k, hit.part, True)
+            cache.refresh(force=True)
+        pick.tag_anim_editors()
+        self._start_wait(context, event, hit, release_action)
+        return {'RUNNING_MODAL'}
+
+    _last_click = (0.0, None, None)
+
+    @staticmethod
+    def _select_range(cache, k):
+        sel = [x.t for x in cache.keys if x.sel and abs(x.t - k.t) > 1e-3]
+        anchor = None
+        if state.active_key and state.active_key[0] == cache.key and \
+                any(abs(t - state.active_key[1]) < 1e-3 for t in sel):
+            anchor = state.active_key[1]
+        elif sel:
+            anchor = min(sel, key=lambda t: abs(t - k.t))
+        if anchor is None:
+            pick.select_part(cache, k, 'KEY', True)
+        else:
+            lo, hi = sorted((anchor, k.t))
+            inner = [x for x in cache.keys if lo - 1e-3 <= x.t <= hi + 1e-3]
+            chosen = inner
+            if _is_loop(cache) and cache.keys:
+                # a looping path is a ring: go the shorter way along the curve, across the seam
+                # if that is shorter in 3D
+                t0, t1 = cache.keys[0].t, cache.keys[-1].t
+                direct = _arc(cache, lo, hi)
+                around = _arc(cache, hi, t1) + _arc(cache, t0, lo)
+                if around < direct:
+                    chosen = [x for x in cache.keys if x.t >= hi - 1e-3 or x.t <= lo + 1e-3]
+            for x in chosen:
+                pick.select_part(cache, x, 'KEY', True)
+        state.active_key = (cache.key, k.t)
+        cache.refresh(force=True)
+
+    @classmethod
+    def _is_double(cls, context, event, hit):
+        """Double click on the same key (detected here because this operator also gets
+        the second press of a double click)."""
+        now = time.time()
+        t0, key, frame = EMP_OT_click._last_click
+        EMP_OT_click._last_click = (now, hit.cache.key, hit.t)
+        limit = context.preferences.inputs.mouse_double_click_time / 1000.0
+        if event.value == 'DOUBLE_CLICK' or (now - t0 < limit and key == hit.cache.key
+                                             and frame is not None and abs(frame - hit.t) < 1e-3):
+            EMP_OT_click._last_click = (0.0, None, None)
+            return True
+        return False
+
+    def _start_wait(self, context, event, hit, release_action):
+        self.hit_key = hit.cache.key
+        self.hit_t = hit.t
+        self.hit_part = hit.part
+        self.release_action = release_action
+        self.press = Vector((event.mouse_region_x, event.mouse_region_y))
+        self.threshold = context.preferences.inputs.drag_threshold_mouse * compat.ui_scale()
+        context.window_manager.modal_handler_add(self)
+
+    def _find_key(self):
+        cache = state.caches.get(self.hit_key)
+        if cache is None or not cache.refresh():
+            return None, None
+        for k in cache.keys:
+            if abs(k.t - self.hit_t) < 1e-3:
+                return cache, k
+        return cache, None
+
+    def modal(self, context, event):
+        if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            m = Vector((event.mouse_region_x, event.mouse_region_y))
+            if (m - self.press).length >= max(self.threshold, 3):
+                bpy.ops.emp.transform('INVOKE_DEFAULT', mode='TRANSLATE', release_confirm=True,
+                                      start_x=int(self.press.x), start_y=int(self.press.y))
+                return {'FINISHED'}
+            return {'RUNNING_MODAL'}
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+            cache, k = self._find_key()
+            if k is not None and self.release_action is not None:
+                if self.release_action == 'TOGGLE':
+                    pick.select_part(cache, k, self.hit_part, False)
+                else:
+                    pick.deselect_all(state.editable_caches(context.scene))
+                    pick.select_part(cache, k, self.hit_part, True)
+                pick.tag_anim_editors()
+            return {'FINISHED'}
+        if event.type in {'ESC', 'RIGHTMOUSE'}:
+            return {'FINISHED'}
+        return {'RUNNING_MODAL'}
+
+
+def _arc(cache, a, b):
+    """Length of the path in 3D between frames a < b."""
+    pts = [p for t, p in zip(cache.times, cache.points) if a - 1e-6 <= t <= b + 1e-6]
+    return sum((q - p).length for p, q in zip(pts, pts[1:]))
+
+
+def _is_loop(cache):
+    if cache.cyclic:
+        return True
+    if len(cache.keys) < 3:
+        return False
+    pts = cache.points
+    size = max((p - pts[0]).length for p in pts) or 1.0
+    return (cache.keys[0].co - cache.keys[-1].co).length < size * 0.02
+
+
+def insert_key(cache, t):
+    """Insert a key at frame t on the edited channels of a path, keeping the motion."""
+    tg = cache.target()
+    if tg is None:
+        return None
+    ch = tg.channels(cache.ptype)
+    fcs = [fc for fc in ch.fcurves if fc is not None and len(fc.keyframe_points)]
+    if not fcs:
+        core.ensure_keys(tg, cache.ptype, [t])
+    else:
+        for fc in fcs:
+            fc.keyframe_points.insert(t, fc.evaluate(t), options={'FAST'})
+            fc.update()
+    cache.refresh(force=True)
+    for k in cache.keys:
+        if abs(k.t - t) < 1e-3:
+            return k
+    return None
+
+
+class EMP_OT_select_all(bpy.types.Operator):
+    """Select or deselect all keys of the editable paths"""
+    bl_idname = "emp.select_all"
+    bl_label = "Select All Path Keys"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    action: EnumProperty(items=[
+        ('TOGGLE', "Toggle", ""), ('SELECT', "Select", ""),
+        ('DESELECT', "Deselect", ""), ('INVERT', "Invert", "")], default='TOGGLE')
+
+    def invoke(self, context, event):
+        if not state.editable_caches(context.scene):
+            return {'PASS_THROUGH'}
+        return self.execute(context)
+
+    def execute(self, context):
+        caches = state.editable_caches(context.scene)
+        if not caches:
+            return {'CANCELLED'}
+        action = self.action
+        if action == 'TOGGLE':
+            action = 'DESELECT' if any(k.any_sel for c in caches for k in c.keys) else 'SELECT'
+        for c in caches:
+            for k in c.keys:
+                if action == 'SELECT':
+                    pick.select_part(c, k, 'KEY', True)
+                elif action == 'DESELECT':
+                    pick.select_part(c, k, 'KEY', False)
+                else:
+                    pick.select_part(c, k, 'KEY', not k.sel)
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+
+class EMP_OT_box_select(bpy.types.Operator):
+    """Box-select path keys and handles"""
+    bl_idname = "emp.box_select"
+    bl_label = "Box Select Path Keys"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    mode: EnumProperty(items=[('SET', "Set", ""), ('ADD', "Extend", ""), ('SUB', "Subtract", "")],
+                       default='SET', options={'SKIP_SAVE'})
+    wait_for_input: BoolProperty(default=False, options={'SKIP_SAVE', 'HIDDEN'})
+
+    def invoke(self, context, event):
+        if context.region_data is None or not state.editable_caches(context.scene):
+            return {'PASS_THROUGH'}
+        if event.shift:
+            self.mode = 'ADD'
+        elif event.ctrl:
+            self.mode = 'SUB'
+        self.started = not self.wait_for_input
+        region = context.region
+        if self.started:
+            self.p0 = Vector((event.mouse_prev_press_x - region.x, event.mouse_prev_press_y - region.y))
+        else:
+            self.p0 = Vector((event.mouse_region_x, event.mouse_region_y))
+        self.p1 = Vector((event.mouse_region_x, event.mouse_region_y))
+        state.box_area = context.area.as_pointer()
+        self._show()
+        context.window.cursor_modal_set('CROSSHAIR')
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def _show(self):
+        if self.started:
+            state.box = (self.p0.x, self.p0.y, self.p1.x, self.p1.y, self.mode)
+        else:
+            state.box = None
+        state.tag_redraw()
+
+    def _end(self, context):
+        state.box = None
+        context.window.cursor_modal_restore()
+        state.tag_redraw()
+
+    def modal(self, context, event):
+        m = Vector((event.mouse_region_x, event.mouse_region_y))
+        if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            self.p1 = m
+            self._show()
+        elif event.type in {'LEFTMOUSE', 'MIDDLEMOUSE'} and event.value == 'PRESS' and not self.started:
+            self.started = True
+            if event.type == 'MIDDLEMOUSE' or event.ctrl:
+                self.mode = 'SUB'
+            elif event.shift:
+                self.mode = 'ADD'
+            self.p0 = m
+            self.p1 = m
+            self._show()
+        elif event.type in {'LEFTMOUSE', 'MIDDLEMOUSE'} and event.value == 'RELEASE' and self.started:
+            self.p1 = m
+            self._apply(context)
+            self._end(context)
+            return {'FINISHED'}
+        elif event.type in {'ESC', 'RIGHTMOUSE'} and event.value == 'PRESS':
+            self._end(context)
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
+
+    def _apply(self, context):
+        from bpy_extras.view3d_utils import location_3d_to_region_2d
+        from . import draw
+        region, rv3d = context.region, context.region_data
+        x0, x1 = sorted((self.p0.x, self.p1.x))
+        y0, y1 = sorted((self.p0.y, self.p1.y))
+        st = state.settings(context.scene)
+
+        def inside(p):
+            s = location_3d_to_region_2d(region, rv3d, p)
+            return s is not None and x0 <= s.x <= x1 and y0 <= s.y <= y1
+
+        caches = state.editable_caches(context.scene)
+        if self.mode == 'SET':
+            pick.deselect_all(caches)
+            for c in caches:
+                c.refresh(force=True)
+        value = self.mode != 'SUB'
+        for c in caches:
+            lo, hi = draw.path_window(context.scene, st, c)
+            for k in c.keys:
+                if not (lo - 1e-4 <= k.t <= hi + 1e-4):
+                    continue
+                shown = draw.handles_shown(st, c, True, k)
+                if inside(k.co):
+                    pick.select_part(c, k, 'KEY', value)
+                    continue
+                if not shown:
+                    continue
+                m = pick.handle_min_world(region, rv3d, k.co)
+                if k.hl is not None and inside(pick.display_handle(k, 'L', m)):
+                    pick.select_part(c, k, 'L', value)
+                if k.hr is not None and inside(pick.display_handle(k, 'R', m)):
+                    pick.select_part(c, k, 'R', value)
+        pick.tag_anim_editors()
+
+
+class EMP_OT_jump_to_key(bpy.types.Operator):
+    """Jump to the frame of the double-clicked path key"""
+    bl_idname = "emp.jump_to_key"
+    bl_label = "Jump to Path Key"
+
+    def invoke(self, context, event):
+        if context.region_data is None:
+            return {'PASS_THROUGH'}
+        hit = pick.hit_test(context, event.mouse_region_x, event.mouse_region_y)
+        if hit is None or hit.part != 'KEY':
+            return {'PASS_THROUGH'}
+        context.scene.frame_set(int(round(hit.t)))
+        return {'FINISHED'}
+
+
+class EMP_OT_context_menu(bpy.types.Operator):
+    """Path editing menu (only when path keys are selected)"""
+    bl_idname = "emp.context_menu"
+    bl_label = "Motion Path Menu"
+
+    def invoke(self, context, event):
+        caches = state.editable_caches(context.scene)
+        if not caches or pick.selected_count(caches) == 0:
+            return {'PASS_THROUGH'}
+        bpy.ops.wm.call_menu(name="EMP_MT_context")
+        return {'FINISHED'}
+
+
+class EMP_OT_handle_type_menu(bpy.types.Operator):
+    """Set handle type of the selected path keys"""
+    bl_idname = "emp.handle_type_menu"
+    bl_label = "Handle Type Menu"
+
+    def invoke(self, context, event):
+        caches = state.editable_caches(context.scene)
+        if not caches or pick.selected_count(caches) == 0:
+            return {'PASS_THROUGH'}
+        bpy.ops.wm.call_menu(name="EMP_MT_handle_type")
+        return {'FINISHED'}
+
+
+classes = (EMP_OT_click, EMP_OT_select_all, EMP_OT_box_select, EMP_OT_jump_to_key,
+           EMP_OT_context_menu, EMP_OT_handle_type_menu)
