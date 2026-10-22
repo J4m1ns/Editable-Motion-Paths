@@ -309,6 +309,14 @@ def bevel_key(cache, t, width, segments, profile, whole=True):
         if kk is not None:
             w_.key(cache, tg, kk, p, move_handles=False)
             core.set_handle_types(ch, kk, 'AUTO_CLAMPED', 'AUTO_CLAMPED', w_.touched)
+    # the rounded part is always a smooth Bezier, whatever the corner was
+    for fc in ch.fcurves:
+        if fc is None:
+            continue
+        for kp in fc.keyframe_points:
+            if ta - 1e-3 <= kp.co[0] < tb - 1e-3:
+                kp.interpolation = 'BEZIER'
+        w_.touched.add(fc)
     w_.done([cache])
     # the outer keys go into the profile in the path's own direction: the inner handle gets
     # the same slope as the outer one on every channel (smooth, and Aligned stays aligned)
@@ -328,7 +336,7 @@ def bevel_key(cache, t, width, segments, profile, whole=True):
 
 class EMP_OT_bevel(bpy.types.Operator):
     """Round the selected keys: each one becomes a smooth arc of new keys (Ctrl+B). """ \
-        """Mouse: width, wheel: segments, P: profile"""
+        """A: width, S or wheel: segments, P: profile"""
     bl_idname = "emp.bevel"
     bl_label = "Bevel Path Keys"
     bl_options = {'REGISTER', 'UNDO'}
@@ -383,7 +391,7 @@ class EMP_OT_bevel(bpy.types.Operator):
         m = Vector((event.mouse_region_x, event.mouse_region_y))
         self.d0 = (m - self.center).length
         self.x0 = m.x
-        self.adjust_profile = False
+        self.adjust = 'WIDTH'
         self.snaps = [core.FCurveSnapshot(cc.target(), cc.target().channels(cc.ptype)) for cc in caches]
         self.width = 0.0
         state.modal_running += 1
@@ -400,20 +408,21 @@ class EMP_OT_bevel(bpy.types.Operator):
 
     def _update(self, context, event):
         m = Vector((event.mouse_region_x, event.mouse_region_y))
-        if self.adjust_profile:
-            self.profile = min(1.0, max(0.0, self.p0 + (m.x - self.x0) / (300.0 * compat.ui_scale())))
+        us = compat.ui_scale()
+        if self.adjust == 'PROFILE':
+            self.profile = min(1.0, max(0.0, self.p0 + (m.x - self.x0) / (300.0 * us)))
+        elif self.adjust == 'SEGMENTS':
+            self.segments = max(1, self.s0 + int((m.x - self.x0) / (25.0 * us)))
         else:
             self.width = max(0.0, ((m - self.center).length - self.d0) / self.ppf)
         self._restore()
         if self.width >= 1.0 or (not self.whole_frames and self.width > 0.05):
             self._apply(context)
         context.area.header_text_set(
-            "Bevel: width %.1f frames, %d segment%s, profile %.2f%s   mouse: %s   wheel: segments   "
-            "P: %s   click: confirm   Esc: cancel" % (
+            "Bevel: width %.1f frames, %d segment%s, profile %.2f%s   mouse: %s   "
+            "A: width   S / wheel: segments   P: profile   click: confirm   Esc: cancel" % (
                 self.width, self.segments, "" if self.segments == 1 else "s", self.profile,
-                " (circle)" if abs(self.profile - 0.5) < 0.01 else "",
-                "profile" if self.adjust_profile else "width",
-                "back to width" if self.adjust_profile else "profile"))
+                " (circle)" if abs(self.profile - 0.5) < 0.01 else "", self.adjust.lower()))
         pick.tag_anim_editors()
 
     def modal(self, context, event):
@@ -426,11 +435,14 @@ class EMP_OT_bevel(bpy.types.Operator):
         elif t in {'WHEELDOWNMOUSE', 'PAGE_DOWN', 'NUMPAD_MINUS'} and v == 'PRESS':
             self.segments = max(1, self.segments - 1)
             self._update(context, event)
-        elif t == 'P' and v == 'PRESS':
-            self.adjust_profile = not self.adjust_profile
+        elif t in {'A', 'S', 'P'} and v == 'PRESS':
+            # like mesh Bevel: A width, S segments, P profile (pressed again: back to width)
+            new = {'A': 'WIDTH', 'S': 'SEGMENTS', 'P': 'PROFILE'}[t]
+            self.adjust = 'WIDTH' if new == self.adjust else new
             self.x0 = event.mouse_region_x
             self.p0 = self.profile
-            if not self.adjust_profile:
+            self.s0 = self.segments
+            if self.adjust == 'WIDTH':
                 # keep the width: measure the mouse from here on
                 m = Vector((event.mouse_region_x, event.mouse_region_y))
                 self.d0 = (m - self.center).length - self.width * self.ppf

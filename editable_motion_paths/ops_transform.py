@@ -564,7 +564,9 @@ class EMP_OT_transform(bpy.types.Operator):
         if self.individual and self.mode == 'SCALE' and self.orient == 'GLOBAL' \
                 and len(set(round(v, 6) for v in self.value)) == 1:
             return k.co + scaled_handle(k, e.part, v0, self.value[0])
-        return pick.true_from_display(k.co, X @ e.co, e.m)
+        # the handle moves with the mouse (relative), so short handles drawn longer than they
+        # are can still be pulled right up to the key or through it
+        return X @ h
 
     def _key_handle_target(self, k, side, X):
         """New world handle end when a single key's handles are rotated/scaled (R / S)."""

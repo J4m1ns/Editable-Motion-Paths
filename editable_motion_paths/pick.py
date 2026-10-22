@@ -51,14 +51,6 @@ def display_handle(k, side, m):
     return k.co + d * math.sqrt(ln * ln + m * m)
 
 
-def true_from_display(co, wd, m):
-    v = wd - co
-    ln = v.length
-    if ln < 1e-12:
-        return co.copy()
-    return co + v * (math.sqrt(max(0.0, ln * ln - m * m)) / ln)
-
-
 def hit_test(context, mx, my, radius=None):
     """Nearest key point or visible handle end under the mouse."""
     region = context.region

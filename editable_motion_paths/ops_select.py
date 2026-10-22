@@ -78,7 +78,7 @@ class EMP_OT_click(bpy.types.Operator):
 
         k = hit.key
         if hit.part == 'KEY':
-            state.active_key = (cache.key, k.t)
+            state.set_active(cache.key, k.t)
         release_action = None
         if hit.part != 'KEY' and not event.shift:
             # grabbing a handle edits only that handle (like the Graph Editor)
@@ -123,7 +123,7 @@ class EMP_OT_click(bpy.types.Operator):
                     chosen = [x for x in cache.keys if x.t >= hi - 1e-3 or x.t <= lo + 1e-3]
             for x in chosen:
                 pick.select_part(cache, x, 'KEY', True)
-        state.active_key = (cache.key, k.t)
+        state.set_active(cache.key, k.t)
         cache.refresh(force=True)
 
     @classmethod

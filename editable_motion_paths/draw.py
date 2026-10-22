@@ -407,6 +407,8 @@ def _draw_points(ctx, st, us):
                 if w and not k.sel:
                     # proportional editing influence: white -> orange
                     col = tuple(a + (b - a) * min(1.0, w) * 0.85 for a, b in zip(COL_KEY, COL_KEY_SEL))
+                if k.sel and state.active_key is not None and state.active_key[0] == cache.key                         and abs(state.active_key[1] - k.t) < 1e-3:
+                    discs.add(s, kr + 3.5 * us, (1.0, 1.0, 1.0, 1.0))     # active key: white ring
                 if k.partial:
                     # keyed on some channels only: smaller, with a dark center
                     discs.add_outlined(s, kr * 0.8, col)

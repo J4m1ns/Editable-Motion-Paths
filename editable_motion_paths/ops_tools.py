@@ -614,6 +614,16 @@ class EMP_OT_smooth(_AdjustOp, bpy.types.Operator):
                               description="Shape: make broken (Free / Vector) handles of the "
                                           "smoothed keys aligned")
 
+    def _label(self):
+        return "Smooth (%s, T: %s)" % ("Shape" if self.method == 'SHAPE' else "Time",
+                                       "Time" if self.method == 'SHAPE' else "Shape")
+
+    def _modal_key(self, context, event):
+        if event.type == 'T':
+            self.method = 'TIME' if self.method == 'SHAPE' else 'SHAPE'
+            return True
+        return False
+
     def invoke(self, context, event):
         if state.edit_mode(context.scene) == core.SCALE:
             # Alt+S on scale paths: Shrink / Fatten, like on curves

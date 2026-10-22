@@ -24,6 +24,7 @@ def register():
     props.register()
     for c in _classes:
         bpy.utils.register_class(c)
+    ops_keys.register_macros()
     ui.register()
     draw.register()
     state.register()

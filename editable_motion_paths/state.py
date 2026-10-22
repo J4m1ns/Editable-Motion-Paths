@@ -26,6 +26,7 @@ prop_weights = {}    # (path key, frame) -> proportional influence, for drawing
 slide_marker = None  # (world point, label) target of a key slide
 slide_extension = None  # (before, after) world polylines: where a slide can go past the ends
 active_key = None    # (path key, frame) of the last clicked key (Ctrl+Click range anchor)
+select_history = []  # (path key, frame) of clicked keys, oldest first (Merge At First / Last)
 flash = None         # (text, until_time) short message shown at the bottom of the viewport
 force_draw = False   # draw even with overlays off (render_view for scripts)
 _watch_last = None
@@ -363,6 +364,17 @@ def _load_bake():
     except Exception as ex:
         print("Editable Motion Paths: bake after load failed:", ex)
     return None
+
+
+def set_active(path_key, t):
+    """The active key: drawn with a white ring, used by Merge, Copy, pivot Active Element."""
+    global active_key
+    active_key = (path_key, t)
+    item = (path_key, round(t, 3))
+    if item in select_history:
+        select_history.remove(item)
+    select_history.append(item)
+    del select_history[:-200]
 
 
 def flash_message(text, seconds=3.0):

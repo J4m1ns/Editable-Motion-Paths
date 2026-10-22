@@ -46,11 +46,13 @@ TOOL_KEYMAP = (
     _k("emp.delete_keys", 'DEL'),
     _k("emp.dissolve_keys", 'X', ctrl=True),
     _k("emp.extrude", 'E'),
-    _k("emp.duplicate", 'D', shift=True),
+    _k("emp.duplicate_move", 'D', shift=True),
     _k("emp.loopcut", 'R', ctrl=True),
     _k("emp.bevel", 'B', ctrl=True),
     _k("emp.knife", 'K'),
     _k("emp.merge", 'M'),
+    _k("emp.copy_keys", 'C', ctrl=True),
+    _k("emp.paste_keys", 'V', ctrl=True),
     _k("emp.loop_menu", 'C', alt=True),
     _k("emp.handle_type_menu", 'V'),
     _k("emp.interpolation_menu", 'T'),
@@ -100,10 +102,11 @@ HELP = (
     ("Keys", (
         ("Ctrl+Click path", "insert a key"),
         ("E", "extrude: continue the motion (wheel: frames)"),
-        ("Shift+D", "duplicate to other frames"),
+        ("Shift+D", "duplicate and move the copies"),
         ("Ctrl+R, K", "loop cut / knife"),
         ("Ctrl+B", "bevel (wheel: segments, P: profile)"),
-        ("M", "merge"),
+        ("M", "merge (at the last selected key)"),
+        ("Ctrl+C, Ctrl+V", "copy the active key's pose / paste on the current frame"),
         ("X, Delete, Ctrl+X", "delete menu / delete / dissolve"),
         ("V, T", "handle type / interpolation"),
         ("Alt+C", "loop: cycles, fix seam"),
@@ -130,6 +133,7 @@ def _draw_tool_settings(context, layout, tool):
     layout.separator()
     layout.operator("emp.path_add", text="Add Path", icon='ADD')
     layout.prop(st, "show_all_handles")
+    layout.popover("EMP_PT_display_popover", text="", icon='COLOR')
 
 
 def _draw_proportional(layout, st, compact=False):
@@ -312,9 +316,10 @@ class EMP_MT_context(bpy.types.Menu):
         layout.operator_context = 'INVOKE_DEFAULT'
         layout.operator("emp.subdivide", icon='SNAP_EDGE')
         layout.operator("emp.extrude", text="Extrude", icon='EXPORT')
-        layout.operator("emp.duplicate", text="Duplicate", icon='DUPLICATE')
+        layout.operator("emp.duplicate_move", text="Duplicate", icon='DUPLICATE')
+        layout.operator("emp.duplicate", text="Duplicate in Time", icon='TIME')
         layout.operator("emp.bevel", text="Bevel", icon='MOD_BEVEL')
-        layout.operator("emp.spin", text="Spin", icon='MOD_SCREW')
+        layout.operator("emp.spin", text="Spin", icon='LOOP_FORWARDS')
         layout.menu("EMP_MT_merge", icon='AUTOMERGE_OFF')
         layout.separator()
         layout.operator("emp.smooth", text="Smooth", icon='SMOOTHCURVE')
@@ -416,7 +421,7 @@ class EMP_PT_shape(_Panel, bpy.types.Panel):
         row.operator("emp.exaggerate", text="Exaggerate", icon='SHARPCURVE')
         row = col.row(align=True)
         row.operator("emp.bevel", text="Bevel", icon='MOD_BEVEL')
-        row.operator("emp.spin", text="Spin", icon='MOD_SCREW')
+        row.operator("emp.spin", text="Spin", icon='LOOP_FORWARDS')
         row = col.row(align=True)
         row.menu("EMP_MT_looptools", text="LoopTools", icon='MESH_CIRCLE')
         row.menu("EMP_MT_curves", text="Curves", icon='CURVE_DATA')
@@ -490,27 +495,40 @@ class EMP_PT_display(_Panel, bpy.types.Panel):
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
-        layout = self.layout
-        layout.use_property_split = True
-        layout.use_property_decorate = False
-        st = state.settings(context.scene)
-        layout.prop(st, "color_mode")
-        if st.color_mode in {'TIME', 'SOLID'}:
-            layout.prop(st, "color")
-        elif st.color_mode == 'JITTER':
-            layout.prop(st, "jitter_threshold", text="Threshold")
-        col = layout.column(heading="Show")
-        col.prop(st, "show_frames")
-        col.prop(st, "show_frame_numbers")
-        col.prop(st, "show_all_handles")
-        col.prop(st, "show_ghost")
-        col.prop(st, "show_spokes")
-        col.prop(st, "on_top")
-        layout.prop(st, "line_width")
-        layout.prop(st, "key_size")
-        layout.prop(st, "rot_length")
-        layout.prop(st, "ribbon_width")
-        layout.prop(st, "pin_partial")
+        _draw_display(self.layout, state.settings(context.scene))
+
+
+def _draw_display(layout, st):
+    layout.use_property_split = True
+    layout.use_property_decorate = False
+    layout.prop(st, "color_mode")
+    if st.color_mode in {'TIME', 'SOLID'}:
+        layout.prop(st, "color")
+    elif st.color_mode == 'JITTER':
+        layout.prop(st, "jitter_threshold", text="Threshold")
+    col = layout.column(heading="Show")
+    col.prop(st, "show_frames")
+    col.prop(st, "show_frame_numbers")
+    col.prop(st, "show_all_handles")
+    col.prop(st, "show_ghost")
+    col.prop(st, "show_spokes")
+    col.prop(st, "on_top")
+    layout.prop(st, "line_width")
+    layout.prop(st, "key_size")
+    layout.prop(st, "rot_length")
+    layout.prop(st, "ribbon_width")
+    layout.prop(st, "pin_partial")
+
+
+class EMP_PT_display_popover(bpy.types.Panel):
+    """Path colors and display, from the tool header"""
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'HEADER'
+    bl_label = "Path Display"
+    bl_idname = "EMP_PT_display_popover"
+
+    def draw(self, context):
+        _draw_display(self.layout, state.settings(context.scene))
 
 
 class EMP_PT_help(_Panel, bpy.types.Panel):
@@ -536,7 +554,9 @@ class EMP_PT_help(_Panel, bpy.types.Panel):
 classes = (EMP_MT_handle_type, EMP_MT_interpolation, EMP_MT_value_channel, EMP_OT_set_value_channel,
            EMP_MT_space, EMP_MT_looptools, EMP_MT_snap, EMP_MT_curves, EMP_MT_context, EMP_UL_paths,
            EMP_PT_main, EMP_PT_shape, EMP_PT_timing, EMP_PT_keys, EMP_PT_range, EMP_PT_display,
-           EMP_PT_help)
+           EMP_PT_display_popover, EMP_PT_help)
+
+_addon_keymaps = []
 
 
 def register():
@@ -546,9 +566,23 @@ def register():
     bpy.utils.register_tool(EMP_ObjectTool, separator=True)
     bpy.types.VIEW3D_MT_pose_context_menu.append(_context_menu_entry)
     bpy.types.VIEW3D_MT_object_context_menu.append(_context_menu_entry)
+    # Ctrl+T picks the tool in Pose Mode (also shown in the Shift+Space tool menu); in Object
+    # Mode Ctrl+T stays Blender's Track menu
+    kc = bpy.context.window_manager.keyconfigs.addon
+    if kc is not None:
+        km = kc.keymaps.new("Pose", space_type='EMPTY')
+        kmi = km.keymap_items.new("wm.tool_set_by_id", 'T', 'PRESS', ctrl=True)
+        kmi.properties.name = EMP_PoseTool.bl_idname
+        _addon_keymaps.append((km, kmi))
 
 
 def unregister():
+    for km, kmi in _addon_keymaps:
+        try:
+            km.keymap_items.remove(kmi)
+        except Exception:
+            pass
+    _addon_keymaps.clear()
     bpy.types.VIEW3D_MT_pose_context_menu.remove(_context_menu_entry)
     bpy.types.VIEW3D_MT_object_context_menu.remove(_context_menu_entry)
     bpy.utils.unregister_tool(EMP_ObjectTool)

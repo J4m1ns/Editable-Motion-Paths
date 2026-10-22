@@ -425,10 +425,11 @@ class EMP_OT_merge(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     type: EnumProperty(name="Type", items=[
+        ('LAST', "At Last", "Everything goes to the last selected (active) key"),
+        ('FIRST', "At First", "Everything goes to the first selected key"),
         ('CENTER', "At Center", "One key in the middle (frame and position)"),
-        ('FIRST', "At First", "Keep the first selected key"),
-        ('LAST', "At Last", "Keep the last selected key"),
-    ], default='CENTER')
+        ('CURSOR', "At Cursor", "The active key, moved to the 3D cursor"),
+    ], default='LAST')
 
     def invoke(self, context, event):
         if not any(sum(1 for k in c.keys if k.sel) >= 2 for c in state.editable_caches(context.scene)):
@@ -443,10 +444,16 @@ class EMP_OT_merge(bpy.types.Operator):
             sel = [k for k in c.keys if k.sel]
             if len(sel) < 2:
                 continue
-            if self.type == 'FIRST':
-                keep_t, W = sel[0].t, None
-            elif self.type == 'LAST':
-                keep_t, W = sel[-1].t, None
+            if self.type in {'FIRST', 'LAST', 'CURSOR'}:
+                # selection order, like mesh Merge: the history of clicked keys
+                order = [t for key, t in state.select_history if key == c.key]
+                ranked = [k for t in order for k in sel if abs(k.t - t) < 1e-3]
+                if self.type == 'FIRST':
+                    keep = ranked[0] if ranked else sel[0]
+                else:
+                    keep = ranked[-1] if ranked else sel[-1]
+                keep_t = keep.t
+                W = context.scene.cursor.location.copy() if self.type == 'CURSOR' else None
             else:
                 keep_t = float(round(sum(k.t for k in sel) / len(sel)))
                 W = space.median([k.co for k in sel])
@@ -469,6 +476,7 @@ class EMP_OT_merge(bpy.types.Operator):
                 w.done([c])
             for k in c.keys:
                 pick.select_part(c, k, 'KEY', abs(k.t - keep_t) < 1e-3)
+            state.set_active(c.key, keep_t)
             n += 1
         if not n:
             return {'CANCELLED'}
@@ -502,57 +510,237 @@ def _pose_fcurves(tg, cache, whole):
     return [fc for fc in tg.channels(cache.ptype).fcurves if fc is not None]
 
 
-def copy_keys_to(fc, frames, offset, select_new=True):
-    """Copy the keys of `fc` at `frames` to frame + offset (replacing keys there). The other
-    keys keep their handles. Returns the new key frames."""
+def kp_entry(kp):
+    """A key as data relative to its own position (value, handles, types)."""
+    x, y = kp.co
+    return (x, y, (kp.handle_left[0] - x, kp.handle_left[1] - y),
+            (kp.handle_right[0] - x, kp.handle_right[1] - y), kp.handle_left_type,
+            kp.handle_right_type, kp.interpolation, kp.type, kp.easing)
+
+
+def put_keys(fc, entries, select_new=True):
+    """Put keys (x, y, hl offset, hr offset, types, interpolation, key type, easing) on `fc`,
+    replacing keys on the same frames. The other keys keep their handles. Returns the frames."""
     kps = fc.keyframe_points
-    cyc = core.cycle_info(fc)
-    want = {round(t, 3) for t in frames}
-    src = [kp for kp in kps if round(kp.co[0], 3) in want]
-    if not src:
-        return []
-    data = [(kp.co[0], kp.co[1], tuple(kp.handle_left), tuple(kp.handle_right), kp.handle_left_type,
-             kp.handle_right_type, kp.interpolation, kp.type, kp.easing) for kp in src]
+    xs = {round(e[0], 3) for e in entries}
     keep = [(kp.co[0], tuple(kp.handle_left), tuple(kp.handle_right), kp.handle_left_type,
-             kp.handle_right_type) for kp in kps]
-    targets = []
-    for d in data:
-        x = core.wrap_time(d[0] + offset, cyc)
-        for i in reversed(range(len(kps))):
-            if abs(kps[i].co[0] - x) < 1e-3:
-                kps.remove(kps[i], fast=True)
-        targets.append((x, d))
-    for x, d in targets:
-        kps.insert(x, d[1], options={'FAST'})
+             kp.handle_right_type) for kp in kps if round(kp.co[0], 3) not in xs]
+    for i in reversed(range(len(kps))):
+        if round(kps[i].co[0], 3) in xs:
+            kps.remove(kps[i], fast=True)
+    for e in entries:
+        kps.insert(e[0], e[1], options={'FAST'})
     by_x = {round(kp.co[0], 3): kp for kp in kps}
     # inserting reshapes the neighbors' handles: put the old keys back as they were
     for x, hl, hr, tl, tr in keep:
         kp = by_x.get(round(x, 3))
-        if kp is not None and round(x, 3) not in {round(t[0], 3) for t in targets}:
+        if kp is not None:
             kp.handle_left_type, kp.handle_right_type = tl, tr
             kp.handle_left, kp.handle_right = hl, hr
-            kp.select_control_point = kp.select_left_handle = kp.select_right_handle = \
-                kp.select_control_point and not select_new
-    for x, d in targets:
+            if select_new:
+                kp.select_control_point = kp.select_left_handle = kp.select_right_handle = False
+    for x, y, hl, hr, tl, tr, interp, ktype, easing in entries:
         kp = by_x.get(round(x, 3))
         if kp is None:
             continue
-        x0, y = d[0], d[1]
-        kp.interpolation, kp.type, kp.easing = d[6], d[7], d[8]
-        kp.handle_left_type, kp.handle_right_type = d[4], d[5]
+        kp.interpolation, kp.type, kp.easing = interp, ktype, easing
+        kp.handle_left_type, kp.handle_right_type = tl, tr
         kp.co = (x, y)
-        kp.handle_left = (x + d[2][0] - x0, d[2][1])
-        kp.handle_right = (x + d[3][0] - x0, d[3][1])
+        kp.handle_left = (x + hl[0], y + hl[1])
+        kp.handle_right = (x + hr[0], y + hr[1])
         kp.select_control_point = kp.select_left_handle = kp.select_right_handle = select_new
     fc.update()
-    return [x for x, _d in targets]
+    return [e[0] for e in entries]
+
+
+def copy_keys_to(fc, frames, offset, select_new=True):
+    """Copy the keys of `fc` at `frames` to frame + offset (replacing keys there). The other
+    keys keep their handles. Returns the new key frames."""
+    cyc = core.cycle_info(fc)
+    want = {round(t, 3) for t in frames}
+    entries = []
+    for kp in fc.keyframe_points:
+        if round(kp.co[0], 3) in want:
+            e = kp_entry(kp)
+            entries.append((core.wrap_time(e[0] + offset, cyc),) + e[1:])
+    if not entries:
+        return []
+    return put_keys(fc, entries, select_new)
+
+
+# ----------------------------------------------------------------------------
+# Copy / paste a key's pose
+# ----------------------------------------------------------------------------
+
+_clipboard = None       # {"frame": t, "items": [(data path suffix, index, entry or None, value)]}
+
+
+def _suffix(tg, data_path):
+    return data_path[len(tg.prefix):] if tg.prefix and data_path.startswith(tg.prefix) else data_path
+
+
+def _copy_source(caches):
+    """(cache, key) to copy from: the active key, else the first selected one."""
+    a = space.active_key(caches)
+    if a is not None:
+        return a
+    for c in caches:
+        for k in c.keys:
+            if k.sel:
+                return c, k
+    return None
+
+
+class EMP_OT_copy_keys(bpy.types.Operator):
+    """Copy the pose of the active key (Ctrl+C). Ctrl+V pastes it on the current frame"""
+    bl_idname = "emp.copy_keys"
+    bl_label = "Copy Key Pose"
+
+    all_channels: BoolProperty(name="Whole Pose", default=True,
+                               description="Copy every channel of the bone / object, not only the "
+                                           "edited ones")
+
+    def invoke(self, context, event):
+        global _clipboard
+        if _copy_source(state.editable_caches(context.scene)) is None:
+            _clipboard = None       # Blender's own copy (pose / objects) is the newer one now
+            return {'PASS_THROUGH'}
+        return self.execute(context)
+
+    def execute(self, context):
+        global _clipboard
+        src = _copy_source(state.editable_caches(context.scene))
+        if src is None:
+            return {'CANCELLED'}
+        c, k = src
+        tg = c.target()
+        items = []
+        for fc in _pose_fcurves(tg, c, self.all_channels):
+            tt = core.wrap_time(k.t, core.cycle_info(fc))
+            kp = next((kp for kp in fc.keyframe_points if abs(kp.co[0] - tt) < 1e-3), None)
+            items.append((_suffix(tg, fc.data_path), fc.array_index,
+                          kp_entry(kp) if kp is not None else None, fc.evaluate(k.t)))
+        _clipboard = {"frame": k.t, "items": items}
+        self.report({'INFO'}, "Copied the pose of frame %g" % k.t)
+        return {'FINISHED'}
+
+
+class EMP_OT_paste_keys(bpy.types.Operator):
+    """Paste the copied key pose on the current frame (Ctrl+V)"""
+    bl_idname = "emp.paste_keys"
+    bl_label = "Paste Key Pose"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def invoke(self, context, event):
+        if _clipboard is None or not state.editable_caches(context.scene):
+            return {'PASS_THROUGH'}
+        return self.execute(context)
+
+    def execute(self, context):
+        if _clipboard is None:
+            self.report({'WARNING'}, "Copy a key first (Ctrl+C on a selected key)")
+            return {'CANCELLED'}
+        frame = float(context.scene.frame_current)
+        caches = state.editable_caches(context.scene)
+        for c in caches:
+            tg = c.target()
+            ch = tg.channels(c.ptype)
+            own = {(ch.path, fc.array_index if fc is not None else i) for i, fc in enumerate(ch.fcurves)}
+            for suffix, index, entry, value in _clipboard["items"]:
+                path = tg.prefix + suffix if tg.prefix else suffix
+                fc = tg.coll.find(path, index=index) if tg.coll is not None else None
+                if fc is None:
+                    if (path, index) not in own:
+                        continue
+                    fc = compat.ensure_fcurve(tg.obj, path, index, tg.group_name)
+                x = core.wrap_time(frame, core.cycle_info(fc))
+                if entry is None:
+                    entry = (x, value, (-1.0, 0.0), (1.0, 0.0), 'AUTO_CLAMPED', 'AUTO_CLAMPED',
+                             'BEZIER', 'KEYFRAME', 'AUTO')
+                put_keys(fc, [(x,) + tuple(entry[1:])], select_new=(path, index) in own)
+            c.extend_to(frame)
+            c.dirty = True
+            c.refresh(force=True)
+            state.set_active(c.key, frame)
+        state.schedule_rebake(0.3)
+        pick.tag_anim_editors()
+        self.report({'INFO'}, "Pasted the pose of frame %g on frame %g" % (_clipboard["frame"], frame))
+        return {'FINISHED'}
+
+
+def auto_offset(caches):
+    """Frames to put copies of the selection at: halfway to the next key after it, or one
+    key spacing past the end of the path."""
+    for c in caches:
+        sel = [k.t for k in c.keys if k.sel]
+        if not sel:
+            continue
+        first, last = min(sel), max(sel)
+        after = [k.t for k in c.keys if k.t > last + 1e-3]
+        if after:
+            gap = max(1.0, float(round((after[0] - last) / 2.0)))
+        else:
+            ts = [k.t for k in c.keys]
+            gaps = sorted(y - x for x, y in zip(ts, ts[1:]))
+            gap = max(1.0, float(round(gaps[len(gaps) // 2]))) if gaps else 5.0
+        return last + gap - first
+    return 0.0
+
+
+class EMP_OT_duplicate_keys(bpy.types.Operator):
+    """Copy the selected keys to later frames (Shift+D then moves the copies)"""
+    bl_idname = "emp.duplicate_keys"
+    bl_label = "Duplicate Path Keys"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    offset: FloatProperty(name="Frames", default=0.0, options={'SKIP_SAVE'},
+                          description="How many frames later the copies go (0: halfway to the "
+                                      "next key)")
+    all_channels: BoolProperty(name="Whole Pose", default=True,
+                               description="Also copy the other keys of the bone / object on the "
+                                           "same frames (rotation, scale, custom properties)")
+
+    def invoke(self, context, event):
+        if not any(k.sel for c in state.editable_caches(context.scene) for k in c.keys):
+            return {'PASS_THROUGH'}
+        return self.execute(context)
+
+    def execute(self, context):
+        caches = [c for c in state.editable_caches(context.scene) if any(k.sel for k in c.keys)]
+        if not caches:
+            return {'CANCELLED'}
+        if abs(self.offset) < 1e-6:
+            self.offset = auto_offset(caches)
+        for c in caches:
+            sel = [k.t for k in c.keys if k.sel]
+            tg = c.target()
+            for fc in _pose_fcurves(tg, c, self.all_channels):
+                copy_keys_to(fc, sel, self.offset)
+            c.extend_to(max(sel) + self.offset)
+            c.dirty = True
+            c.refresh(force=True)
+        state.schedule_rebake(0.3)
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+
+class EMP_OT_duplicate_move(bpy.types.Macro):
+    """Duplicate the selected keys and move the copies (Shift+D)"""
+    bl_idname = "emp.duplicate_move"
+    bl_label = "Duplicate and Move Path Keys"
+    bl_options = {'REGISTER', 'UNDO'}
+
+
+def register_macros():
+    EMP_OT_duplicate_move.define("EMP_OT_duplicate_keys")
+    EMP_OT_duplicate_move.define("EMP_OT_transform").properties.mode = 'TRANSLATE'
 
 
 class EMP_OT_duplicate(bpy.types.Operator):
     """Copy the selected keys to other frames: move the mouse left / right to place the """ \
-        """copies, click to confirm (Shift+D). Copies of one key make a hold"""
+        """copies, click to confirm. Copies of one key make a hold"""
     bl_idname = "emp.duplicate"
-    bl_label = "Duplicate Path Keys"
+    bl_label = "Duplicate in Time"
     bl_options = {'REGISTER', 'UNDO'}
 
     offset: FloatProperty(name="Frames", default=0.0)
@@ -721,13 +909,15 @@ class EMP_OT_extrude(bpy.types.Operator):
                 W = c.point(tg, t_new, ref)
             w = edit.Writer([t_new])
             w.key(c, tg, k, W + Vector(self.offset))
+            # the new key gets the handle types of the key it grows from (Vector stays Vector)
+            core.set_handle_types(tg.channels(c.ptype), k, src.type_l, src.type_r, w.touched)
             w.done([c])
             pick.deselect_all([c])
             c.refresh(force=True)
             for kk in c.keys:
                 if abs(kk.t - t_new) < 1e-3:
                     pick.select_part(c, kk, 'KEY', True)
-            state.active_key = (c.key, t_new)
+            state.set_active(c.key, t_new)
             made += 1
         return made
 
@@ -890,5 +1080,6 @@ class EMP_OT_interpolation_menu(bpy.types.Operator):
 
 classes = (EMP_OT_delete_keys, EMP_OT_dissolve_keys, EMP_OT_delete_menu, EMP_MT_delete,
            EMP_OT_insert_key, EMP_OT_subdivide, EMP_OT_loopcut, EMP_OT_knife, EMP_OT_merge,
-           EMP_MT_merge, EMP_OT_duplicate, EMP_OT_extrude, EMP_OT_toggle_cycles, EMP_MT_loop,
+           EMP_MT_merge, EMP_OT_duplicate, EMP_OT_duplicate_keys, EMP_OT_duplicate_move,
+           EMP_OT_extrude, EMP_OT_copy_keys, EMP_OT_paste_keys, EMP_OT_toggle_cycles, EMP_MT_loop,
            EMP_OT_loop_menu, EMP_OT_interpolation_menu)
