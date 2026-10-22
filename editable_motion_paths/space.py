@@ -119,9 +119,10 @@ def pivot_point(context, keys, handles=()):
         return scene.cursor.location.copy(), False
     if mode == 'INDIVIDUAL_ORIGINS':
         return median(pts), True
-    if mode == 'ACTIVE_ELEMENT' and state.active_key is not None:
+    active = state.get_active(scene)
+    if mode == 'ACTIVE_ELEMENT' and active is not None:
         for c, k in keys:
-            if c.key == state.active_key[0] and abs(k.t - state.active_key[1]) < 1e-3:
+            if c.key == active[0] and abs(k.t - active[1]) < 1e-3:
                 return k.co.copy(), False
     if mode == 'BOUNDING_BOX_CENTER':
         lo = Vector([min(p[i] for p in pts) for i in range(3)])
@@ -139,12 +140,13 @@ def median(pts):
 
 def active_key(caches):
     """(cache, key) of the active (last clicked) key if it is selected."""
-    if state.active_key is None:
+    active = state.get_active()
+    if active is None:
         return None
     for c in caches:
-        if c.key != state.active_key[0]:
+        if c.key != active[0]:
             continue
         for k in c.keys:
-            if k.sel and abs(k.t - state.active_key[1]) < 1e-3:
+            if k.sel and abs(k.t - active[1]) < 1e-3:
                 return c, k
     return None

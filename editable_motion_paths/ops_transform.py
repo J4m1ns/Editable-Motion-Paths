@@ -399,6 +399,9 @@ class EMP_OT_transform(bpy.types.Operator):
                                          description="Measure the distance on the screen")
     release_confirm: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
     axis_index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
+    axis_plane: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    time_wheel: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'},
+                             description="Mouse wheel moves the keys in time (Shift+D)")
     start_x: IntProperty(default=-100000, options={'HIDDEN', 'SKIP_SAVE'})
     start_y: IntProperty(default=-100000, options={'HIDDEN', 'SKIP_SAVE'})
 
@@ -733,7 +736,7 @@ class EMP_OT_transform(bpy.types.Operator):
             self.mouse_last = self.mouse_start.copy()
         else:
             self.mouse_last = Vector((event.mouse_region_x, event.mouse_region_y))
-        self.constraint = (self.axis_index, False) if self.axis_index >= 0 else None  # (axis, plane)
+        self.constraint = (self.axis_index, self.axis_plane) if self.axis_index >= 0 else None
         self.orient = 'GLOBAL'
         self.numinput = NumInput()
         self.value = (1.0, 1.0, 1.0) if self.mode == 'SCALE' else (0.0, 0.0, 0.0)
@@ -762,7 +765,9 @@ class EMP_OT_transform(bpy.types.Operator):
         v = self.mouse_virtual - self.angle_center
         self.angle_acc = 0.0
         self.angle_prev = math.atan2(v.y, v.x)
-        self.scale_d0 = max(self.scale_start, 40.0 * us)
+        # a gizmo handle grabbed by the mouse follows it exactly; from the keyboard the scale
+        # needs some distance to stay controllable
+        self.scale_d0 = max(self.scale_start, (8.0 if self.axis_index >= 0 and self.release_confirm else 40.0) * us)
         self.anchor = self.mouse_virtual.copy()
 
     def _restore(self):
@@ -1021,6 +1026,9 @@ class EMP_OT_transform(bpy.types.Operator):
             v = Vector(self.value)
             parts = [num.text(i, v[i], "%.4f") for i in range(3)]
             txt = "Move  D: %s  %s  %s  (%.4f)%s" % (parts[0], parts[1], parts[2], v.length, ctext)
+            if self.time_wheel:
+                keys = sorted({round(e.k.t) for _c, es in self.groups for e in es if e.src is None})
+                txt += "   frame %s (wheel: earlier / later)" % ", ".join("%d" % t for t in keys[:4])
             if self.snap_hit is not None:
                 txt += "   snapped to %s" % self.snap_hit[1].replace('_', ' ').lower()
         elif self.mode == 'SHEAR':
@@ -1191,6 +1199,10 @@ class EMP_OT_transform(bpy.types.Operator):
                 self.use_proportional = not self.use_proportional
             self._update(context)
             return {'RUNNING_MODAL'}
+        if self.time_wheel and v == 'PRESS' and t in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
+            # Shift+D: the wheel moves the copies through the motion, a frame at a time
+            self._shift_time(context, event, 1 if t == 'WHEELUPMOUSE' else -1)
+            return {'RUNNING_MODAL'}
         if self.use_proportional and v == 'PRESS' and t in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE',
                                                               'PAGE_UP', 'PAGE_DOWN'}:
             grow = t in {'WHEELDOWNMOUSE', 'PAGE_UP'}
@@ -1198,6 +1210,24 @@ class EMP_OT_transform(bpy.types.Operator):
             self._update(context)
             return {'RUNNING_MODAL'}
         return {'RUNNING_MODAL'}
+
+    def _shift_time(self, context, event, d):
+        from .ops_keys import shift_selected_keys
+        self._restore()
+        caches = [c for c, _es in self.groups]
+        for c in caches:
+            c.refresh(force=True)
+        shift_selected_keys(caches, d)
+        self.snapshots = []
+        self.created = []
+        self.applied = False
+        self.ensured = False
+        self._prepare(context, self.snapshots, self.created, candidates=True, ensure=False)
+        for cache, _es in self.groups:
+            state.ghosts[cache.key] = list(cache.points)
+        self._compute(context, event)
+        self._update(context)
+        pick.tag_anim_editors()
 
     def _confirm(self, context):
         self._finish(context)

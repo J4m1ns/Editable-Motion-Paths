@@ -446,7 +446,7 @@ class EMP_OT_merge(bpy.types.Operator):
                 continue
             if self.type in {'FIRST', 'LAST', 'CURSOR'}:
                 # selection order, like mesh Merge: the history of clicked keys
-                order = [t for key, t in state.select_history if key == c.key]
+                order = [t for key, t in state.select_history(context.scene) if key == c.key]
                 ranked = [k for t in order for k in sel if abs(k.t - t) < 1e-3]
                 if self.type == 'FIRST':
                     keep = ranked[0] if ranked else sel[0]
@@ -733,7 +733,48 @@ class EMP_OT_duplicate_move(bpy.types.Macro):
 
 def register_macros():
     EMP_OT_duplicate_move.define("EMP_OT_duplicate_keys")
-    EMP_OT_duplicate_move.define("EMP_OT_transform").properties.mode = 'TRANSLATE'
+    move = EMP_OT_duplicate_move.define("EMP_OT_transform")
+    move.properties.mode = 'TRANSLATE'
+    move.properties.time_wheel = True
+
+
+def shift_selected_keys(caches, d, all_channels=True):
+    """Move the selected keys d frames in time (whole pose). Frames that already have keys are
+    jumped over, so the keys can travel through the motion. Returns the frames moved by."""
+    moved = None
+    for c in caches:
+        sel = sorted(k.t for k in c.keys if k.sel)
+        if not sel:
+            continue
+        others = {round(k.t, 3) for k in c.keys if not k.sel}
+        step = 1.0 if d > 0 else -1.0
+        off = 0.0
+        for _ in range(int(abs(d))):
+            off += step
+            for _j in range(1000):
+                if not any(round(t + off, 3) in others for t in sel):
+                    break
+                off += step
+        if abs(off) < 1e-9:
+            continue
+        tg = c.target()
+        for fc in _pose_fcurves(tg, c, all_channels):
+            cyc = core.cycle_info(fc)
+            want = {round(t, 3) for t in sel}
+            entries = [kp_entry(kp) for kp in fc.keyframe_points if round(kp.co[0], 3) in want]
+            if not entries:
+                continue
+            kps = fc.keyframe_points
+            for i in reversed(range(len(kps))):
+                if round(kps[i].co[0], 3) in want:
+                    kps.remove(kps[i], fast=True)
+            put_keys(fc, [(core.wrap_time(e[0] + off, cyc),) + e[1:] for e in entries])
+        c.extend_to(sel[0] + off)
+        c.extend_to(sel[-1] + off)
+        c.dirty = True
+        c.refresh(force=True)
+        moved = off
+    return moved
 
 
 class EMP_OT_duplicate(bpy.types.Operator):

@@ -209,6 +209,8 @@ COL_SCALE_LOW = (0.3, 0.6, 1.0)
 COL_SCALE_HIGH = (1.0, 0.25, 0.35)
 GIZMO_COLORS = {'GX': (1.0, 0.25, 0.3, 1.0), 'GY': (0.45, 0.9, 0.2, 1.0), 'GZ': (0.25, 0.5, 1.0, 1.0),
                 'GU': (1.0, 1.0, 1.0, 1.0)}
+GIZMO_COLORS['GXn'] = GIZMO_COLORS['GX']
+GIZMO_COLORS['GZn'] = GIZMO_COLORS['GZ']
 
 
 def scale_color(sy):
@@ -301,12 +303,17 @@ def scale_gizmo_points(st, cache, k, region=None, rv3d=None):
     ax = cache.axes(tg, k.t)
     region = region or bpy.context.region
     rv3d = rv3d or bpy.context.region_data
-    h = max(ribbon_half(st, cache) * 1.6, pick.handle_min_world(region, rv3d, k.co) * 2.0)
+    # X and Z sit on the edges of their ribbons (both sides), Y on the bone axis
+    h = ribbon_half(st, cache)
+    mn = pick.handle_min_world(region, rv3d, k.co) * 0.7
     out = {}
     for i, part in enumerate(('GX', 'GY', 'GZ')):
-        out[part] = k.co + ax[i] * (h * min(max(abs(k.vals[i]), 0.25), 3.0))
+        ln = max(h * abs(k.vals[i]), mn)
+        out[part] = k.co + ax[i] * ln
+        if part != 'GY':
+            out[part + 'n'] = k.co - ax[i] * ln
     u = (ax[0] + ax[1] + ax[2]).normalized()
-    out['GU'] = k.co + u * (h * 0.9 * min(max(sum(abs(v) for v in k.vals[:3]) / 3.0, 0.25), 3.0))
+    out['GU'] = k.co + u * max(h * 1.2 * sum(abs(v) for v in k.vals[:3]) / 3.0, mn * 1.3)
     return out
 
 
@@ -315,11 +322,14 @@ def _draw_scale_gizmos(st, cache, keys, us):
     for k in keys:
         if not k.sel:
             continue
-        for part, p in scale_gizmo_points(st, cache, k).items():
-            if part == 'GU':
-                continue
-            lines += [k.co, p]
-            cols += [GIZMO_COLORS[part]] * 2
+        g = scale_gizmo_points(st, cache, k)
+        for a, b in (('GXn', 'GX'), ('GZn', 'GZ')):
+            if a in g:
+                lines += [g[a], g[b]]       # across the ribbon: its width at this key
+                cols += [GIZMO_COLORS[b]] * 2
+        if 'GY' in g:
+            lines += [k.co, g['GY']]
+            cols += [GIZMO_COLORS['GY']] * 2
     _lines(lines, cols, 2.0 * us)
 
 
@@ -356,7 +366,8 @@ def _draw_view():
     up = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
     look = rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))
     for cache in caches:
-        if cache.ptype == core.VALUE and not state.modal_running and                 (cache.vdir.angle(up, 0.0) > 0.35 or cache.vview.angle(look, 0.0) > 0.35):
+        if cache.ptype == core.VALUE and not state.modal_running and \
+                (cache.vdir.angle(up, 0.0) > 0.35 or cache.vview.angle(look, 0.0) > 0.35):
             # the value track is placed relative to the screen; it turns with the view (not
             # while editing)
             cache.vdir = up.normalized()
@@ -478,6 +489,7 @@ def _draw_points(ctx, st, us):
             if tg is not None:
                 discs.add_outlined(proj(cache.point(tg, cur)), ks * 0.75, COL_CURRENT)
 
+        active = state.get_active(scene)
         # dense keys (baked / mocap) get smaller dots, so the path stays readable
         scr = [proj(k.co) for k in cache.keys]
         last_label = None
@@ -491,7 +503,8 @@ def _draw_points(ctx, st, us):
             gap = min(near) if near else 1e9
             kr = ks if gap >= 3.0 * ks else max(2.5 * us, round(gap * 0.33 * 2.0) / 2.0)
             ks_all = cache.keys
-            if not k.sel and (i == 0 or k.t - ks_all[i - 1].t <= 2.0 + 1e-6) and                     (i + 1 == len(ks_all) or ks_all[i + 1].t - k.t <= 2.0 + 1e-6):
+            if not k.sel and (i == 0 or k.t - ks_all[i - 1].t <= 2.0 + 1e-6) and \
+                    (i + 1 == len(ks_all) or ks_all[i + 1].t - k.t <= 2.0 + 1e-6):
                 kr = min(kr, 3.0 * us)      # baked keys (every frame or two): small dots
             if editable:
                 if cache.ptype == core.SCALE and k.sel:
@@ -512,7 +525,7 @@ def _draw_points(ctx, st, us):
                 if w and not k.sel:
                     # proportional editing influence: white -> orange
                     col = tuple(a + (b - a) * min(1.0, w) * 0.85 for a, b in zip(COL_KEY, COL_KEY_SEL))
-                if k.sel and state.active_key is not None and state.active_key[0] == cache.key                         and abs(state.active_key[1] - k.t) < 1e-3:
+                if k.sel and active is not None and active[0] == cache.key and abs(active[1] - k.t) < 1e-3:
                     discs.add(s, kr + 3.5 * us, (1.0, 1.0, 1.0, 1.0))     # active key: white ring
                 if k.partial:
                     # keyed on some channels only: smaller, with a dark center
@@ -523,13 +536,15 @@ def _draw_points(ctx, st, us):
             else:
                 discs.add_outlined(s, kr * 0.7, COL_KEY_LOCKED, 1.0)
             show_val = cache.ptype in (core.SCALE, core.VALUE) and editable
-            if (st.show_frame_numbers or state.force_numbers or show_val) and s is not None and                     (last_label is None or (s - last_label).length > 22.0 * us):
+            if (st.show_frame_numbers or state.force_numbers or show_val) and s is not None and \
+                    (last_label is None or (s - last_label).length > 22.0 * us):
                 txt = ""
                 if st.show_frame_numbers or state.force_numbers:
                     txt = "%d" % round(k.t) if abs(k.t - round(k.t)) < 1e-3 else "%.2f" % k.t
                 if show_val:
                     v = k.vals or []
-                    val = ("%.2f" % v[0]) if len(v) == 1 or max(v) - min(v) < 1e-3 else                         " ".join("%.2f" % x for x in v)
+                    val = ("%.2f" % v[0]) if len(v) == 1 or max(v) - min(v) < 1e-3 else \
+                            " ".join("%.2f" % x for x in v)
                     txt = (txt + "  " if txt else "") + val
                 labels.append((s, txt))
                 last_label = s

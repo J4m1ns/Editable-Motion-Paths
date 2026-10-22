@@ -389,6 +389,7 @@ class PathCache:
         self.vbase = 0.0        # value track: value drawn on the path itself
         self.vgain = 1.0        # value track: world height per unit of value
         self.vgain_id = None
+        self.size_ref = 1.0     # path size the value / scale drawing was set up for
         self.vdir = Vector((0.0, 0.0, 1.0))   # value track: direction "up" (follows the view)
         self.vview = Vector((0.0, 1.0, 0.0))  # value track: view direction (track beside the path)
         self.track_mode = 'UP'
@@ -589,19 +590,25 @@ class PathCache:
     def _build(self, tg):
         ch = tg.channels(self.ptype)
         fs, fe = self.fs, self.fe
-        if self.ptype in (SCALE, VALUE) and self.vgain_id != self.bake_id:
-            # the scale of the drawing is fixed per bake, so edits don't make it jump
-            self.vgain_id = self.bake_id
-            heads = [self.head(tg, float(t)) for t in range(fs, fe + 1)]
-            lo = [min(p[i] for p in heads) for i in range(3)]
-            hi = [max(p[i] for p in heads) for i in range(3)]
-            size = max(sum((h - l) ** 2 for h, l in zip(hi, lo)) ** 0.5, tg.length, 0.1)
-            if self.ptype == VALUE:
-                vs = [ch.values(float(t))[0] for t in range(fs, fe + 1)]
-                self.vbase = min(vs) if vs else 0.0
-                self.vgain = size * VALUE_HEIGHT / max(max(vs) - min(vs), 1e-6) if vs else 1.0
-            else:
-                self.vgain = size * VALUE_HEIGHT
+        if self.ptype in (SCALE, VALUE):
+            # the scale of the drawing is set once (per value), so edits and recalculations
+            # never make the track jump; only values far outside it set it again
+            vs = [ch.values(float(t))[0] for t in range(fs, fe + 1)] if self.ptype == VALUE else []
+            renew = self.vgain_id is None
+            if vs and not renew:
+                span = self.size_ref * VALUE_HEIGHT / self.vgain
+                renew = min(vs) < self.vbase - span or max(vs) > self.vbase + 2.0 * span
+            if renew:
+                self.vgain_id = True
+                heads = [self.head(tg, float(t)) for t in range(fs, fe + 1)]
+                lo = [min(p[i] for p in heads) for i in range(3)]
+                hi = [max(p[i] for p in heads) for i in range(3)]
+                self.size_ref = max(sum((h - l) ** 2 for h, l in zip(hi, lo)) ** 0.5, tg.length, 0.1)
+                if vs:
+                    self.vbase = min(vs)
+                    self.vgain = self.size_ref * VALUE_HEIGHT / max(max(vs) - min(vs), 1e-6)
+                else:
+                    self.vgain = self.size_ref * VALUE_HEIGHT
         self.cyclic = any(fc is not None and any(m.type == 'CYCLES' for m in fc.modifiers)
                           for fc in ch.fcurves)
         keys = self._collect_keys(ch)

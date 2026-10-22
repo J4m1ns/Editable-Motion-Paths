@@ -10,7 +10,7 @@ from . import compat, core, pick, state
 from .ops_keys import insert_key
 
 
-GIZMO_AXES = {'GX': 0, 'GY': 1, 'GZ': 2, 'GU': -1}
+GIZMO_AXES = {'GX': 0, 'GXn': 0, 'GY': 1, 'GZ': 2, 'GZn': 2, 'GU': -1}
 
 
 def _region_mouse(context, event):
@@ -111,9 +111,9 @@ class EMP_OT_click(bpy.types.Operator):
     def _select_range(cache, k):
         sel = [x.t for x in cache.keys if x.sel and abs(x.t - k.t) > 1e-3]
         anchor = None
-        if state.active_key and state.active_key[0] == cache.key and \
-                any(abs(t - state.active_key[1]) < 1e-3 for t in sel):
-            anchor = state.active_key[1]
+        active = state.get_active()
+        if active and active[0] == cache.key and any(abs(t - active[1]) < 1e-3 for t in sel):
+            anchor = active[1]
         elif sel:
             anchor = min(sel, key=lambda t: abs(t - k.t))
         if anchor is None:

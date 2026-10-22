@@ -398,7 +398,8 @@ def set_value_channel(obj, bone=None, data_path='', index=0):
     'pose.bones["Hand"].constraints["IK"].influence'."""
     st = state.settings(_scene())
     for e in st.paths:
-        if e.object is not None and e.object.name == (obj if isinstance(obj, str) else obj.name)                 and e.bone_name == (bone or ""):
+        if e.object is not None and e.object.name == (obj if isinstance(obj, str) else obj.name) \
+                and e.bone_name == (bone or ""):
             e.value_path, e.value_index = data_path, index
     update()
 

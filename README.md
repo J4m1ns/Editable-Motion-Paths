@@ -31,7 +31,7 @@ to Blender's normal bone / object behaviour.
 |---|---|---|
 | **1 Location** | Trajectory of the bone head / object origin | Location keys |
 | **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. **Ctrl+T** twists the bone around its own axis |
-| **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale; their color shows the Y scale (blue below 1, red above). A box at the current frame shows the current scale | Scale keys: a selected key shows a **scale gizmo** (drag the X / Y / Z handle, or the white one for all), or **S** / **Alt+S** (Shrink / Fatten) with X / Y / Z |
+| **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale; their color shows the Y scale (blue below 1, red above). A box at the current frame shows the current scale | Scale keys: a selected key shows a **scale gizmo** whose X and Z handles sit on the ribbon edges (drag an edge to make that ribbon wider; Y along the bone; the white one scales all), **S** scales all axes (X / Y / Z: one), **Alt+S** shrinks / fattens the ribbons (X and Z, the length Y stays) |
 | **4 Value** | A **track** for one animated value (IK/FK switch, custom property, constraint influence…), *above the path* or *beside the path* (follows its shape, so it works however the path turns) | That value: move its keys away from / toward the path. Pick the value in the sidebar or tool header |
 
 The mode follows the bone you pick: a bone with only rotation keys (FK) switches to Rotation,
@@ -91,7 +91,7 @@ The tool uses the settings you know from modeling, in the header and with the us
 |---|---|
 | Ctrl+Click on the path | insert a key; the motion doesn't change |
 | **E** | extrude: a new key that continues the motion, with the handle type of the key it grows from; the mouse places it, the wheel sets how many frames later |
-| **Shift+D** | duplicate: copies go halfway to the next key and follow the mouse (frames in the redo panel). *Duplicate in Time* (menu) places copies with left / right instead |
+| **Shift+D** | duplicate: copies go halfway to the next key and follow the mouse; the **wheel** moves them through the motion a frame at a time (jumping over other keys). *Duplicate in Time* (menu) places copies with left / right instead |
 | **Ctrl+C / Ctrl+V** | copy the pose of the active key / paste it on the current frame |
 | **Ctrl+R** | loop cut: evenly spaced keys in the segment under the mouse (wheel: number of cuts) |
 | **K** | knife: draw a line, keys are inserted where it crosses the path |
@@ -105,7 +105,7 @@ The tool uses the settings you know from modeling, in the header and with the us
 
 | Input | Action |
 |---|---|
-| **Alt+S** | smooth (T: Shape / Time; in Scale mode: shrink / fatten) |
+| **Alt+S** | smooth (T: Shape / Time; in Scale mode: shrink / fatten the ribbons) |
 | **Alt+E** | exaggerate |
 | **Shift+E** | ease (I / O / B while dragging: slow in, slow out, both) |
 | Right-click | path menu: **Edit Value…** (type exact values for the active key), Subdivide, Spin, Space, LoopTools, Snap, Curves, … |

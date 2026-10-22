@@ -250,7 +250,8 @@ class EMP_OT_set_value_channel(bpy.types.Operator):
             return {'CANCELLED'}
         e.value_path = self.data_path
         e.value_index = self.index
-        state.bake_all(context.scene)
+        state.sync_caches(context.scene)
+        state.tag_redraw()
         return {'FINISHED'}
 
 

@@ -139,6 +139,10 @@ class EMP_Settings(bpy.types.PropertyGroup):
         description="Rotation paths trace a point along the bone axis at this multiple of the bone "
                     "length (object: in meters). Larger values make small rotations easier to see",
         default=1.0, min=0.05, soft_max=5.0, update=_refresh)
+    select_history: StringProperty(
+        options={'HIDDEN'},
+        description="Clicked keys, oldest first (JSON); the last one is the active key. Saved in "
+                    "the scene so undo brings it back")
     pin_partial: BoolProperty(
         name="Pin Partial Keys",
         description="Path keys that are keyed on some channels only (dark center) get keyed on "

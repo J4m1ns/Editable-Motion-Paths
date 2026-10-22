@@ -25,8 +25,7 @@ prop_circle = None   # (center, radius) proportional editing circle while transf
 prop_weights = {}    # (path key, frame) -> proportional influence, for drawing
 slide_marker = None  # (world point, label) target of a key slide
 slide_extension = None  # (before, after) world polylines: where a slide can go past the ends
-active_key = None    # (path key, frame) of the last clicked key (Ctrl+Click range anchor)
-select_history = []  # (path key, frame) of clicked keys, oldest first (Merge At First / Last)
+_history_cache = (None, [])  # parsed settings.select_history
 flash = None         # (text, until_time) short message shown at the bottom of the viewport
 force_draw = False   # draw even with overlays off (render_view for scripts)
 _watch_last = None
@@ -251,6 +250,9 @@ def _harmless(obj, data_path):
     path target below it in the hierarchy.
     """
     targets = [c for c in caches.values() if c.obj_name == obj.name]
+    if data_path.endswith('"]') and any(c.value_ref and c.value_ref[0] == data_path for c in targets) \
+            and not _driven_by(obj, data_path):
+        return True     # a custom property shown on a value track that moves nothing else
     if obj.type == 'ARMATURE' and obj.pose is not None:
         m = _BONE_PATH.match(data_path)
         if not m or m.group(2) not in _TRANSFORM_PROPS:
@@ -266,6 +268,22 @@ def _harmless(obj, data_path):
     if data_path not in _TRANSFORM_PROPS or not any(not c.bone_name for c in targets):
         return False
     return not any(c.obj_name != obj.name and _is_child(c.obj_name, obj) for c in caches.values())
+
+
+def _driven_by(obj, data_path):
+    """True if a driver anywhere reads this property of obj."""
+    name = data_path.rsplit('["', 1)[-1].rstrip('"]')
+    for owner in list(bpy.data.objects) + list(bpy.data.shape_keys) + list(bpy.data.armatures) + \
+            list(bpy.data.meshes):
+        ad = getattr(owner, "animation_data", None)
+        if ad is None:
+            continue
+        for d in ad.drivers:
+            for v in d.driver.variables:
+                for t in v.targets:
+                    if t.id == obj and name in (t.data_path or ""):
+                        return True
+    return False
 
 
 def _is_child(name, parent):
@@ -344,7 +362,8 @@ def _bake_timer():
     try:
         st = settings()
         if st is not None and st.paths:
-            if force or any(not c.B for c in caches.values()) or sync_caches() or _range_changed()                     or _needs_rebake():
+            if force or any(not c.B for c in caches.values()) or sync_caches() or _range_changed() \
+                    or _needs_rebake():
                 bake_all()
             else:
                 tag_redraw()
@@ -370,6 +389,12 @@ def _on_depsgraph(scene, depsgraph):
 def _on_undo(*_args):
     for c in caches.values():
         c.dirty = True
+    # hidden keys, value channels... come from the scene: take them over right away
+    try:
+        sync_caches()
+    except Exception:
+        pass
+    tag_redraw()
     st = settings()
     if st is not None and st.auto_update and caches:
         schedule_rebake(0.2)
@@ -393,15 +418,37 @@ def _load_bake():
     return None
 
 
-def set_active(path_key, t):
+def select_history(scene=None):
+    """[(path key, frame)] of clicked keys, oldest first (Merge At First / Last). It lives in the
+    scene (undo restores it)."""
+    global _history_cache
+    st = settings(scene)
+    text = st.select_history if st is not None else ""
+    if text != _history_cache[0]:
+        import json
+        try:
+            items = [((o, b, m), float(t)) for o, b, m, t in json.loads(text or "[]")]
+        except (ValueError, TypeError):
+            items = []
+        _history_cache = (text, items)
+    return _history_cache[1]
+
+
+def get_active(scene=None):
+    """(path key, frame) of the active (last clicked) key, or None."""
+    h = select_history(scene)
+    return h[-1] if h else None
+
+
+def set_active(path_key, t, scene=None):
     """The active key: drawn with a white ring, used by Merge, Copy, pivot Active Element."""
-    global active_key
-    active_key = (path_key, t)
-    item = (path_key, round(t, 3))
-    if item in select_history:
-        select_history.remove(item)
-    select_history.append(item)
-    del select_history[:-200]
+    import json
+    st = settings(scene)
+    if st is None:
+        return
+    item = (tuple(path_key), round(t, 3))
+    items = [i for i in select_history(scene) if i != item] + [item]
+    st.select_history = json.dumps([[k[0], k[1], k[2], f] for k, f in items[-100:]])
 
 
 def flash_message(text, seconds=3.0):

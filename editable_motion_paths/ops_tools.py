@@ -45,7 +45,8 @@ def _targets(context):
 
 
 class EMP_OT_path_add(bpy.types.Operator):
-    """Show an editable motion path for the selected bones (Pose Mode) or objects. """         """Location or Rotation is chosen with the edit mode (1 / 2)"""
+    """Show an editable motion path for the selected bones (Pose Mode) or objects. """ \
+        """Location or Rotation is chosen with the edit mode (1 / 2)"""
     bl_idname = "emp.path_add"
     bl_label = "Add Motion Path"
     bl_options = {'REGISTER', 'UNDO'}
@@ -627,7 +628,8 @@ class EMP_OT_smooth(_AdjustOp, bpy.types.Operator):
     def invoke(self, context, event):
         if state.edit_mode(context.scene) == core.SCALE:
             # Alt+S on scale paths: Shrink / Fatten, like on curves
-            bpy.ops.emp.transform('INVOKE_DEFAULT', mode='SCALE')
+            # Alt+S on scale paths: Shrink / Fatten the ribbons (X and Z, the length Y stays)
+            bpy.ops.emp.transform('INVOKE_DEFAULT', mode='SCALE', axis_index=1, axis_plane=True)
             return {'CANCELLED'}
         return _AdjustOp.invoke(self, context, event)
 
@@ -725,7 +727,9 @@ class EMP_OT_exaggerate(_AdjustOp, bpy.types.Operator):
 
 
 class EMP_OT_fix_loop(bpy.types.Operator):
-    """Close a broken loop: select the first or last key of the path (the one that is """         """right) and the key at the other end of the loop is matched to it: same pose and """         """same handles, so there is no jump or hitch at the seam"""
+    """Close a broken loop: select the first or last key of the path (the one that is """ \
+        """right) and the key at the other end of the loop is matched to it: same pose and """ \
+        """same handles, so there is no jump or hitch at the seam"""
     bl_idname = "emp.fix_loop"
     bl_label = "Fix Loop"
     bl_options = {'REGISTER', 'UNDO'}
@@ -760,7 +764,8 @@ class EMP_OT_fix_loop(bpy.types.Operator):
             tg = cache.target()
             use_first = abs(src.t - cache.keys[0].t) < 1e-3
             if self.whole_pose and tg.coll is not None:
-                fcs = [fc for fc in tg.coll if fc.data_path.startswith(tg.prefix)] if tg.prefix                     else list(tg.coll)
+                fcs = [fc for fc in tg.coll if fc.data_path.startswith(tg.prefix)] if tg.prefix \
+                        else list(tg.coll)
             else:
                 fcs = [fc for fc in tg.channels(cache.ptype).fcurves if fc is not None]
             touched = set()

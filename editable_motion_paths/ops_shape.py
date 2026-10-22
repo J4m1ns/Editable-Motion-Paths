@@ -757,7 +757,8 @@ class EMP_OT_straighten(_LoopTool, bpy.types.Operator):
 
 
 def _annotation_stroke(context):
-    gpd = getattr(context, "annotation_data", None) or getattr(context.scene, "annotation", None)         or getattr(context.scene, "grease_pencil", None)
+    gpd = getattr(context, "annotation_data", None) or getattr(context.scene, "annotation", None) \
+            or getattr(context.scene, "grease_pencil", None)
     if gpd is None:
         return None, None, None
     layer = gpd.layers.active if hasattr(gpd.layers, "active") else None
