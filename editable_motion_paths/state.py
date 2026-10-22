@@ -105,6 +105,7 @@ def sync_caches(scene=None):
             del caches[k]
     need = []
     refs = {entry_key(e, mode): (e.value_path, e.value_index) for e in st.paths if e.object is not None}
+    hidden = {entry_key(e, mode): parse_frames(e.hidden_keys) for e in st.paths if e.object is not None}
     for k in wanted:
         c = caches.get(k)
         if c is None:
@@ -112,6 +113,10 @@ def sync_caches(scene=None):
             other = next((o for o in caches.values() if o is not c and o.key[:2] == k[:2] and o.B), None)
             if other is not None:
                 c.fs, c.B, c.bake_id = other.fs, other.B, other.bake_id
+        h = hidden.get(k, set())
+        if h != c.hidden:
+            c.hidden = h
+            c.dirty = True
         if mode == core.VALUE:
             ref = refs.get(k)
             if not (ref and ref[0]):
@@ -129,6 +134,28 @@ def sync_caches(scene=None):
         if not c.B:
             need.append(c)
     return need
+
+
+def parse_frames(text):
+    out = set()
+    for part in (text or "").split(","):
+        try:
+            out.add(round(float(part), 3))
+        except ValueError:
+            pass
+    return out
+
+
+def format_frames(frames):
+    return ",".join("%g" % f for f in sorted(frames))
+
+
+def entry_of(cache, scene=None):
+    st = settings(scene)
+    for e in st.paths if st is not None else ():
+        if e.object is not None and e.object.name == cache.obj_name and e.bone_name == cache.bone_name:
+            return e
+    return None
 
 
 def visible_caches(scene=None):

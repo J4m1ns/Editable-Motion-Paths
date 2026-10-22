@@ -71,9 +71,12 @@ def hit_test(context, mx, my, radius=None):
         editable = cache.owner_selected()
         lo, hi = draw.path_window(context.scene, st, cache)
         for k in cache.keys:
-            if not (lo - 1e-4 <= k.t <= hi + 1e-4):
+            if k.hidden or not (lo - 1e-4 <= k.t <= hi + 1e-4):
                 continue
             cands = [('KEY', k.co, 0.0)]
+            if editable and cache.ptype == core.SCALE and k.sel:
+                cands += [(part, p, 0.3) for part, p in
+                          draw.scale_gizmo_points(st, cache, k, region, rv3d).items()]
             if draw.handles_shown(st, cache, editable, k):
                 mw = handle_min_world(region, rv3d, k.co)
                 if k.hl is not None:
@@ -103,8 +106,9 @@ def line_hit(context, mx, my, radius=None):
     for cache in state.editable_caches(context.scene):
         lo, hi = draw.path_window(context.scene, st, cache)
         prev = None
-        for t, p in zip(cache.times, cache.points):
-            if not (lo <= t <= hi):
+        vis = cache.vis if len(cache.vis) == len(cache.times) else [True] * len(cache.times)
+        for t, p, v in zip(cache.times, cache.points, vis):
+            if not (lo <= t <= hi) or not v:
                 prev = None
                 continue
             s = location_3d_to_region_2d(region, rv3d, p)
@@ -179,6 +183,8 @@ def set_key_select(cache, k, point=None, left=None, right=None):
 
 
 def select_part(cache, k, part, value=True):
+    if value and k.hidden:
+        return
     if part == 'KEY':
         set_key_select(cache, k, value, value, value)
     elif part == 'L':

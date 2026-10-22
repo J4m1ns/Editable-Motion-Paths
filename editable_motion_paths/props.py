@@ -37,6 +37,8 @@ class EMP_PathEntry(bpy.types.PropertyGroup):
     value_path: StringProperty(name="Value", description="F-Curve shown and edited in Value mode (4)",
                                update=_mode_changed)
     value_index: IntProperty(name="Index", update=_mode_changed)
+    hidden_keys: StringProperty(options={'HIDDEN'}, update=_mode_changed,
+                                description="Frames of hidden keys (H / Alt+H)")
 
 
 class EMP_Settings(bpy.types.PropertyGroup):
@@ -118,8 +120,19 @@ class EMP_Settings(bpy.types.PropertyGroup):
     on_top: BoolProperty(name="In Front", default=True,
                          description="Draw paths in front of geometry", update=_redraw)
     line_width: FloatProperty(name="Line Width", default=2.0, min=1.0, max=10.0, update=_redraw)
+    value_track: EnumProperty(
+        name="Value Track",
+        description="Where Value mode (4) draws the value",
+        items=[('UP', "Above the Path", "Higher on the screen = bigger value"),
+               ('PATH', "Beside the Path", "Follows the shape of the path: farther to the left of "
+                                           "the motion = bigger value (works however the path turns)")],
+        default='UP', update=_refresh)
     ribbon_width: FloatProperty(name="Ribbon Width", default=1.0, min=0.05, soft_max=5.0,
-                                description="Scale paths: how wide the ribbon is drawn", update=_redraw)
+                                description="Scale paths: how wide the ribbons are drawn", update=_redraw)
+    show_scale_box: BoolProperty(name="Scale Box", default=True,
+                                 description="Scale paths: a box at the current frame, as big as the "
+                                             "current scale", update=_redraw)
+    scale_box_size: FloatProperty(name="Box Size", default=1.0, min=0.05, soft_max=5.0, update=_redraw)
     key_size: FloatProperty(name="Key Size", default=9.0, min=3.0, max=30.0, update=_redraw)
     rot_length: FloatProperty(
         name="Rotation Path Length",

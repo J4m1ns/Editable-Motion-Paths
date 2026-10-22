@@ -231,7 +231,7 @@ class _Job:
         self.keys = list(cache.keys)
         self.mask = [k.sel for k in self.keys]
         if not any(self.mask):
-            self.mask = [True] * len(self.keys)
+            self.mask = [not k.hidden for k in self.keys]
         self.times = [k.t for k in self.keys]
         # rotation and scale are smoothed in channel space, location / value in world space
         self.rot = cache.ptype in (core.ROTATION, core.SCALE)

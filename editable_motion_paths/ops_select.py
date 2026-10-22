@@ -10,6 +10,9 @@ from . import compat, core, pick, state
 from .ops_keys import insert_key
 
 
+GIZMO_AXES = {'GX': 0, 'GY': 1, 'GZ': 2, 'GU': -1}
+
+
 def _region_mouse(context, event):
     return event.mouse_region_x, event.mouse_region_y
 
@@ -77,6 +80,12 @@ class EMP_OT_click(bpy.types.Operator):
             return {'FINISHED'}
 
         k = hit.key
+        if hit.part in GIZMO_AXES:
+            # scale gizmo: drag a handle to scale that axis (the white one: all of them)
+            self.gizmo = hit.part
+            self._start_wait(context, event, hit, None)
+            return {'RUNNING_MODAL'}
+        self.gizmo = None
         if hit.part == 'KEY':
             state.set_active(cache.key, k.t)
         release_action = None
@@ -162,8 +171,13 @@ class EMP_OT_click(bpy.types.Operator):
         if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             m = Vector((event.mouse_region_x, event.mouse_region_y))
             if (m - self.press).length >= max(self.threshold, 3):
-                bpy.ops.emp.transform('INVOKE_DEFAULT', mode='TRANSLATE', release_confirm=True,
-                                      start_x=int(self.press.x), start_y=int(self.press.y))
+                if getattr(self, "gizmo", None):
+                    bpy.ops.emp.transform('INVOKE_DEFAULT', mode='SCALE', release_confirm=True,
+                                          start_x=int(self.press.x), start_y=int(self.press.y),
+                                          axis_index=GIZMO_AXES[self.gizmo])
+                else:
+                    bpy.ops.emp.transform('INVOKE_DEFAULT', mode='TRANSLATE', release_confirm=True,
+                                          start_x=int(self.press.x), start_y=int(self.press.y))
                 return {'FINISHED'}
             return {'RUNNING_MODAL'}
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
@@ -396,8 +410,9 @@ class EMP_OT_select_linked(bpy.types.Operator):
 
     def execute(self, context):
         for c in state.editable_caches(context.scene):
-            if any(k.any_sel for k in c.keys):
-                for k in c.keys:
+            pieces = {k.piece for k in c.keys if k.any_sel and not k.hidden}
+            for k in c.keys:
+                if k.piece in pieces:
                     pick.select_part(c, k, 'KEY', True)
         pick.tag_anim_editors()
         return {'FINISHED'}
@@ -423,8 +438,14 @@ class EMP_OT_select_linked_pick(bpy.types.Operator):
             if self.deselect or not pick.select_owner(context, cache, True):
                 return {'PASS_THROUGH'}
             cache.refresh(force=True)
+        if hit.key is not None:
+            piece = hit.key.piece
+        else:
+            before = [k for k in cache.keys if k.t <= hit.t + 1e-6]
+            piece = before[-1].piece if before else cache.keys[0].piece if cache.keys else 0
         for k in cache.keys:
-            pick.select_part(cache, k, 'KEY', not self.deselect)
+            if k.piece == piece:
+                pick.select_part(cache, k, 'KEY', not self.deselect)
         pick.tag_anim_editors()
         return {'FINISHED'}
 
@@ -579,9 +600,11 @@ class EMP_MT_select_similar(bpy.types.Menu):
 
 
 class EMP_OT_hide(bpy.types.Operator):
-    """Hide the paths that have selected keys (H), or all other paths (Shift+H)"""
+    """Hide the selected keys (H) or the unselected ones (Shift+H). Hidden keys can't be """ \
+        """selected or moved, and the path around them is left out, so it falls apart in pieces """ \
+        """(proportional editing and Ctrl+L stay on the visible piece)"""
     bl_idname = "emp.hide"
-    bl_label = "Hide Paths"
+    bl_label = "Hide Keys"
     bl_options = {'REGISTER', 'UNDO'}
 
     unselected: BoolProperty(name="Unselected", default=False)
@@ -592,22 +615,33 @@ class EMP_OT_hide(bpy.types.Operator):
         return self.execute(context)
 
     def execute(self, context):
-        st = state.settings(context.scene)
-        keep = {c.key[:2] for c in state.editable_caches(context.scene) if any(k.any_sel for k in c.keys)}
-        for e in st.paths:
-            if e.object is None:
+        n = 0
+        for c in state.editable_caches(context.scene):
+            if not any(k.any_sel for k in c.keys):
                 continue
-            mine = (e.object.name, e.bone_name) in keep
-            if mine != self.unselected:
-                e.show = False
-        state.tag_redraw()
+            e = state.entry_of(c, context.scene)
+            if e is None:
+                continue
+            hide = [k for k in c.keys if not k.hidden and (k.any_sel != self.unselected)]
+            if not hide:
+                continue
+            for k in hide:
+                pick.select_part(c, k, 'KEY', False)
+            frames = state.parse_frames(e.hidden_keys) | {round(k.t, 3) for k in hide}
+            e.hidden_keys = state.format_frames(frames)
+            n += len(hide)
+        if not n:
+            return {'CANCELLED'}
+        state.sync_caches(context.scene)
+        pick.tag_anim_editors()
         return {'FINISHED'}
 
 
 class EMP_OT_reveal(bpy.types.Operator):
-    """Show all hidden paths (Alt+H also reveals hidden bones / objects)"""
+    """Show the hidden keys again, selected (Alt+H; also reveals hidden paths, bones and """ \
+        """objects)"""
     bl_idname = "emp.reveal"
-    bl_label = "Reveal Paths"
+    bl_label = "Reveal Keys"
     bl_options = {'REGISTER', 'UNDO'}
 
     def invoke(self, context, event):
@@ -616,8 +650,20 @@ class EMP_OT_reveal(bpy.types.Operator):
 
     def execute(self, context):
         st = state.settings(context.scene)
+        shown = {}
         for e in st.paths:
             e.show = True
+            if e.hidden_keys and e.object is not None:
+                shown[(e.object.name, e.bone_name)] = state.parse_frames(e.hidden_keys)
+                e.hidden_keys = ""
+        state.sync_caches(context.scene)
+        for c in state.visible_caches(context.scene):
+            frames = shown.get(c.key[:2])
+            if frames and c.refresh(force=True):
+                for k in c.keys:
+                    if round(k.t, 3) in frames:
+                        pick.select_part(c, k, 'KEY', True)
+        pick.tag_anim_editors()
         state.tag_redraw()
         return {'FINISHED'}
 

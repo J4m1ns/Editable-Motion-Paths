@@ -16,7 +16,8 @@ Edit > Preferences > Get Extensions > ⌄ (top right) > **Install from Disk…**
 
 1. In Pose Mode, select one or more bones (or objects in Object Mode).
 2. Open Sidebar (N) > **Motion Paths** > **+**.
-3. Press **Edit Paths**, or pick the *Edit Motion Path* tool in the toolbar.
+3. Press **Edit Paths**, pick the *Edit Motion Path* tool in the toolbar, or press **Ctrl+T**
+   (Pose Mode).
 4. Click a key on the path to show its handles, then drag the key or a handle, or use
    G / R / S like on a mesh.
 
@@ -30,8 +31,8 @@ to Blender's normal bone / object behaviour.
 |---|---|---|
 | **1 Location** | Trajectory of the bone head / object origin | Location keys |
 | **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. **Ctrl+T** twists the bone around its own axis |
-| **3 Scale** | The location path as a **ribbon** as wide as the scale | Scale keys: **S** or **Alt+S** (Shrink / Fatten), X / Y / Z for one axis |
-| **4 Value** | A **track** above the path for one animated value (IK/FK switch, custom property, constraint influence…) | That value: move its keys up and down. Pick the value in the sidebar or tool header |
+| **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale; their color shows the Y scale (blue below 1, red above). A box at the current frame shows the current scale | Scale keys: a selected key shows a **scale gizmo** (drag the X / Y / Z handle, or the white one for all), or **S** / **Alt+S** (Shrink / Fatten) with X / Y / Z |
+| **4 Value** | A **track** for one animated value (IK/FK switch, custom property, constraint influence…), *above the path* or *beside the path* (follows its shape, so it works however the path turns) | That value: move its keys away from / toward the path. Pick the value in the sidebar or tool header |
 
 The mode follows the bone you pick: a bone with only rotation keys (FK) switches to Rotation,
 one with only location keys to Location. Paths that can't be edited in the current mode (a
@@ -69,7 +70,7 @@ The tool uses the settings you know from modeling, in the header and with the us
 | **Ctrl+NumPad + / -** | grow / shrink the selection along the path |
 | **Shift+G** | select similar: handle type, interpolation, keyframe type, partial keys, holds |
 | **[ / ]** | keys before / after the current frame |
-| **H / Shift+H / Alt+H** | hide paths / hide the others / reveal |
+| **H / Shift+H / Alt+H** | hide the selected keys / the others / reveal. Hidden keys take the path around them along: the path falls apart into pieces, and Ctrl+L, L and proportional editing stay on the visible piece (a mask) |
 | Double-click a key | jump to its frame |
 
 **Transform**
@@ -89,12 +90,13 @@ The tool uses the settings you know from modeling, in the header and with the us
 | Input | Action |
 |---|---|
 | Ctrl+Click on the path | insert a key; the motion doesn't change |
-| **E** | extrude: a new key that continues the motion; the mouse places it, the wheel sets how many frames later |
-| **Shift+D** | duplicate the selected keys to other frames (left / right); one key makes a hold |
+| **E** | extrude: a new key that continues the motion, with the handle type of the key it grows from; the mouse places it, the wheel sets how many frames later |
+| **Shift+D** | duplicate: copies go halfway to the next key and follow the mouse (frames in the redo panel). *Duplicate in Time* (menu) places copies with left / right instead |
+| **Ctrl+C / Ctrl+V** | copy the pose of the active key / paste it on the current frame |
 | **Ctrl+R** | loop cut: evenly spaced keys in the segment under the mouse (wheel: number of cuts) |
 | **K** | knife: draw a line, keys are inserted where it crosses the path |
-| **Ctrl+B** | bevel: round a key into an arc (mouse: width, wheel: segments, P: profile, 0.5 = circle) |
-| **M** | merge at center / first / last |
+| **Ctrl+B** | bevel: round a key into a Bezier arc (A: width, S or wheel: segments, P: profile, 0.5 = circle) |
+| **M** | merge at the last selected (active, white ring) key, the first, the center or the 3D cursor |
 | **X**, **Delete**, **Ctrl+X** | delete menu / delete / dissolve |
 | **V**, **T** | handle type / interpolation |
 | **Alt+C** | loop menu: toggle Cycles, fix the loop seam |
@@ -103,10 +105,10 @@ The tool uses the settings you know from modeling, in the header and with the us
 
 | Input | Action |
 |---|---|
-| **Alt+S** | smooth (in Scale mode: shrink / fatten) |
+| **Alt+S** | smooth (T: Shape / Time; in Scale mode: shrink / fatten) |
 | **Alt+E** | exaggerate |
 | **Shift+E** | ease (I / O / B while dragging: slow in, slow out, both) |
-| Right-click | path menu: Subdivide, Spin, Space, LoopTools, Snap, Curves, … |
+| Right-click | path menu: **Edit Value…** (type exact values for the active key), Subdivide, Spin, Space, LoopTools, Snap, Curves, … |
 
 Nothing is written until you actually move: starting a tool and confirming without moving
 leaves the curves exactly as they were.
@@ -165,6 +167,9 @@ That is Blender's own behaviour; set the smoothing to *None* if you want edits t
   first or last key.
 
 ## Display
+
+The color button in the tool header opens the display settings (colors, dots, ribbons, value
+track) without going to the sidebar.
 
 * **Color**: *Speed* (blue slow, red fast), *Before / After*, *Solid*, and **Jitter**: a heat
   map of roughness. Smooth motion stays gray; hitches, pops and noisy wobbles glow yellow to

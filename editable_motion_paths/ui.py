@@ -84,7 +84,7 @@ HELP = (
         ("Ctrl+NumPad + / -", "grow / shrink"),
         ("Shift+G", "select similar"),
         ("[  ]", "before / after current frame"),
-        ("H, Shift+H, Alt+H", "hide / hide others / reveal"),
+        ("H, Shift+H, Alt+H", "hide keys / hide the others / reveal"),
         ("Double-click key", "jump to its frame"),
     )),
     ("Transform", (
@@ -104,7 +104,7 @@ HELP = (
         ("E", "extrude: continue the motion (wheel: frames)"),
         ("Shift+D", "duplicate and move the copies"),
         ("Ctrl+R, K", "loop cut / knife"),
-        ("Ctrl+B", "bevel (wheel: segments, P: profile)"),
+        ("Ctrl+B", "bevel (A width, S segments, P profile)"),
         ("M", "merge (at the last selected key)"),
         ("Ctrl+C, Ctrl+V", "copy the active key's pose / paste on the current frame"),
         ("X, Delete, Ctrl+X", "delete menu / delete / dissolve"),
@@ -112,10 +112,10 @@ HELP = (
         ("Alt+C", "loop: cycles, fix seam"),
     )),
     ("Shape & Timing", (
-        ("Alt+S", "smooth (Scale mode: shrink / fatten)"),
+        ("Alt+S", "smooth (T: shape / time; Scale mode: shrink / fatten)"),
         ("Alt+E", "exaggerate"),
         ("Shift+E", "ease (I / O / B)"),
-        ("Right-click", "path menu (Space, LoopTools...)"),
+        ("Right-click", "path menu (Edit Value, Space, LoopTools...)"),
     )),
 )
 
@@ -128,6 +128,7 @@ def _draw_tool_settings(context, layout, tool):
     row.prop(st, "edit_mode", expand=True, icon_only=True)
     if st.edit_mode == 'VALUE':
         _draw_value_picker(layout, context)
+        layout.prop(st, "value_track", text="")
     layout.separator()
     _draw_proportional(layout, st, compact=True)
     layout.separator()
@@ -314,6 +315,8 @@ class EMP_MT_context(bpy.types.Menu):
     def draw(self, context):
         layout = self.layout
         layout.operator_context = 'INVOKE_DEFAULT'
+        layout.operator("emp.edit_value", text="Edit Value...", icon='GREASEPENCIL')
+        layout.separator()
         layout.operator("emp.subdivide", icon='SNAP_EDGE')
         layout.operator("emp.extrude", text="Extrude", icon='EXPORT')
         layout.operator("emp.duplicate_move", text="Duplicate", icon='DUPLICATE')
@@ -388,7 +391,9 @@ class EMP_PT_main(_Panel, bpy.types.Panel):
             for m in pair:
                 row.prop_enum(st, "edit_mode", m)
         if st.edit_mode == 'VALUE':
-            _draw_value_picker(layout, context)
+            row = layout.row(align=True)
+            _draw_value_picker(row, context)
+            row.prop(st, "value_track", text="")
 
         row = layout.row()
         row.template_list("EMP_UL_paths", "", st, "paths", st, "active_index", rows=3)
@@ -517,6 +522,12 @@ def _draw_display(layout, st):
     layout.prop(st, "key_size")
     layout.prop(st, "rot_length")
     layout.prop(st, "ribbon_width")
+    row = layout.row(heading="Scale Box")
+    row.prop(st, "show_scale_box", text="")
+    sub = row.row()
+    sub.active = st.show_scale_box
+    sub.prop(st, "scale_box_size", text="Size")
+    layout.prop(st, "value_track")
     layout.prop(st, "pin_partial")
 
 

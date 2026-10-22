@@ -243,7 +243,7 @@ class Target:
 class KeyData:
     __slots__ = ("t", "idx", "vals", "co", "hl", "hr", "dt_l", "dt_r", "s_l", "s_r",
                  "vp", "sel", "sel_l", "sel_r", "type_l", "type_r", "interp", "dir_l", "dir_r",
-                 "partial", "cat_l", "cat_r", "offs")
+                 "partial", "cat_l", "cat_r", "offs", "hidden", "piece")
 
     def __init__(self, t):
         self.t = t
@@ -269,6 +269,8 @@ class KeyData:
         self.cat_l = Vector()   # "natural" handles from the neighbors (Catmull-Rom tangent),
         self.cat_r = Vector()   # used when a flat (zero length) handle gets rotated or scaled
         self.offs = None        # per channel: evaluated value minus stored key value (cycle offset)
+        self.hidden = False     # hidden with H: not drawn, not selectable
+        self.piece = 0          # keys joined by visible segments share a piece (Ctrl+L, L)
 
     @property
     def any_sel(self):
@@ -388,8 +390,13 @@ class PathCache:
         self.vgain = 1.0        # value track: world height per unit of value
         self.vgain_id = None
         self.vdir = Vector((0.0, 0.0, 1.0))   # value track: direction "up" (follows the view)
+        self.vview = Vector((0.0, 1.0, 0.0))  # value track: view direction (track beside the path)
+        self.track_mode = 'UP'
         self.base_points = []   # scale / value paths: the location path they are drawn on
         self.sample_vals = []   # scale / value paths: channel values at every sample
+        self.hidden = set()     # frames of hidden keys
+        self.sample_axes = []   # scale paths: the target's X, Y, Z directions at every sample
+        self.vis = []           # per sample: is this part of the path shown (not next to a hidden key)
 
     @property
     def key(self):
@@ -455,6 +462,27 @@ class PathCache:
     def head(self, tg, t):
         return self.B_at(t) @ Vector(tg.loc.values(t))
 
+    def axes(self, tg, t, vals_rot=None):
+        """World directions of the target's own X, Y, Z axes at frame t (unit length)."""
+        rot = vals_rot if vals_rot is not None else tg.rot.values(t)
+        m = (self.B_at(t) @ tg.basis(tg.loc.values(t), rot, (1.0, 1.0, 1.0))).to_3x3()
+        out = []
+        for i in range(3):
+            v = m.col[i].copy()
+            out.append(v.normalized() if v.length > 1e-12 else Vector([1.0 if j == i else 0.0 for j in range(3)]))
+        return out
+
+    def value_dir(self, tg, t):
+        """Value track offset: up on the screen, or beside the path (left of the motion on the
+        screen), so it follows the shape of the path."""
+        if self.track_mode != 'PATH':
+            return self.vdir
+        tang = self.head(tg, t + 0.5) - self.head(tg, t - 0.5)
+        n = tang.cross(self.vview)
+        if n.length < 1e-9:
+            return self.vdir
+        return n.normalized()
+
     def point(self, tg, t, vals=None):
         """World position of the path at time t; `vals` overrides the edited channels."""
         B = self.B_at(t)
@@ -462,7 +490,7 @@ class PathCache:
             return B @ Vector(tg.loc.values(t))
         if self.ptype == VALUE:
             v = vals[0] if vals is not None else tg.value.values(t)[0]
-            return B @ Vector(tg.loc.values(t)) + self.vdir * ((v - self.vbase) * self.vgain)
+            return B @ Vector(tg.loc.values(t)) + self.value_dir(tg, t) * ((v - self.vbase) * self.vgain)
         if self.ptype == LOCATION:
             v = vals if vals is not None else tg.loc.values(t)
             return B @ Vector(v[:3])
@@ -507,7 +535,7 @@ class PathCache:
             return list(ref_vals)
         if self.ptype == VALUE:
             base = self.B_at(t) @ Vector(tg.loc.values(t))
-            return [(W - base).dot(self.vdir) / self.vgain + self.vbase]
+            return [(W - base).dot(self.value_dir(tg, t)) / self.vgain + self.vbase]
         if self.ptype == LOCATION:
             v = self.B_at(t).inverted_safe() @ W
             locks = tg.loc_locks()
@@ -546,7 +574,8 @@ class PathCache:
         self.locked, self.lock_reason = _lock_state(tg, self.ptype)
         used = {LOCATION: (tg.loc,), SCALE: (tg.loc, tg.scale), VALUE: (tg.loc, tg.value)}.get(
             self.ptype, (tg.loc, tg.rot, tg.scale))
-        sig = (self.bake_id, self.rot_len, tg.rot_mode,
+        self.track_mode = settings.value_track if settings else 'UP'
+        sig = (self.bake_id, self.rot_len, tg.rot_mode, self.track_mode,
                tuple(tuple(_fc_signature(fc) for fc in ch.fcurves) for ch in used),
                tuple(tuple(ch.static) for ch in used))
         if not force and not self.dirty and sig == self.sig and self.valid:
@@ -585,6 +614,8 @@ class PathCache:
         if self.ptype in (SCALE, VALUE):
             self.base_points = [self.head(tg, t) for t in self.times]
             self.sample_vals = [ch.values(t) for t in self.times]
+        if self.ptype == SCALE:
+            self.sample_axes = [self.axes(tg, t) for t in self.times]
             if self.ptype == VALUE:
                 # speed colors show how fast the value changes
                 vs = [v[0] for v in self.sample_vals]
@@ -597,6 +628,7 @@ class PathCache:
         self.keys = [k for k in keys if fs - EPS <= k.t <= fe + EPS]
         for i, k in enumerate(self.keys):
             self._fill_key(tg, ch, k, i)
+        self._visibility()
         # fallback handle directions (used to display zero-length handles)
         n = len(self.keys)
         for i, k in enumerate(self.keys):
@@ -614,6 +646,40 @@ class PathCache:
                 chord = Vector((1.0, 0.0, 0.0))
             k.dir_r = chord.normalized()
             k.dir_l = -k.dir_r
+
+    def _visibility(self):
+        """Hidden keys take the path segments next to them with them; what stays visible falls
+        apart into pieces."""
+        ks = self.keys
+        piece = 0
+        for i, k in enumerate(ks):
+            k.hidden = round(k.t, FRAME_ROUND) in self.hidden
+            if k.hidden:
+                k.sel = k.sel_l = k.sel_r = False     # (even if selected in the Graph Editor)
+            if i > 0 and (k.hidden or ks[i - 1].hidden):
+                piece += 1
+            k.piece = piece
+        if not self.hidden:
+            self.vis = [True] * len(self.times)
+            return
+        kt = [k.t for k in ks]
+        vis = []
+        j = 0
+        for t in self.times:
+            while j < len(kt) and kt[j] < t - 1e-6:
+                j += 1
+            # keys around t: ks[j-1] (before) and ks[j] (at or after)
+            at = j < len(kt) and abs(kt[j] - t) < 1e-6
+            if at:
+                vis.append(not ks[j].hidden)
+                continue
+            before = ks[j - 1] if j > 0 else None
+            after = ks[j] if j < len(ks) else None
+            vis.append(not ((before is not None and before.hidden) or (after is not None and after.hidden)))
+        self.vis = vis
+
+    def visible_keys(self):
+        return [k for k in self.keys if not k.hidden]
 
     def _collect_keys(self, ch):
         by_t = {}

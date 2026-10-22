@@ -268,11 +268,15 @@ def _add_proportional(groups, connected, view=None):
             arc = _arc_lengths(cache)
             sel_s = [(_arc_at(cache, arc, e.k.t), e) for e in sel]
         for k in cache.keys:
-            if round(k.t, 3) in taken:
-                continue
+            if round(k.t, 3) in taken or k.hidden:
+                continue    # hidden keys work as a mask
             if connected:
+                # along the path, and never across a hidden part of it
+                near = [(ss, e) for ss, e in sel_s if e.k.piece == k.piece]
+                if not near:
+                    continue
                 s = _arc_at(cache, arc, k.t)
-                d, src = min(((abs(s - ss), e) for ss, e in sel_s), key=lambda x: x[0])
+                d, src = min(((abs(s - ss), e) for ss, e in near), key=lambda x: x[0])
             elif view is not None:
                 def flat(v):
                     return (v - view * v.dot(view)).length
@@ -394,6 +398,7 @@ class EMP_OT_transform(bpy.types.Operator):
     proportional_projected: BoolProperty(name="Projected (2D)", default=False,
                                          description="Measure the distance on the screen")
     release_confirm: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    axis_index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
     start_x: IntProperty(default=-100000, options={'HIDDEN', 'SKIP_SAVE'})
     start_y: IntProperty(default=-100000, options={'HIDDEN', 'SKIP_SAVE'})
 
@@ -728,7 +733,7 @@ class EMP_OT_transform(bpy.types.Operator):
             self.mouse_last = self.mouse_start.copy()
         else:
             self.mouse_last = Vector((event.mouse_region_x, event.mouse_region_y))
-        self.constraint = None      # (axis index, is_plane)
+        self.constraint = (self.axis_index, False) if self.axis_index >= 0 else None  # (axis, plane)
         self.orient = 'GLOBAL'
         self.numinput = NumInput()
         self.value = (1.0, 1.0, 1.0) if self.mode == 'SCALE' else (0.0, 0.0, 0.0)
@@ -1060,7 +1065,8 @@ class EMP_OT_transform(bpy.types.Operator):
             self._ensure_now(context)
         self._apply(context)
         self._header(context)
-        if self.constraint is not None and not self.constraint[1]:
+        if self.constraint is not None and not self.constraint[1] and \
+                any(c.ptype != core.SCALE for c, _es in self.groups):
             ax = self._axis_world(self.constraint[0])
             state.constraint = (self.pivot.copy(), ax, AXIS_COLORS[self.constraint[0]])
         else:

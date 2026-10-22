@@ -166,6 +166,8 @@ def draw_view():
 
 
 def _path_colors(st, cache, editable, cur, lo, hi):
+    """Runs of (points, colors): hidden parts of the path leave gaps."""
+    runs = []
     pts, cols = [], []
     speeds = cache.speeds
     vmax = 0.0
@@ -175,8 +177,12 @@ def _path_colors(st, cache, editable, cur, lo, hi):
     base = tuple(st.color)
     alpha = 1.0 if editable else 0.6
     rough = jitter_values(cache) if st.color_mode == 'JITTER' else None
+    vis = cache.vis if len(cache.vis) == len(cache.times) else [True] * len(cache.times)
     for i, (t, p) in enumerate(zip(cache.times, cache.points)):
-        if not _in(t, lo, hi):
+        if not _in(t, lo, hi) or not vis[i]:
+            if len(pts) > 1:
+                runs.append((pts, cols))
+            pts, cols = [], []
             continue
         if rough is not None:
             c = _jitter_color(rough[i] / max(st.jitter_threshold, 1e-6))
@@ -191,43 +197,130 @@ def _path_colors(st, cache, editable, cur, lo, hi):
             c = tuple(0.35 + 0.4 * x for x in c)
         pts.append(p)
         cols.append((c[0], c[1], c[2], alpha))
-    return pts, cols
+    if len(pts) > 1:
+        runs.append((pts, cols))
+    return runs
 
 
 COL_RIBBON = (1.0, 0.75, 0.3)
 
 
+COL_SCALE_LOW = (0.3, 0.6, 1.0)
+COL_SCALE_HIGH = (1.0, 0.25, 0.35)
+GIZMO_COLORS = {'GX': (1.0, 0.25, 0.3, 1.0), 'GY': (0.45, 0.9, 0.2, 1.0), 'GZ': (0.25, 0.5, 1.0, 1.0),
+                'GU': (1.0, 1.0, 1.0, 1.0)}
+
+
+def scale_color(sy):
+    """Ribbon color from the third scale axis: blue below 1, orange at 1, red above."""
+    f = max(-1.0, min(1.0, math.log2(max(abs(sy), 1e-3))))
+    other = COL_SCALE_HIGH if f > 0 else COL_SCALE_LOW
+    return tuple(a + (b - a) * abs(f) for a, b in zip(COL_RIBBON, other))
+
+
+def ribbon_half(st, cache):
+    return cache.vgain * 0.12 * st.ribbon_width
+
+
 def _draw_ribbon(st, cache, rv3d, lo, hi, editable, us):
-    """Scale paths: a ribbon around the path, as wide as the scale."""
-    view = (rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))).normalized()
+    """Scale paths: two crossed ribbons along the target's own X and Z axes, as wide as the
+    X and Z scale; their color shows the Y scale."""
     pts = cache.points
-    idx = [i for i, t in enumerate(cache.times) if _in(t, lo, hi)]
-    if len(idx) < 2 or len(cache.sample_vals) != len(pts):
+    n = len(pts)
+    if len(cache.sample_vals) != n or len(cache.sample_axes) != n:
         return
-    half = cache.vgain * 0.12 * st.ribbon_width
-    left, right = [], []
-    for i in idx:
-        a = pts[max(0, i - 1)]
-        b = pts[min(len(pts) - 1, i + 1)]
-        side = (b - a).cross(view)
-        if side.length < 1e-9:
-            side = view.orthogonal()
-        side.normalize()
-        v = cache.sample_vals[i]
-        w = half * sum(abs(x) for x in v) / len(v)
-        left.append(pts[i] + side * w)
-        right.append(pts[i] - side * w)
+    vis = cache.vis if len(cache.vis) == n else [True] * n
+    half = ribbon_half(st, cache)
     alpha = 0.22 if editable else 0.1
-    col = COL_RIBBON + (alpha,)
-    tris = []
-    for j in range(len(left) - 1):
-        tris += [left[j], right[j], left[j + 1], left[j + 1], right[j], right[j + 1]]
-    sh = gpu.shader.from_builtin('UNIFORM_COLOR')
-    sh.uniform_float("color", col)
-    batch_for_shader(sh, 'TRIS', {"pos": tris}).draw(sh)
-    edge = COL_RIBBON + (0.8 if editable else 0.35,)
-    _lines(left, [edge] * len(left), 1.2 * us, 'LINE_STRIP')
-    _lines(right, [edge] * len(right), 1.2 * us, 'LINE_STRIP')
+    sh = gpu.shader.from_builtin('SMOOTH_COLOR')
+    for axis, comp in ((0, 0), (2, 2)):
+        run = []
+        runs = []
+        for i, t in enumerate(cache.times):
+            if not _in(t, lo, hi) or not vis[i]:
+                if len(run) > 1:
+                    runs.append(run)
+                run = []
+                continue
+            v = cache.sample_vals[i]
+            w = half * abs(v[comp])
+            d = cache.sample_axes[i][axis] * w
+            col = scale_color(v[1]) if len(v) > 1 else COL_RIBBON
+            run.append((pts[i] + d, pts[i] - d, col))
+        if len(run) > 1:
+            runs.append(run)
+        for run in runs:
+            tris, cols = [], []
+            for (l0, r0, c0), (l1, r1, c1) in zip(run, run[1:]):
+                tris += [l0, r0, l1, l1, r0, r1]
+                ca, cb = c0 + (alpha,), c1 + (alpha,)
+                cols += [ca, ca, cb, cb, ca, cb]
+            batch_for_shader(sh, 'TRIS', {"pos": tris, "color": cols}).draw(sh)
+            ea = 0.8 if editable else 0.35
+            ecol = [c + (ea,) for _l, _r, c in run]
+            _lines([l for l, _r, _c in run], ecol, 1.2 * us, 'LINE_STRIP')
+            _lines([r for _l, r, _c in run], ecol, 1.2 * us, 'LINE_STRIP')
+    if st.show_scale_box:
+        _draw_scale_box(st, cache, us)
+
+
+def _draw_scale_box(st, cache, us):
+    """A box at the current frame, as big as the current scale."""
+    scene = bpy.context.scene
+    t = scene.frame_current + scene.frame_subframe
+    if not cache.fs <= t <= cache.fe:
+        return
+    tg = cache.target()
+    if tg is None:
+        return
+    c = cache.head(tg, t)
+    ax = cache.axes(tg, t)
+    s = tg.scale.values(t)
+    h = ribbon_half(st, cache) * st.scale_box_size
+    e = [ax[i] * (h * abs(s[i])) for i in range(3)]
+    corners = {}
+    for i in (-1, 1):
+        for j in (-1, 1):
+            for k in (-1, 1):
+                corners[(i, j, k)] = c + e[0] * i + e[1] * j + e[2] * k
+    lines = []
+    for (i, j, k), p in corners.items():
+        for q in ((-i, j, k), (i, -j, k), (i, j, -k)):
+            if q > (i, j, k):
+                lines += [p, corners[q]]
+    _lines(lines, [(1.0, 1.0, 1.0, 0.7)] * len(lines), 1.3 * us)
+
+
+def scale_gizmo_points(st, cache, k, region=None, rv3d=None):
+    """Scale paths: gizmo handle ends of a selected key {'GX', 'GY', 'GZ', 'GU': world point}.
+    Lengths follow the scale, with a minimum size on the screen."""
+    from . import pick
+    tg = cache.target()
+    if tg is None or not k.vals or len(k.vals) < 3:
+        return {}
+    ax = cache.axes(tg, k.t)
+    region = region or bpy.context.region
+    rv3d = rv3d or bpy.context.region_data
+    h = max(ribbon_half(st, cache) * 1.6, pick.handle_min_world(region, rv3d, k.co) * 2.0)
+    out = {}
+    for i, part in enumerate(('GX', 'GY', 'GZ')):
+        out[part] = k.co + ax[i] * (h * min(max(abs(k.vals[i]), 0.25), 3.0))
+    u = (ax[0] + ax[1] + ax[2]).normalized()
+    out['GU'] = k.co + u * (h * 0.9 * min(max(sum(abs(v) for v in k.vals[:3]) / 3.0, 0.25), 3.0))
+    return out
+
+
+def _draw_scale_gizmos(st, cache, keys, us):
+    lines, cols = [], []
+    for k in keys:
+        if not k.sel:
+            continue
+        for part, p in scale_gizmo_points(st, cache, k).items():
+            if part == 'GU':
+                continue
+            lines += [k.co, p]
+            cols += [GIZMO_COLORS[part]] * 2
+    _lines(lines, cols, 2.0 * us)
 
 
 def _draw_value_base(cache, lo, hi, us):
@@ -261,10 +354,13 @@ def _draw_view():
     cur = scene.frame_current + scene.frame_subframe
 
     up = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
+    look = rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))
     for cache in caches:
-        if cache.ptype == core.VALUE and not state.modal_running and cache.vdir.angle(up, 0.0) > 0.35:
-            # the value track stands "up" on the screen; it turns with the view (not while editing)
+        if cache.ptype == core.VALUE and not state.modal_running and                 (cache.vdir.angle(up, 0.0) > 0.35 or cache.vview.angle(look, 0.0) > 0.35):
+            # the value track is placed relative to the screen; it turns with the view (not
+            # while editing)
             cache.vdir = up.normalized()
+            cache.vview = look.normalized()
             cache.dirty = True
         if not cache.refresh():
             continue
@@ -282,12 +378,15 @@ def _draw_view():
             _draw_ribbon(st, cache, rv3d, lo, hi, editable, us)
         elif cache.ptype == core.VALUE:
             _draw_value_base(cache, lo, hi, us)
-        pts, cols = _path_colors(st, cache, editable, cur, lo, hi)
-        _lines(pts, cols, st.line_width * us * (1.0 if editable else 0.75), 'LINE_STRIP')
+        for pts, cols in _path_colors(st, cache, editable, cur, lo, hi):
+            _lines(pts, cols, st.line_width * us * (1.0 if editable else 0.75), 'LINE_STRIP')
 
         if not editable:
             continue
         keys = [k for k in cache.keys if _in(k.t, lo, hi)]
+
+        if cache.ptype == core.SCALE:
+            _draw_scale_gizmos(st, cache, keys, us)
 
         if cache.ptype == core.ROTATION and st.show_spokes:
             tg = cache.target()
@@ -369,8 +468,9 @@ def _draw_points(ctx, st, us):
         if st.show_frames:
             col = COL_FRAME if editable else (0.7, 0.7, 0.7, 0.5)
             r = 1.8 * us
-            for t, p in zip(cache.times, cache.points):
-                if _in(t, lo, hi) and abs(t - round(t)) < 1e-4:
+            vis = cache.vis if len(cache.vis) == len(cache.times) else [True] * len(cache.times)
+            for t, p, v in zip(cache.times, cache.points, vis):
+                if v and _in(t, lo, hi) and abs(t - round(t)) < 1e-4:
                     discs.add(proj(p), r, col)
 
         if cache.fs <= cur <= cache.fe and _in(cur, lo, hi):
@@ -382,7 +482,7 @@ def _draw_points(ctx, st, us):
         scr = [proj(k.co) for k in cache.keys]
         last_label = None
         for i, k in enumerate(cache.keys):
-            if not _in(k.t, lo, hi):
+            if k.hidden or not _in(k.t, lo, hi):
                 continue
             s = scr[i]
             near = [(s - q).length for q in (scr[i - 1] if i > 0 else None,
@@ -394,6 +494,11 @@ def _draw_points(ctx, st, us):
             if not k.sel and (i == 0 or k.t - ks_all[i - 1].t <= 2.0 + 1e-6) and                     (i + 1 == len(ks_all) or ks_all[i + 1].t - k.t <= 2.0 + 1e-6):
                 kr = min(kr, 3.0 * us)      # baked keys (every frame or two): small dots
             if editable:
+                if cache.ptype == core.SCALE and k.sel:
+                    for part, p in scale_gizmo_points(st, cache, k).items():
+                        g = proj(p)
+                        if g is not None:
+                            discs.add_outlined(g, ks * (0.75 if part == 'GU' else 0.6), GIZMO_COLORS[part])
                 if handles_shown(st, cache, editable, k):
                     m = pick.handle_min_world(region, rv3d, k.co)
                     for side, htype, hsel in (('L', k.type_l, k.sel_l), ('R', k.type_r, k.sel_r)):
