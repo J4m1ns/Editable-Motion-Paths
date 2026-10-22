@@ -30,6 +30,71 @@ def profile(kind, u, power):
     return u
 
 
+def pchip(xs, ys):
+    """Monotone cubic through (xs, ys) (Fritsch-Carlson): a smooth time warp without
+    overshoot, so time never runs backwards."""
+    n = len(xs)
+    d = [(ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]) for i in range(n - 1)]
+    m = [0.0] * n
+    m[0], m[-1] = d[0], d[-1]
+    for i in range(1, n - 1):
+        if d[i - 1] * d[i] <= 0.0:
+            m[i] = 0.0
+        else:
+            w1 = 2.0 * (xs[i + 1] - xs[i]) + (xs[i] - xs[i - 1])
+            w2 = (xs[i + 1] - xs[i]) + 2.0 * (xs[i] - xs[i - 1])
+            m[i] = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i])
+
+    def f(x):
+        i = max(0, min(n - 2, bisect.bisect_right(xs, x) - 1))
+        h = xs[i + 1] - xs[i]
+        u = (x - xs[i]) / h
+        h00 = (1 + 2 * u) * (1 - u) ** 2
+        h10 = u * (1 - u) ** 2
+        h01 = u * u * (3 - 2 * u)
+        h11 = u * u * (u - 1)
+        return h00 * ys[i] + h10 * h * m[i] + h01 * ys[i + 1] + h11 * h * m[i + 1]
+    return f
+
+
+def refit(job, tg, target, select=True, tolerance=0.4):
+    """Replace the motion of job's range by `target(t)` (channel values), keeping the keys on
+    their frames and adding keys only where needed. The range ends keep their outer side."""
+    cache = job.cache
+    fitter = fit.Fitter(cache, tg, job.r0, job.r1, target)
+    knots = [t for t in job.knots if job.r0 - 1e-9 <= t <= job.r1 + 1e-9]
+    fixed = {job.r0, job.r1}
+    half = {job.r0: 'L', job.r1: 'R'}
+    knots, slopes = fitter.refine(knots, fixed, fitter.size * tolerance / 100.0, half)
+    touched = fit.write(fitter, knots, slopes, select)
+    cache.dirty = True
+    return touched
+
+
+def warp_target(job, tg, warp):
+    """Target motion: the original path of `job`, reached at other times (warp: new frame ->
+    original frame). The shape stays, only the spacing changes."""
+    cache = job.cache
+
+    def fn(t):
+        tt = warp(t)
+        return cache.solve(tg, t, job._at(job.pts, tt), job._at(job.vals, tt))
+    return fn
+
+
+def progress_target(before, after, tg):
+    """Target motion: the shape of `after`, travelled with the spacing of `before` (both
+    SpaceJobs over the same range). Shape tools use it to keep the timing."""
+    cache = after.cache
+    tb, ta = before.arc[-1], after.arc[-1]
+
+    def fn(t):
+        u = before._at(before.arc, t) / tb if tb > 1e-12 else (t - before.r0) / (before.r1 - before.r0)
+        tt = after._time_at_arc(u * ta)
+        return cache.solve(tg, t, after._at(after.pts, tt), after._at(after.vals, tt))
+    return fn
+
+
 class SpaceJob:
     """One path range with its original motion sampled densely."""
 

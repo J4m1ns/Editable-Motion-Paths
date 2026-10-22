@@ -10,6 +10,7 @@ in world space can be mapped back to channel values exactly (location) or by a
 minimal swing rotation (rotation).
 """
 
+import bisect
 import math
 from array import array
 
@@ -398,6 +399,8 @@ class PathCache:
         self.hidden = set()     # frames of hidden keys
         self.sample_axes = []   # scale paths: the target's X, Y, Z directions at every sample
         self.vis = []           # per sample: is this part of the path shown (not next to a hidden key)
+        self.rep = []           # per sample: a repeat of a loop outside its keys (drawn faint)
+        self.loop_range = None  # (first, last) key frame of looping motion
 
     @property
     def key(self):
@@ -635,7 +638,7 @@ class PathCache:
         self.keys = [k for k in keys if fs - EPS <= k.t <= fe + EPS]
         for i, k in enumerate(self.keys):
             self._fill_key(tg, ch, k, i)
-        self._visibility()
+        self._visibility(tg)
         # fallback handle directions (used to display zero-length handles)
         n = len(self.keys)
         for i, k in enumerate(self.keys):
@@ -654,9 +657,9 @@ class PathCache:
             k.dir_r = chord.normalized()
             k.dir_l = -k.dir_r
 
-    def _visibility(self):
+    def _visibility(self, tg):
         """Hidden keys take the path segments next to them with them; what stays visible falls
-        apart into pieces."""
+        apart into pieces. On looping motion, the path outside the loop's keys is a repeat."""
         ks = self.keys
         piece = 0
         for i, k in enumerate(ks):
@@ -666,24 +669,43 @@ class PathCache:
             if i > 0 and (k.hidden or ks[i - 1].hidden):
                 piece += 1
             k.piece = piece
-        if not self.hidden:
-            self.vis = [True] * len(self.times)
-            return
+        used = {LOCATION: (tg.loc,), SCALE: (tg.loc, tg.scale), VALUE: (tg.loc, tg.value)}.get(
+            self.ptype, (tg.loc, tg.rot, tg.scale))
+        loops = any(cycle_info(fc) for ch in used for fc in ch.fcurves)
+        self.loop_range = (ks[0].t, ks[-1].t) if loops and len(ks) > 1 and ks[-1].t - ks[0].t > EPS else None
         kt = [k.t for k in ks]
         vis = []
         j = 0
         for t in self.times:
             while j < len(kt) and kt[j] < t - 1e-6:
                 j += 1
+            if not self.hidden:
+                vis.append(True)
+                continue
             # keys around t: ks[j-1] (before) and ks[j] (at or after)
-            at = j < len(kt) and abs(kt[j] - t) < 1e-6
-            if at:
+            if j < len(kt) and abs(kt[j] - t) < 1e-6:
                 vis.append(not ks[j].hidden)
                 continue
             before = ks[j - 1] if j > 0 else None
             after = ks[j] if j < len(ks) else None
             vis.append(not ((before is not None and before.hidden) or (after is not None and after.hidden)))
+        rep = [False] * len(self.times)
+        if self.loop_range is not None:
+            first, last = self.loop_range
+            for i, t in enumerate(self.times):
+                if t < first - 1e-6 or t > last + 1e-6:
+                    rep[i] = True
+                    if self.hidden:
+                        # a repeat shows what the loop shows: hidden there, hidden here
+                        tw = first + ((t - first) % (last - first))
+                        vis[i] = self._vis_at(vis, tw)
         self.vis = vis
+        self.rep = rep
+
+    def _vis_at(self, vis, t):
+        i = bisect.bisect_left(self.times, t)
+        i = min(max(i, 0), len(vis) - 1)
+        return vis[i]
 
     def visible_keys(self):
         return [k for k in self.keys if not k.hidden]

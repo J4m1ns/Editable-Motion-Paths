@@ -106,9 +106,11 @@ def line_hit(context, mx, my, radius=None):
     for cache in state.editable_caches(context.scene):
         lo, hi = draw.path_window(context.scene, st, cache)
         prev = None
-        vis = cache.vis if len(cache.vis) == len(cache.times) else [True] * len(cache.times)
-        for t, p, v in zip(cache.times, cache.points, vis):
-            if not (lo <= t <= hi) or not v:
+        n = len(cache.times)
+        vis = cache.vis if len(cache.vis) == n else [True] * n
+        rep = cache.rep if len(cache.rep) == n else [False] * n
+        for t, p, v, r_ in zip(cache.times, cache.points, vis, rep):
+            if not (lo <= t <= hi) or not v or r_:
                 prev = None
                 continue
             s = location_3d_to_region_2d(region, rv3d, p)

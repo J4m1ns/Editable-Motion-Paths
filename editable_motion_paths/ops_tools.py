@@ -131,6 +131,8 @@ class EMP_OT_edit_tool(bpy.types.Operator):
     bl_idname = "emp.edit_tool"
     bl_label = "Edit Paths"
 
+    _previous = {}      # mode -> tool that was active before the path tool
+
     def execute(self, context):
         tool = "emp.edit_path_pose" if context.mode == 'POSE' else "emp.edit_path_object"
         if context.mode not in {'POSE', 'OBJECT'}:
@@ -141,8 +143,16 @@ class EMP_OT_edit_tool(bpy.types.Operator):
             area = context.area
         if area is None:
             return {'CANCELLED'}
+        cur = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
+        cur = cur.idname if cur is not None else ""
+        if cur == tool:
+            # pressed again: back to the tool used before (like toggling a mode)
+            new = EMP_OT_edit_tool._previous.get(context.mode) or "builtin.select_box"
+        else:
+            EMP_OT_edit_tool._previous[context.mode] = cur
+            new = tool
         with context.temp_override(area=area, region=next(r for r in area.regions if r.type == 'WINDOW')):
-            bpy.ops.wm.tool_set_by_id(name=tool)
+            bpy.ops.wm.tool_set_by_id(name=new)
         return {'FINISHED'}
 
 

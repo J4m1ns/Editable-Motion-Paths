@@ -123,6 +123,24 @@ class _Job:
                 nxt = cache.fe + 1.0 if nxt is None else nxt
             self.bounds.append((-UNBOUNDED if prev is None else prev, UNBOUNDED if nxt is None else nxt))
 
+        # Spacing between two unselected keys: retime that part of the path (keeps its shape)
+        self.runs = []
+        if slide_mode == 'SPACING' and not extrapolate:
+            from .ops_timing import SpaceJob
+            sel = [i for i, k in enumerate(ks) if k.sel]
+            groups = []
+            for i in sel:
+                if groups and groups[-1][-1] == i - 1:
+                    groups[-1].append(i)
+                else:
+                    groups.append([i])
+            for g in groups:
+                if g[0] == 0 or g[-1] == len(ks) - 1:
+                    continue
+                r0, r1 = ks[g[0] - 1].t, ks[g[-1] + 1].t
+                self.runs.append((SpaceJob(cache, tg, float(r0), float(r1)), [ks[i].t for i in g]))
+        self.in_runs = {round(t, 3) for _j, ts in self.runs for t in ts}
+
         if slide_mode == 'TIMING':
             if all_channels and tg.coll is not None:
                 fcs = [fc for fc in tg.coll if fc.data_path.startswith(tg.prefix)] if tg.prefix \
@@ -196,7 +214,20 @@ class _Job:
                     core.write_key(ch, k, self._vals(tg, k, t, t), True, touched)
         else:
             gap = 1.0 if snap else 0.05
+            from .ops_timing import pchip, refit, warp_target
+            for job, ts in self.runs:
+                # the selected keys show the poses of (frame + delta); the frames around them
+                # follow smoothly, along the same path
+                src = [min(max(t + delta, job.r0 + gap), job.r1 - gap) for t in ts]
+                xs = [job.r0] + ts + [job.r1]
+                ys = [job.r0] + src + [job.r1]
+                if any(b <= a for a, b in zip(ys, ys[1:])):
+                    continue
+                touched.update(refit(job, tg, warp_target(job, tg, pchip(xs, ys)), set(round(t, 3) for t in ts)))
+                tg = cache.target()
             for k, (lo, hi) in zip(self.keys, self.bounds):
+                if round(k.t, 3) in self.in_runs:
+                    continue
                 t = min(max(k.t + delta, lo + gap), hi - gap) if hi - lo > 2 * gap else k.t
                 core.write_key(ch, k, self._vals(tg, k, t, k.t, extrapolate), True, touched)
         core.update_fcurves(touched)

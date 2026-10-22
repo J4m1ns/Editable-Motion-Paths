@@ -117,6 +117,9 @@ class EMP_Settings(bpy.types.PropertyGroup):
     show_spokes: BoolProperty(name="Bone Lines", default=True,
                               description="Rotation paths: draw lines from the bone head to selected keys",
                               update=_redraw)
+    show_repeats: BoolProperty(name="Loop Repeats", default=True,
+                               description="Looping motion: draw the path outside the loop's keys "
+                                           "(the repeats) faintly", update=_redraw)
     on_top: BoolProperty(name="In Front", default=True,
                          description="Draw paths in front of geometry", update=_redraw)
     line_width: FloatProperty(name="Line Width", default=2.0, min=1.0, max=10.0, update=_redraw)

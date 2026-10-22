@@ -61,6 +61,7 @@ TOOL_KEYMAP = (
     _k("emp.exaggerate", 'E', alt=True),
     _k("emp.ease", 'E', shift=True),
     _k("emp.context_menu", 'RIGHTMOUSE'),
+    _k("wm.call_panel", 'U', {"name": "EMP_PT_display_popover", "keep_open": True}),
     # modes, proportional editing (Blender's own settings)
     _k("wm.context_set_enum", 'ONE', {"data_path": "scene.emp.edit_mode", "value": 'LOCATION'}),
     _k("wm.context_set_enum", 'TWO', {"data_path": "scene.emp.edit_mode", "value": 'ROTATION'}),
@@ -116,6 +117,7 @@ HELP = (
         ("Alt+E", "exaggerate"),
         ("Shift+E", "ease (I / O / B)"),
         ("Right-click", "path menu (Edit Value, Space, LoopTools...)"),
+        ("U", "display settings under the mouse"),
     )),
 )
 
@@ -279,7 +281,6 @@ class EMP_MT_looptools(bpy.types.Menu):
         layout.operator("emp.gstretch", icon='GREASEPENCIL')
         layout.operator_context = 'INVOKE_DEFAULT'
         layout.operator("emp.smooth", text="Relax", icon='SMOOTHCURVE')
-        layout.operator("emp.space", text="Space", icon='ALIGN_JUSTIFY').profile = 'EVEN'
 
 
 class EMP_MT_snap(bpy.types.Menu):
@@ -354,13 +355,25 @@ def _context_menu_entry(self, context):
 # Panels
 # ----------------------------------------------------------------------------
 
+def _object_icon(ob):
+    if ob is None:
+        return 'ERROR'
+    return {'MESH': 'OUTLINER_OB_MESH', 'CURVE': 'OUTLINER_OB_CURVE', 'SURFACE': 'OUTLINER_OB_SURFACE',
+            'META': 'OUTLINER_OB_META', 'FONT': 'OUTLINER_OB_FONT', 'ARMATURE': 'OUTLINER_OB_ARMATURE',
+            'LATTICE': 'OUTLINER_OB_LATTICE', 'EMPTY': 'OUTLINER_OB_EMPTY', 'LIGHT': 'OUTLINER_OB_LIGHT',
+            'CAMERA': 'OUTLINER_OB_CAMERA', 'SPEAKER': 'OUTLINER_OB_SPEAKER',
+            'LIGHT_PROBE': 'OUTLINER_OB_LIGHTPROBE', 'GREASEPENCIL': 'OUTLINER_OB_GREASEPENCIL',
+            'CURVES': 'OUTLINER_OB_CURVES', 'POINTCLOUD': 'OUTLINER_OB_POINTCLOUD',
+            'VOLUME': 'OUTLINER_OB_VOLUME'}.get(ob.type, 'OBJECT_DATA')
+
+
 class EMP_UL_paths(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         row = layout.row(align=True)
         row.prop(item, "show", text="", emboss=False,
                  icon='HIDE_OFF' if item.show else 'HIDE_ON')
         name = item.bone_name or (item.object.name if item.object else "<missing>")
-        row.label(text=name, icon='BONE_DATA' if item.bone_name else 'OBJECT_DATA')
+        row.label(text=name, icon='BONE_DATA' if item.bone_name else _object_icon(item.object))
         if item.object is not None:
             cache = state.caches.get(state.entry_key(item))
             if cache is not None and cache.locked:
@@ -517,6 +530,7 @@ def _draw_display(layout, st):
     col.prop(st, "show_frame_numbers")
     col.prop(st, "show_all_handles")
     col.prop(st, "show_ghost")
+    col.prop(st, "show_repeats")
     col.prop(st, "show_spokes")
     col.prop(st, "on_top")
     layout.prop(st, "line_width")

@@ -514,12 +514,37 @@ class EMP_OT_spin(bpy.types.Operator):
             c.refresh(force=True)
             tg = c.target()
             w = edit.Writer(times)
-            for i, tt in enumerate(times, 1):
-                R = Matrix.Rotation(sign * self.angle * i / self.steps, 3, ax)
+            # the keys go the way the mouse turns (also when spinning back from the first key)
+            pts = [cen + Matrix.Rotation(self.angle * i / self.steps, 3, ax) @ (p0 - cen)
+                   for i in range(1, self.steps + 1)]
+            vals = {}
+            for tt, p in zip(times, pts):
                 kk = _key_at(c, tt)
                 if kk is not None:
-                    w.key(c, tg, kk, cen + R @ (p0 - cen), move_handles=False)
-                    core.set_handle_types(tg.channels(c.ptype), kk, 'AUTO_CLAMPED', 'AUTO_CLAMPED', w.touched)
+                    vals[tt] = w.key(c, tg, kk, p, move_handles=False)
+            w.done([c])
+            # handles of a true circular arc, so the path between the keys is round
+            tg = c.target()
+            r = (p0 - cen - ax * (p0 - cen).dot(ax)).length
+            step = abs(self.angle) / self.steps
+            L = 4.0 / 3.0 * math.tan(step / 4.0) * r
+            seq = [p0] + pts
+            w = edit.Writer(times)
+            for i, (tt, p) in enumerate(zip(times, pts), 1):
+                kk = _key_at(c, tt)
+                if kk is None:
+                    continue
+                T = ax.cross(p - cen)
+                if T.length < 1e-9:
+                    continue
+                T.normalize()
+                ahead = seq[min(i + 1, len(seq) - 1)] - seq[i - 1]
+                if T.dot(ahead) * sign < 0.0:
+                    T = -T          # T points forward in time
+                dt = self.frames / 3.0
+                v = vals.get(tt)
+                w.handle(c, tg, kk, 'R', p + T * L, v, 'ALIGNED', dt)
+                w.handle(c, tg, kk, 'L', p - T * L, v, 'ALIGNED', dt)
             w.done([c])
             pick.deselect_all([c])
             c.refresh(force=True)
@@ -629,6 +654,9 @@ class _LoopTool:
     min_keys = 3
 
     influence: FloatProperty(name="Influence", default=1.0, min=0.0, max=1.0, subtype='FACTOR')
+    keep_timing: BoolProperty(name="Keep Timing", default=True,
+                              description="The new shape is travelled with the old spacing: the "
+                                          "bone covers the same share of the way on every frame")
 
     @classmethod
     def poll(cls, context):
@@ -642,11 +670,31 @@ class _LoopTool:
         for cache, ks in groups:
             tg, fresh = edit.prepare(context, cache, [k.t for k in ks])
             fresh.sort(key=lambda k: k.t)
+            before = self._timing_before(cache, tg, fresh)
             res = self.shape(context, cache, tg, fresh)
             if res is False:
                 return {'CANCELLED'}
+            self._timing_after(cache, before, fresh)
         pick.tag_anim_editors()
         return {'FINISHED'}
+
+    def _timing_before(self, cache, tg, ks):
+        if not self.keep_timing or len(ks) < 2:
+            return None
+        from .ops_timing import SpaceJob
+        return SpaceJob(cache, tg, float(ks[0].t), float(ks[-1].t))
+
+    def _timing_after(self, cache, before, ks):
+        """Refit the new shape so it is travelled with the old spacing."""
+        if before is None:
+            return
+        from .ops_timing import SpaceJob, progress_target, refit
+        cache.refresh(force=True)
+        tg = cache.target()
+        after = SpaceJob(cache, tg, before.r0, before.r1)
+        sel = {round(k.t, 3) for k in ks}
+        core.update_fcurves(refit(after, tg, progress_target(before, after, tg), sel))
+        cache.refresh(force=True)
 
     def _write(self, cache, tg, ks, keys_w, handles_w, end_free=True):
         """keys_w {t: W}, handles_w {(t, side): W}: lerped by the influence and written."""
@@ -806,7 +854,9 @@ class EMP_OT_gstretch(_LoopTool, bpy.types.Operator):
             frames = [k.t for k in cache.keys if t0 - 1e-3 <= k.t <= t1 + 1e-3]
             tg, fresh = edit.prepare(context, cache, frames)
             fresh.sort(key=lambda k: k.t)
+            before = self._timing_before(cache, tg, fresh)
             self.shape(context, cache, tg, fresh)
+            self._timing_after(cache, before, fresh)
         if self.delete_stroke and fr is not None:
             try:
                 fr.strokes.remove(st)

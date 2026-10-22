@@ -165,10 +165,20 @@ def draw_view():
             print("Editable Motion Paths: drawing failed:", ex)
 
 
+COL_HIDDEN = (0.7, 0.7, 0.7, 0.4)
+
+
+def _sample_flags(cache):
+    n = len(cache.times)
+    vis = cache.vis if len(cache.vis) == n else [True] * n
+    rep = cache.rep if len(cache.rep) == n else [False] * n
+    return vis, rep
+
+
 def _path_colors(st, cache, editable, cur, lo, hi):
-    """Runs of (points, colors): hidden parts of the path leave gaps."""
+    """Runs of (points, colors, kind): 'main', 'repeat' (a loop outside its keys, faint) and
+    'hidden' (next to hidden keys: a faint dashed ghost)."""
     runs = []
-    pts, cols = [], []
     speeds = cache.speeds
     vmax = 0.0
     if st.color_mode == 'SPEED' and speeds:
@@ -177,29 +187,59 @@ def _path_colors(st, cache, editable, cur, lo, hi):
     base = tuple(st.color)
     alpha = 1.0 if editable else 0.6
     rough = jitter_values(cache) if st.color_mode == 'JITTER' else None
-    vis = cache.vis if len(cache.vis) == len(cache.times) else [True] * len(cache.times)
+    vis, rep = _sample_flags(cache)
+    cur_kind, pts, cols = None, [], []
     for i, (t, p) in enumerate(zip(cache.times, cache.points)):
-        if not _in(t, lo, hi) or not vis[i]:
-            if len(pts) > 1:
-                runs.append((pts, cols))
-            pts, cols = [], []
-            continue
-        if rough is not None:
-            c = _jitter_color(rough[i] / max(st.jitter_threshold, 1e-6))
-        elif st.color_mode == 'SPEED':
-            sp = speeds[min(i, len(speeds) - 1)] if speeds else 0.0
-            c = _speed_color(sp / vmax if vmax > 0 else 0.0)
-        elif st.color_mode == 'TIME':
-            c = base if t >= cur else tuple(x * 0.45 for x in base)
+        if not _in(t, lo, hi):
+            kind = None
+        elif not vis[i]:
+            kind = 'hidden'
+        elif rep[i]:
+            kind = 'repeat' if st.show_repeats else None
         else:
-            c = base
-        if not editable:
-            c = tuple(0.35 + 0.4 * x for x in c)
+            kind = 'main'
+        if kind != cur_kind:
+            if cur_kind is not None and len(pts) > 1:
+                runs.append((pts, cols, cur_kind))
+            # runs touch, so the line has no gaps where its kind changes
+            pts = [pts[-1]] if pts and kind is not None and cur_kind is not None else []
+            cols = [cols[-1]] if cols and pts else []
+            cur_kind = kind
+        if kind is None:
+            continue
+        if kind == 'hidden':
+            col = COL_HIDDEN
+        else:
+            if rough is not None:
+                c = _jitter_color(rough[i] / max(st.jitter_threshold, 1e-6))
+            elif st.color_mode == 'SPEED':
+                sp = speeds[min(i, len(speeds) - 1)] if speeds else 0.0
+                c = _speed_color(sp / vmax if vmax > 0 else 0.0)
+            elif st.color_mode == 'TIME':
+                c = base if t >= cur else tuple(x * 0.45 for x in base)
+            else:
+                c = base
+            if not editable:
+                c = tuple(0.35 + 0.4 * x for x in c)
+            col = (c[0], c[1], c[2], alpha * (0.3 if kind == 'repeat' else 1.0))
         pts.append(p)
-        cols.append((c[0], c[1], c[2], alpha))
-    if len(pts) > 1:
-        runs.append((pts, cols))
+        cols.append(col)
+    if cur_kind is not None and len(pts) > 1:
+        runs.append((pts, cols, cur_kind))
     return runs
+
+
+def _draw_path_runs(st, cache, editable, cur, lo, hi, us):
+    width = st.line_width * us * (1.0 if editable else 0.75)
+    for pts, cols, kind in _path_colors(st, cache, editable, cur, lo, hi):
+        if kind == 'hidden':
+            dashed, dcols = [], []
+            for i in range(0, len(pts) - 1, 2):
+                dashed += [pts[i], pts[i + 1]]
+                dcols += [cols[i], cols[i + 1]]
+            _lines(dashed, dcols, 1.2 * us)
+        else:
+            _lines(pts, cols, width * (0.7 if kind == 'repeat' else 1.0), 'LINE_STRIP')
 
 
 COL_RIBBON = (1.0, 0.75, 0.3)
@@ -389,8 +429,7 @@ def _draw_view():
             _draw_ribbon(st, cache, rv3d, lo, hi, editable, us)
         elif cache.ptype == core.VALUE:
             _draw_value_base(cache, lo, hi, us)
-        for pts, cols in _path_colors(st, cache, editable, cur, lo, hi):
-            _lines(pts, cols, st.line_width * us * (1.0 if editable else 0.75), 'LINE_STRIP')
+        _draw_path_runs(st, cache, editable, cur, lo, hi, us)
 
         if not editable:
             continue
@@ -479,9 +518,9 @@ def _draw_points(ctx, st, us):
         if st.show_frames:
             col = COL_FRAME if editable else (0.7, 0.7, 0.7, 0.5)
             r = 1.8 * us
-            vis = cache.vis if len(cache.vis) == len(cache.times) else [True] * len(cache.times)
-            for t, p, v in zip(cache.times, cache.points, vis):
-                if v and _in(t, lo, hi) and abs(t - round(t)) < 1e-4:
+            vis, rep = _sample_flags(cache)
+            for t, p, v, r_ in zip(cache.times, cache.points, vis, rep):
+                if v and not r_ and _in(t, lo, hi) and abs(t - round(t)) < 1e-4:
                     discs.add(proj(p), r, col)
 
         if cache.fs <= cur <= cache.fe and _in(cur, lo, hi):

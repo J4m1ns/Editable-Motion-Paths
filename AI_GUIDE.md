@@ -19,7 +19,9 @@ instead of editing F-Curves blind.
 ## Setup (run with the MCP code-execution tool)
 
 ```python
-import editable_motion_paths_api as emp
+import sys
+# the add-on's API (works for the extension and a plain add-on install)
+emp = next(m for n, m in sys.modules.items() if n.endswith("editable_motion_paths.api"))
 
 emp.add_paths("Zombie_Rig", ["CTRL_Foot_L", "CTRL_Hand_IK_R"], mode='LOCATION')
 print(emp.list_paths())

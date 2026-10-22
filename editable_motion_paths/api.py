@@ -1,6 +1,7 @@
 """Scripting API, e.g. for an AI assistant driving Blender through an MCP connection.
 
-    import editable_motion_paths_api as emp
+    import sys
+    emp = next(m for n, m in sys.modules.items() if n.endswith("editable_motion_paths.api"))
 
     emp.add_paths("Rig", ["CTRL_Foot_L"])           # show paths
     print(emp.analyze("Rig", "CTRL_Foot_L")["summary"])   # read the motion like an animator

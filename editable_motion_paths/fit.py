@@ -376,9 +376,10 @@ def write(fitter, knots, slopes, select=True):
                     kp.handle_right = (t + outer_r[0][0], y + outer_r[0][1])
                 if interp_end is not None:
                     kp.interpolation = interp_end
-            kp.select_control_point = select
-            kp.select_left_handle = select
-            kp.select_right_handle = select
+            on = (round(t, 3) in select) if isinstance(select, (set, frozenset)) else select
+            kp.select_control_point = on
+            kp.select_left_handle = on
+            kp.select_right_handle = on
         for x, side, h, htype in outside:
             kp = at.get(round(x, 3))
             if kp is None:
