@@ -17,6 +17,7 @@ hud_area = 0         # as_pointer() of the area showing the HUD
 box = None           # (x0, y0, x1, y1, mode) box-select rectangle in region space
 box_area = 0
 circle = None        # (x, y, radius, area pointer) circle select brush
+chart = None         # timing chart geometry of the last draw (see draw._draw_chart)
 knife = None         # ([region points], area pointer) knife line
 markers = None       # ([world points], area pointer) previews of keys about to be added
 constraint = None    # (pivot, axis, color) axis line shown while transforming
@@ -381,6 +382,11 @@ def _on_depsgraph(scene, depsgraph):
         return
     for u in depsgraph.updates:
         if isinstance(u.id, bpy.types.Action):
+            try:
+                from . import ops_fmods
+                ops_fmods.sync_active(bpy.context)     # modifier stack entries stay alike
+            except Exception:
+                pass
             schedule_rebake()
             return
 

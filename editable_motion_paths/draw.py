@@ -85,6 +85,9 @@ def jitter_values(cache):
 def path_window(scene, st, cache):
     """(lo, hi) frame window to display."""
     lo, hi = cache.fs, cache.fe
+    rng = cache.circle_range()
+    if rng is not None:
+        lo, hi = max(lo, rng[0]), min(hi, rng[1])
     if st.use_window:
         cur = scene.frame_current
         lo = max(lo, cur - st.window_before)
@@ -357,6 +360,42 @@ def scale_gizmo_points(st, cache, k, region=None, rv3d=None):
     return out
 
 
+WHISKER_STEPS = 12
+
+
+def scale_whiskers(st, cache, k):
+    """Scale paths: the active channel's handles of key k, drawn like the ribbon edge they
+    shape: [(part, [points of the whisker], end point)]. Time runs along the path, the value is
+    the distance from the path (X, Z: on both edges, Y: on the path, up = bigger)."""
+    c = {'X': 0, 'Y': 1, 'Z': 2}.get(st.scale_channel)
+    tg = cache.target()
+    if c is None or tg is None or c >= len(k.idx) or k.idx[c] < 0:
+        return []
+    fc = tg.scale.fcurves[c]
+    kp = fc.keyframe_points[k.idx[c]]
+    x, y = kp.co
+    half = ribbon_half(st, cache)
+    out = []
+    for side, h in (('L', kp.handle_left), ('R', kp.handle_right)):
+        dt = h[0] - x
+        if abs(dt) < 1e-6:
+            continue
+        signs = (1.0, -1.0) if c != 1 else (1.0,)
+        for s in signs:
+            pts = []
+            for i in range(WHISKER_STEPS + 1):
+                f = i / WHISKER_STEPS
+                t = k.t + dt * f
+                v = y + (h[1] - y) * f
+                ax = cache.axes(tg, t)
+                if c == 1:
+                    pts.append(cache.head(tg, t) + ax[2] * (half * (v - y)))
+                else:
+                    pts.append(cache.head(tg, t) + ax[c] * (s * half * abs(v)))
+            out.append(("W%s%s" % (side, '+' if s > 0 else '-'), pts, pts[-1]))
+    return out
+
+
 def _draw_scale_gizmos(st, cache, keys, us):
     lines, cols = [], []
     for k in keys:
@@ -370,6 +409,11 @@ def _draw_scale_gizmos(st, cache, keys, us):
         if 'GY' in g:
             lines += [k.co, g['GY']]
             cols += [GIZMO_COLORS['GY']] * 2
+        part = {'X': 'GX', 'Y': 'GY', 'Z': 'GZ'}.get(st.scale_channel)
+        for _p, pts, _end in scale_whiskers(st, cache, k):
+            for a, b in zip(pts, pts[1:]):
+                lines += [a, b]
+                cols += [GIZMO_COLORS[part]] * 2
     _lines(lines, cols, 2.0 * us)
 
 
@@ -384,6 +428,30 @@ def _draw_value_base(cache, lo, hi, us):
         if b is not None and _in(k.t, lo, hi):
             stems += [b, k.co]
     _lines(stems, [(0.7, 0.7, 0.7, 0.45)] * len(stems), 1.0 * us)
+
+
+RING_COLORS = {'RX': (1.0, 0.3, 0.35), 'RZ': (0.3, 0.55, 1.0)}
+
+
+def _draw_rot_rings(st, cache, tg, keys, rv3d, us):
+    from . import space
+    if not (st.show_rot_rings or st.show_reach):
+        return
+    on = {'RX': 'X' in st.rot_axes, 'RZ': 'Z' in st.rot_axes}
+    right = rv3d.view_rotation @ Vector((1.0, 0.0, 0.0))
+    up = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
+    for k in keys:
+        if not k.sel:
+            continue
+        rings, center, r = space.rot_rings(cache, tg, k)
+        if st.show_reach:
+            circ = [center + (right * math.cos(a * math.pi / 32) + up * math.sin(a * math.pi / 32)) * r
+                    for a in range(65)]
+            _lines(circ, [(1.0, 1.0, 1.0, 0.18)] * len(circ), 1.0 * us, 'LINE_STRIP')
+        if st.show_rot_rings:
+            for part, pts in rings.items():
+                col = RING_COLORS[part] + ((0.9,) if on[part] else (0.25,))
+                _lines(pts, [col] * len(pts), (2.0 if on[part] else 1.2) * us, 'LINE_STRIP')
 
 
 def _draw_view():
@@ -406,7 +474,7 @@ def _draw_view():
     up = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
     look = rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))
     for cache in caches:
-        if cache.ptype == core.VALUE and not state.modal_running and \
+        if cache.ptype in (core.VALUE, core.SCALE) and not state.modal_running and \
                 (cache.vdir.angle(up, 0.0) > 0.35 or cache.vview.angle(look, 0.0) > 0.35):
             # the value track is placed relative to the screen; it turns with the view (not
             # while editing)
@@ -447,6 +515,7 @@ def _draw_view():
                         M, _u = cache.rot_frame(tg, k.t)
                         sp += [M.translation.copy(), k.co]
                 _lines(sp, [COL_SPOKE] * len(sp), 1.2 * us)
+                _draw_rot_rings(st, cache, tg, keys, rv3d, us)
 
         hl_coords, hl_cols = [], []
         for k in keys:
@@ -550,7 +619,11 @@ def _draw_points(ctx, st, us):
                     for part, p in scale_gizmo_points(st, cache, k).items():
                         g = proj(p)
                         if g is not None:
-                            discs.add_outlined(g, ks * (0.75 if part == 'GU' else 0.6), GIZMO_COLORS[part])
+                            big = part == 'GU' or part[:2] == {'X': 'GX', 'Y': 'GY', 'Z': 'GZ'}.get(st.scale_channel)
+                            discs.add_outlined(g, ks * (0.75 if big else 0.6), GIZMO_COLORS[part])
+                    wcol = GIZMO_COLORS.get({'X': 'GX', 'Y': 'GY', 'Z': 'GZ'}.get(st.scale_channel), COL_HANDLE_SEL)
+                    for _part, _pts, end in scale_whiskers(st, cache, k):
+                        discs.add_outlined(proj(end), ks * 0.55, wcol)
                 if handles_shown(st, cache, editable, k):
                     m = pick.handle_min_world(region, rv3d, k.co)
                     for side, htype, hsel in (('L', k.type_l, k.sel_l), ('R', k.type_r, k.sel_r)):
@@ -621,6 +694,99 @@ def _draw_prop_circle(ctx, us):
     batch_for_shader(sh, 'LINE_LOOP', {"pos": pts}).draw(sh)
 
 
+def _flat(pts, color, kind='LINES'):
+    if len(pts) < 2:
+        return
+    sh = gpu.shader.from_builtin('UNIFORM_COLOR')
+    gpu.state.blend_set('ALPHA')
+    sh.uniform_float("color", color)
+    batch_for_shader(sh, kind, {"pos": pts}).draw(sh)
+
+
+def _draw_chart(ctx, st, us):
+    """Timing chart of the selected keys: a ruler with a tick where every frame is along the
+    path between the first and the last selected key (like an animator's timing chart)."""
+    state.chart = None
+    if not st.show_timing_chart or ctx.area is None:
+        return
+    cache = next((c for c in state.editable_caches(ctx.scene) if sum(1 for k in c.keys if k.sel) >= 2), None)
+    if cache is None:
+        return
+    sel = [k.t for k in cache.keys if k.sel]
+    r0, r1 = min(sel), max(sel)
+    pts = [(t, p) for t, p in zip(cache.times, cache.points) if r0 - 1e-6 <= t <= r1 + 1e-6]
+    if len(pts) < 2:
+        return
+    arc = [0.0]
+    for (_a, p), (_b, q) in zip(pts, pts[1:]):
+        arc.append(arc[-1] + (q - p).length)
+    total = arc[-1] or 1.0
+    region = ctx.region
+    x0 = 40.0 * us
+    x1 = x0 + min(region.width - 80.0 * us, 560.0 * us)
+    y = 62.0 * us
+    keys = {round(k.t, 3) for k in cache.keys}
+    ticks = []
+    lines = [(x0, y), (x1, y)]
+    key_lines = []
+    font = 0
+    blf.size(font, 10 * us)
+    blf.color(font, 1.0, 1.0, 1.0, 0.85)
+    for (t, _p), s in zip(pts, arc):
+        if abs(t - round(t)) > 1e-4:
+            continue
+        x = x0 + (x1 - x0) * s / total
+        is_key = round(t, 3) in keys
+        ticks.append((x, float(round(t)), is_key))
+        if is_key:
+            key_lines += [(x, y - 9 * us), (x, y + 9 * us)]
+            blf.position(font, x - 6 * us, y + 12 * us, 0)
+            blf.draw(font, "%d" % round(t))
+        else:
+            lines += [(x, y - 5 * us), (x, y + 5 * us)]
+    _flat(lines, (1.0, 1.0, 1.0, 0.75))
+    _flat(key_lines, (1.0, 0.6, 0.15, 1.0))
+    blf.position(font, x0, y - 22 * us, 0)
+    blf.draw(font, "Timing chart: drag a tick to move that frame along the path")
+    state.chart = {"area": ctx.area.as_pointer(), "cache": cache.key, "r0": r0, "r1": r1,
+                   "x0": x0, "x1": x1, "y": y, "ticks": ticks}
+
+
+def _draw_speed_graph(ctx, st, us):
+    """Speed of the active (first editable) path over its visible frames."""
+    if not st.show_speed_graph:
+        return
+    cache = next(iter(state.editable_caches(ctx.scene)), None)
+    if cache is None or not cache.speeds:
+        return
+    lo, hi = path_window(ctx.scene, st, cache)
+    data = [(t, s) for t, s in zip(cache.times, cache.speeds) if lo <= t <= hi]
+    if len(data) < 2:
+        return
+    vmax = max(s for _t, s in data) or 1.0
+    x0, y0 = 40.0 * us, 100.0 * us
+    w, h = 260.0 * us, 60.0 * us
+    t0, t1 = data[0][0], data[-1][0]
+
+    def X(t):
+        return x0 + w * (t - t0) / max(t1 - t0, 1e-6)
+    _flat([(x0, y0), (x0 + w, y0), (x0 + w, y0 + h), (x0, y0 + h)], (0.0, 0.0, 0.0, 0.35), 'TRI_FAN')
+    _flat([(X(t), y0 + h * s / vmax) for t, s in data], (0.4, 0.9, 1.0, 1.0), 'LINE_STRIP')
+    keys = []
+    for k in cache.keys:
+        if t0 <= k.t <= t1:
+            keys += [(X(k.t), y0), (X(k.t), y0 + 6 * us)]
+    _flat(keys, (1.0, 0.6, 0.15, 1.0))
+    cur = ctx.scene.frame_current
+    if t0 <= cur <= t1:
+        _flat([(X(cur), y0), (X(cur), y0 + h)], (0.3, 1.0, 0.45, 0.9))
+    font = 0
+    blf.size(font, 10 * us)
+    blf.color(font, 1.0, 1.0, 1.0, 0.8)
+    blf.position(font, x0 + 4 * us, y0 + h - 12 * us, 0)
+    blf.draw(font, "speed  %s" % cache.label)
+
+
 def _draw_snap_point(ctx, us):
     if state.snap_point is None:
         return
@@ -688,6 +854,10 @@ def _draw_mode_indicator(ctx, st, us):
         if cache.locked and cache.owner_selected():
             hint = cache.lock_reason
             break
+        if cache.ptype == core.ROTATION and st.show_rot_rings and cache.owner_selected() and \
+                any(k.sel for k in cache.keys):
+            axes = " + ".join(sorted(st.rot_axes))
+            hint = "Turning around %s   (click a ring: that axis, Shift+Click: both)" % axes
     widths = [blf.dimensions(font, t)[0] for t, _a in parts]
     x = (region.width - sum(widths)) * 0.5
     y = 24 * us
@@ -721,8 +891,12 @@ def _draw_pixel():
     us = compat.ui_scale()
     font = 0
 
+    state.chart = None if state.chart is None or ctx.area is None or \
+        state.chart["area"] != ctx.area.as_pointer() else state.chart
     if st is not None and st.paths and not state.overlays_hidden():
         _draw_points(ctx, st, us)
+        _draw_chart(ctx, st, us)
+        _draw_speed_graph(ctx, st, us)
         _draw_prop_circle(ctx, us)
         _draw_slide_marker(ctx, us)
         _draw_snap_point(ctx, us)

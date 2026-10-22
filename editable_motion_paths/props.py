@@ -120,6 +120,25 @@ class EMP_Settings(bpy.types.PropertyGroup):
     show_repeats: BoolProperty(name="Loop Repeats", default=True,
                                description="Looping motion: draw the path outside the loop's keys "
                                            "(the repeats) faintly", update=_redraw)
+    rot_axes: EnumProperty(
+        name="Rotation Axes",
+        description="Rotation paths: which of the bone's axes moving a key turns it around. Click "
+                    "a ring in the viewport to use one, Shift+Click the other ring to use both",
+        items=[('X', "X", "Turn around the bone's X axis (the red ring)"),
+               ('Z', "Z", "Turn around the bone's Z axis (the blue ring)")],
+        options={'ENUM_FLAG'}, default={'X', 'Z'}, update=_redraw)
+    show_rot_rings: BoolProperty(name="Axis Rings", default=True,
+                                 description="Rotation paths: the bone's X and Z rings at selected "
+                                             "keys (click to pick the axis)", update=_redraw)
+    show_reach: BoolProperty(name="Reach", default=True,
+                             description="Rotation paths: a circle showing how far the tip can go "
+                                         "(it stays on a sphere around the bone head)", update=_redraw)
+    show_timing_chart: BoolProperty(
+        name="Timing Chart", default=True, update=_redraw,
+        description="A timing chart of the selected keys at the bottom of the viewport: where every "
+                    "frame is between them. Drag a frame tick (or a frame dot on the path) to change it")
+    show_speed_graph: BoolProperty(name="Speed Graph", default=False, update=_redraw,
+                                   description="A small graph of the speed of the active path")
     on_top: BoolProperty(name="In Front", default=True,
                          description="Draw paths in front of geometry", update=_redraw)
     line_width: FloatProperty(name="Line Width", default=2.0, min=1.0, max=10.0, update=_redraw)
@@ -132,6 +151,29 @@ class EMP_Settings(bpy.types.PropertyGroup):
         default='UP', update=_refresh)
     ribbon_width: FloatProperty(name="Ribbon Width", default=1.0, min=0.05, soft_max=5.0,
                                 description="Scale paths: how wide the ribbons are drawn", update=_redraw)
+    scale_channel: EnumProperty(
+        name="Scale Handles",
+        description="Scale paths: whose handles (whiskers) are shown on the selected keys. Click a "
+                    "gizmo handle to pick it",
+        items=[('NONE', "None", ""), ('X', "X", "On the X ribbon's edges"),
+               ('Y', "Y", "On the path (Y is the ribbons' color)"), ('Z', "Z", "On the Z ribbon's edges")],
+        default='NONE', update=_redraw)
+    layout: EnumProperty(
+        name="Layout",
+        description="Scale (3) and Value (4) paths: draw them along the motion path, or around a "
+                    "circle like a clock face (for things that don't move)",
+        items=[('AUTO', "Auto", "A circle when the bone / object stays in place, the path otherwise"),
+               ('PATH', "Along the Path", "On the location path"),
+               ('CIRCLE', "Circle", "The frame range goes once around a circle; the current frame "
+                                    "runs around it like on a clock")],
+        default='AUTO', update=_refresh)
+    circle_radius: FloatProperty(name="Circle Radius", default=0.0, min=0.0, soft_max=10.0,
+                                 subtype='DISTANCE', unit='LENGTH', update=_refresh,
+                                 description="Size of the circle (0: automatic)")
+    circle_use_range: BoolProperty(name="Custom Range", default=False, update=_refresh,
+                                   description="Frames around the circle (off: the scene's frame range)")
+    circle_start: IntProperty(name="Start", default=1, update=_refresh)
+    circle_end: IntProperty(name="End", default=100, update=_refresh)
     show_scale_box: BoolProperty(name="Scale Box", default=True,
                                  description="Scale paths: a box at the current frame, as big as the "
                                              "current scale", update=_redraw)

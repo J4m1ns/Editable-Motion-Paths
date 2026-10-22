@@ -393,6 +393,7 @@ class PathCache:
         self.size_ref = 1.0     # path size the value / scale drawing was set up for
         self.vdir = Vector((0.0, 0.0, 1.0))   # value track: direction "up" (follows the view)
         self.vview = Vector((0.0, 1.0, 0.0))  # value track: view direction (track beside the path)
+        self.circle = None      # scale / value paths drawn around a circle (see _circle_layout)
         self.track_mode = 'UP'
         self.base_points = []   # scale / value paths: the location path they are drawn on
         self.sample_vals = []   # scale / value paths: channel values at every sample
@@ -463,11 +464,32 @@ class PathCache:
             self.fs -= n
         self.dirty = True
 
-    def head(self, tg, t):
+    def world_head(self, tg, t):
         return self.B_at(t) @ Vector(tg.loc.values(t))
 
+    def head(self, tg, t):
+        """Where scale / value paths are drawn: the location path, or the circle."""
+        if self.circle is not None:
+            center, e1, e2, n, r, f0, f1 = self.circle
+            a = 2.0 * math.pi * (t - f0) / max(f1 - f0 + 1.0, 1.0)
+            return center + (e1 * math.sin(a) + e2 * math.cos(a)) * r
+        return self.B_at(t) @ Vector(tg.loc.values(t))
+
+    def _circle_axes(self, t):
+        center, e1, e2, n, r, f0, f1 = self.circle
+        a = 2.0 * math.pi * (t - f0) / max(f1 - f0 + 1.0, 1.0)
+        radial = e1 * math.sin(a) + e2 * math.cos(a)
+        tangent = e1 * math.cos(a) - e2 * math.sin(a)
+        return [radial, tangent, n]
+
+    def circle_range(self):
+        return (self.circle[5], self.circle[6]) if self.circle is not None else None
+
     def axes(self, tg, t, vals_rot=None):
-        """World directions of the target's own X, Y, Z axes at frame t (unit length)."""
+        """World directions of the target's own X, Y, Z axes at frame t (unit length). On the
+        circle: outward, along the circle and across it."""
+        if self.circle is not None:
+            return self._circle_axes(t)
         rot = vals_rot if vals_rot is not None else tg.rot.values(t)
         m = (self.B_at(t) @ tg.basis(tg.loc.values(t), rot, (1.0, 1.0, 1.0))).to_3x3()
         out = []
@@ -479,6 +501,8 @@ class PathCache:
     def value_dir(self, tg, t):
         """Value track offset: up on the screen, or beside the path (left of the motion on the
         screen), so it follows the shape of the path."""
+        if self.circle is not None:
+            return self._circle_axes(t)[0]     # on the circle a bigger value is farther out
         if self.track_mode != 'PATH':
             return self.vdir
         tang = self.head(tg, t + 0.5) - self.head(tg, t - 0.5)
@@ -491,10 +515,10 @@ class PathCache:
         """World position of the path at time t; `vals` overrides the edited channels."""
         B = self.B_at(t)
         if self.ptype == SCALE:
-            return B @ Vector(tg.loc.values(t))
+            return self.head(tg, t)
         if self.ptype == VALUE:
             v = vals[0] if vals is not None else tg.value.values(t)[0]
-            return B @ Vector(tg.loc.values(t)) + self.value_dir(tg, t) * ((v - self.vbase) * self.vgain)
+            return self.head(tg, t) + self.value_dir(tg, t) * ((v - self.vbase) * self.vgain)
         if self.ptype == LOCATION:
             v = vals if vals is not None else tg.loc.values(t)
             return B @ Vector(v[:3])
@@ -538,7 +562,7 @@ class PathCache:
         if self.ptype == SCALE:
             return list(ref_vals)
         if self.ptype == VALUE:
-            base = self.B_at(t) @ Vector(tg.loc.values(t))
+            base = self.head(tg, t)
             return [(W - base).dot(self.value_dir(tg, t)) / self.vgain + self.vbase]
         if self.ptype == LOCATION:
             v = self.B_at(t).inverted_safe() @ W
@@ -579,7 +603,9 @@ class PathCache:
         used = {LOCATION: (tg.loc,), SCALE: (tg.loc, tg.scale), VALUE: (tg.loc, tg.value)}.get(
             self.ptype, (tg.loc, tg.rot, tg.scale))
         self.track_mode = settings.value_track if settings else 'UP'
-        sig = (self.bake_id, self.rot_len, tg.rot_mode, self.track_mode,
+        lay = (settings.layout, settings.circle_radius, settings.circle_use_range, settings.circle_start,
+               settings.circle_end) if settings and self.ptype in (SCALE, VALUE) else None
+        sig = (self.bake_id, self.rot_len, tg.rot_mode, self.track_mode, lay,
                tuple(tuple(_fc_signature(fc) for fc in ch.fcurves) for ch in used),
                tuple(tuple(ch.static) for ch in used))
         if not force and not self.dirty and sig == self.sig and self.valid:
@@ -593,6 +619,7 @@ class PathCache:
     def _build(self, tg):
         ch = tg.channels(self.ptype)
         fs, fe = self.fs, self.fe
+        self.circle = self._circle_layout(tg) if self.ptype in (SCALE, VALUE) else None
         if self.ptype in (SCALE, VALUE):
             # the scale of the drawing is set once (per value), so edits and recalculations
             # never make the track jump; only values far outside it set it again
@@ -603,7 +630,9 @@ class PathCache:
                 renew = min(vs) < self.vbase - span or max(vs) > self.vbase + 2.0 * span
             if renew:
                 self.vgain_id = True
-                heads = [self.head(tg, float(t)) for t in range(fs, fe + 1)]
+                heads = [self.world_head(tg, float(t)) for t in range(fs, fe + 1)]
+                if self.circle is not None:
+                    heads += [self.head(tg, float(t)) for t in range(fs, fe + 1)]
                 lo = [min(p[i] for p in heads) for i in range(3)]
                 hi = [max(p[i] for p in heads) for i in range(3)]
                 self.size_ref = max(sum((h - l) ** 2 for h, l in zip(hi, lo)) ** 0.5, tg.length, 0.1)
@@ -706,6 +735,40 @@ class PathCache:
         i = bisect.bisect_left(self.times, t)
         i = min(max(i, 0), len(vis) - 1)
         return vis[i]
+
+    def _circle_layout(self, tg):
+        """(center, e1, e2, normal, radius, first frame, last frame) when scale / value paths are
+        drawn around a circle, else None. The circle faces the view, tilted so ribbons and
+        values standing out of it stay visible."""
+        st = state.settings()
+        mode = st.layout if st is not None else 'AUTO'
+        if mode == 'PATH':
+            return None
+        fs, fe = self.fs, self.fe
+        heads = [self.world_head(tg, float(t)) for t in range(fs, fe + 1)]
+        size = max(tg.length, max(getattr(tg.obj, "dimensions", (1.0,))) if not tg.is_bone else tg.length, 0.1)
+        travel = sum((b - a).length for a, b in zip(heads, heads[1:]))
+        if mode == 'AUTO' and travel > size * 0.05:
+            return None
+        center = sum(heads, Vector()) / max(len(heads), 1)
+        up = self.vdir.normalized()
+        toward = -self.vview.normalized()
+        e1 = up.cross(toward)
+        if e1.length < 1e-6:
+            e1 = up.orthogonal()
+        e1.normalize()
+        tilt = math.radians(55.0)
+        e2 = (up * math.cos(tilt) - toward * math.sin(tilt)).normalized()
+        n = e1.cross(e2).normalized()
+        r = st.circle_radius if st is not None and st.circle_radius > 0.0 else size * 1.2
+        scene = bpy.context.scene
+        if st is not None and st.circle_use_range:
+            f0, f1 = st.circle_start, max(st.circle_end, st.circle_start + 1)
+        elif scene.use_preview_range:
+            f0, f1 = scene.frame_preview_start, scene.frame_preview_end
+        else:
+            f0, f1 = scene.frame_start, scene.frame_end
+        return (center, e1, e2, n, r, float(f0), float(f1))
 
     def visible_keys(self):
         return [k for k in self.keys if not k.hidden]

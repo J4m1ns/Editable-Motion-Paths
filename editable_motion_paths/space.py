@@ -74,6 +74,24 @@ def element_basis(cache, tg, k):
     return _normalized(M.to_3x3() @ q.to_matrix())
 
 
+RING_AXES = {'RX': 0, 'RZ': 2}
+
+
+def rot_rings(cache, tg, k, segments=48):
+    """Rotation paths: {'RX': points, 'RZ': points} circles around the bone head through the
+    key's tip, perpendicular to the bone's X and Z axes (the ways the tip turns), and the
+    head and radius."""
+    import math
+    center = cache.rot_frame(tg, k.t)[0].translation.copy()
+    b = element_basis(cache, tg, k)
+    r = (k.co - center).length
+    out = {}
+    for part, (u, v) in (('RX', (b.col[1], b.col[2])), ('RZ', (b.col[1], b.col[0]))):
+        out[part] = [center + (u * math.cos(a * 2 * math.pi / segments) +
+                               v * math.sin(a * 2 * math.pi / segments)) * r for a in range(segments + 1)]
+    return out, center, r
+
+
 def parent_basis(cache, tg, k):
     if cache.ptype != core.ROTATION:
         return _normalized(cache.B_at(k.t).to_3x3())

@@ -6,7 +6,7 @@ import bpy
 from bpy_extras.view3d_utils import location_3d_to_region_2d, region_2d_to_location_3d
 from mathutils import Vector
 
-from . import compat, core, draw, state
+from . import compat, core, draw, space, state
 
 
 class Hit:
@@ -51,6 +51,21 @@ def display_handle(k, side, m):
     return k.co + d * math.sqrt(ln * ln + m * m)
 
 
+def _polyline_distance(region, rv3d, pts, m):
+    best = None
+    prev = None
+    for p in pts:
+        s = location_3d_to_region_2d(region, rv3d, p)
+        if s is not None and prev is not None:
+            seg = s - prev
+            ln = seg.length_squared
+            f = 0.0 if ln < 1e-9 else max(0.0, min(1.0, (m - prev).dot(seg) / ln))
+            d = (prev + seg * f - m).length
+            best = d if best is None else min(best, d)
+        prev = s
+    return best
+
+
 def hit_test(context, mx, my, radius=None):
     """Nearest key point or visible handle end under the mouse."""
     region = context.region
@@ -74,9 +89,16 @@ def hit_test(context, mx, my, radius=None):
             if k.hidden or not (lo - 1e-4 <= k.t <= hi + 1e-4):
                 continue
             cands = [('KEY', k.co, 0.0)]
+            if editable and cache.ptype == core.ROTATION and k.sel and st.show_rot_rings:
+                rings, _c, _r = space.rot_rings(cache, cache.target(), k, 32)
+                for part, pts in rings.items():
+                    d = _polyline_distance(region, rv3d, pts, m)
+                    if d is not None and d <= radius * 0.8:
+                        cands.append((part, None, d + 0.8))
             if editable and cache.ptype == core.SCALE and k.sel:
                 cands += [(part, p, 0.3) for part, p in
                           draw.scale_gizmo_points(st, cache, k, region, rv3d).items()]
+                cands += [(part, end, 0.2) for part, _pts, end in draw.scale_whiskers(st, cache, k)]
             if draw.handles_shown(st, cache, editable, k):
                 mw = handle_min_world(region, rv3d, k.co)
                 if k.hl is not None:
@@ -84,15 +106,44 @@ def hit_test(context, mx, my, radius=None):
                 if k.hr is not None:
                     cands.append(('R', display_handle(k, 'R', mw), 0.5))
             for part, p, bias in cands:
-                s = location_3d_to_region_2d(region, rv3d, p)
-                if s is None:
-                    continue
-                d = (s - m).length + bias
+                if p is None:
+                    d = bias            # rings: the distance is measured already
+                else:
+                    s = location_3d_to_region_2d(region, rv3d, p)
+                    if s is None:
+                        continue
+                    d = (s - m).length + bias
                 if d <= radius and (best is None or d < best.dist):
                     best = Hit(cache, k, part, d)
                 if part == 'KEY' and d <= key_r and (best_key is None or d < best_key.dist):
                     best_key = Hit(cache, k, part, d)
+    if best_key is None and best is None:
+        return _dot_hit(context, region, rv3d, st, m)
     return best_key or best
+
+
+def _dot_hit(context, region, rv3d, st, m):
+    """A frame dot (not a key) of an editable path under the mouse: part 'DOT'."""
+    if not st.show_frames:
+        return None
+    r = 6.0 * compat.ui_scale()
+    best = None
+    for cache in state.editable_caches(context.scene):
+        lo, hi = draw.path_window(context.scene, st, cache)
+        keys = {round(k.t, 3) for k in cache.keys}
+        n = len(cache.times)
+        vis = cache.vis if len(cache.vis) == n else [True] * n
+        rep = cache.rep if len(cache.rep) == n else [False] * n
+        for t, p, v, r_ in zip(cache.times, cache.points, vis, rep):
+            if not v or r_ or not (lo <= t <= hi) or abs(t - round(t)) > 1e-4 or round(t, 3) in keys:
+                continue
+            s = location_3d_to_region_2d(region, rv3d, p)
+            if s is None:
+                continue
+            d = (s - m).length
+            if d <= r and (best is None or d < best.dist):
+                best = Hit(cache, None, 'DOT', d, float(round(t)))
+    return best
 
 
 def line_hit(context, mx, my, radius=None):

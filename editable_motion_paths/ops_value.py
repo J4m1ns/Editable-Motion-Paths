@@ -4,6 +4,8 @@ import bpy
 from bpy.props import (BoolProperty, BoolVectorProperty, FloatVectorProperty, IntProperty,
                        IntVectorProperty, StringProperty)
 
+from mathutils import Vector
+
 from . import core, edit, pick, space, state
 
 
@@ -188,4 +190,132 @@ class EMP_OT_edit_value(bpy.types.Operator):
         return n
 
 
-classes = (EMP_OT_edit_value,)
+class EMP_OT_scale_whisker(bpy.types.Operator):
+    """Drag a scale handle (whisker): along the path changes its length in time, away from the """ \
+        """path changes the value"""
+    bl_idname = "emp.scale_whisker"
+    bl_label = "Edit Scale Handle"
+    bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
+
+    frame: bpy.props.FloatProperty(options={'HIDDEN'})
+    part: StringProperty(options={'HIDDEN'})
+
+    def _cache(self, context):
+        for c in state.editable_caches(context.scene):
+            if c.ptype == core.SCALE:
+                for k in c.keys:
+                    if abs(k.t - self.frame) < 1e-3:
+                        return c, k
+        return None, None
+
+    def invoke(self, context, event):
+        c, k = self._cache(context)
+        st = state.settings(context.scene)
+        ch = {'X': 0, 'Y': 1, 'Z': 2}.get(st.scale_channel)
+        if c is None or ch is None:
+            return {'CANCELLED'}
+        self.ch = ch
+        tg = c.target()
+        fc = tg.scale.fcurves[ch]
+        if fc is None or k.idx[ch] < 0:
+            return {'CANCELLED'}
+        self.snap = core.FCurveSnapshot(tg, tg.scale)
+        self.side = self.part[1]
+        self.sign = 1.0 if self.part[2] == '+' else -1.0
+        kp = fc.keyframe_points[k.idx[ch]]
+        self.x, self.y = kp.co
+        self.idx = k.idx[ch]
+        lo = [kk.t for kk in c.keys if kk.t < k.t - 1e-3]
+        hi = [kk.t for kk in c.keys if kk.t > k.t + 1e-3]
+        self.limit = (lo[-1] if lo else c.fs, hi[0] if hi else c.fe)
+        self.cache = c
+        context.window_manager.modal_handler_add(self)
+        state.modal_running += 1
+        return {'RUNNING_MODAL'}
+
+    def _update(self, context, event):
+        from bpy_extras.view3d_utils import location_3d_to_region_2d as proj
+        from . import draw
+        c = self.cache
+        tg = c.target()
+        region, rv3d = context.region, context.region_data
+        m = Vector((event.mouse_region_x, event.mouse_region_y))
+        st = state.settings(context.scene)
+        half = draw.ribbon_half(st, c)
+        # the frame under the mouse along the path, on this handle's side of the key
+        a, b = (self.limit[0], self.x) if self.side == 'L' else (self.x, self.limit[1])
+        best = None
+        n = 48
+        for i in range(n + 1):
+            t = a + (b - a) * i / n
+            s = proj(region, rv3d, c.head(tg, t))
+            if s is not None:
+                d = (s - m).length
+                if best is None or d < best[0]:
+                    best = (d, t)
+        if best is None:
+            return
+        t = best[1]
+        dt = max(abs(t - self.x), 0.05)
+        base = c.head(tg, t)
+        ax = c.axes(tg, t)
+        a3 = ax[2] if self.ch == 1 else ax[self.ch] * self.sign
+        s0 = proj(region, rv3d, base)
+        s1 = proj(region, rv3d, base + a3 * half)
+        if s0 is None or s1 is None or (s1 - s0).length < 1e-6:
+            return
+        u = (m - s0).dot(s1 - s0) / (s1 - s0).length_squared     # in units of the ribbon half width
+        if self.ch == 1:
+            v = self.y + u
+        else:
+            v = u if self.y >= 0.0 else -u
+        slope = (v - self.y) / (dt if self.side == 'R' else -dt)
+        fc = tg.scale.fcurves[self.ch]
+        kp = fc.keyframe_points[self.idx]
+        if kp.handle_left_type in {'AUTO', 'AUTO_CLAMPED', 'ALIGNED'} and \
+                kp.handle_right_type in {'AUTO', 'AUTO_CLAMPED', 'ALIGNED'}:
+            # smooth key: the other handle stays in line
+            other = kp.handle_left if self.side == 'R' else kp.handle_right
+            odt = abs(other[0] - self.x)
+            kp.handle_left_type = kp.handle_right_type = 'ALIGNED'
+            if self.side == 'R':
+                kp.handle_left = (self.x - odt, self.y - slope * odt)
+            else:
+                kp.handle_right = (self.x + odt, self.y + slope * odt)
+        elif self.side == 'R':
+            kp.handle_right_type = 'FREE'
+        else:
+            kp.handle_left_type = 'FREE'
+        if self.side == 'R':
+            kp.handle_right = (self.x + dt, self.y + slope * dt)
+        else:
+            kp.handle_left = (self.x - dt, self.y - slope * dt)
+        fc.update()
+        c.dirty = True
+        context.area.header_text_set("Scale handle: %d frame%s, value %.3f   click: confirm, Esc: cancel" % (
+            round(dt), "" if round(dt) == 1 else "s", v))
+        pick.tag_anim_editors()
+
+    def modal(self, context, event):
+        if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            self._update(context, event)
+        elif event.type == 'LEFTMOUSE' and event.value in {'RELEASE', 'PRESS'}:
+            return self._end(context, True)
+        elif event.type in {'RET', 'NUMPAD_ENTER', 'SPACE'} and event.value == 'PRESS':
+            return self._end(context, True)
+        elif event.type in {'ESC', 'RIGHTMOUSE'} and event.value == 'PRESS':
+            return self._end(context, False)
+        return {'RUNNING_MODAL'}
+
+    def _end(self, context, ok):
+        state.modal_running = max(0, state.modal_running - 1)
+        context.area.header_text_set(None)
+        if not ok:
+            self.snap.restore()
+            self.cache.dirty = True
+            pick.tag_anim_editors()
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+classes = (EMP_OT_edit_value, EMP_OT_scale_whisker)

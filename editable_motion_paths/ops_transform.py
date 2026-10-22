@@ -400,6 +400,7 @@ class EMP_OT_transform(bpy.types.Operator):
     release_confirm: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
     axis_index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
     axis_plane: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    ring_axis: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
     time_wheel: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'},
                              description="Mouse wheel moves the keys in time (Shift+D)")
     start_x: IntProperty(default=-100000, options={'HIDDEN', 'SKIP_SAVE'})
@@ -990,6 +991,16 @@ class EMP_OT_transform(bpy.types.Operator):
             v = tuple(1.0 if j == cons[0] else f for j in range(3))
         self.value = v
 
+    def _ring_axis(self):
+        """Channel axis index rotation keys turn around (None: free on the sphere)."""
+        if self.ring_axis >= 0:
+            return self.ring_axis
+        st = state.settings()
+        axes = set(st.rot_axes) if st is not None else {'X', 'Z'}
+        if len(axes) == 1:
+            return 0 if 'X' in axes else 2
+        return None
+
     def _rotation_path_deltas(self, region, rv3d, mouse):
         """Rotation path points live on a sphere around the bone head: put them exactly
         under the mouse (ray/sphere for tips, tangent plane for handles)."""
@@ -1004,8 +1015,19 @@ class EMP_OT_transform(bpy.types.Operator):
                 o, d = _ray(region, rv3d, co2d)
                 if e.part == 'KEY':
                     r = (e.co - e.center).length
-                    front = (e.co - e.center).dot(_view_dir(rv3d)) <= 0.0
-                    p = _ray_sphere(o, d, e.center, r, front)
+                    axis = self._ring_axis()
+                    if axis is not None:
+                        # one axis: the tip stays on that ring (turning around the bone's axis)
+                        n = e.basis.col[axis].normalized()
+                        if abs(n.dot(d.normalized())) < 1e-3:
+                            continue
+                        hit = _plane_hit(region, rv3d, co2d, e.center, n)
+                        if hit is None or (hit - e.center).length < 1e-9:
+                            continue
+                        p = e.center + (hit - e.center).normalized() * r
+                    else:
+                        front = (e.co - e.center).dot(_view_dir(rv3d)) <= 0.0
+                        p = _ray_sphere(o, d, e.center, r, front)
                 else:
                     n = (e.k.co - e.center)
                     if n.length < 1e-9 or abs(n.normalized().dot(d.normalized())) < 0.05:

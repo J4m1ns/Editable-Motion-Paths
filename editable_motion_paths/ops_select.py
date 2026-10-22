@@ -6,7 +6,7 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty
 from mathutils import Vector
 
-from . import compat, core, pick, state
+from . import compat, core, pick, space, state
 from .ops_keys import insert_key
 
 
@@ -31,7 +31,25 @@ class EMP_OT_click(bpy.types.Operator):
         if event.alt or not state.visible_caches(context.scene) or context.region_data is None:
             return {'PASS_THROUGH'}
         mx, my = _region_mouse(context, event)
+        tick = _chart_tick(context, mx, my)
+        if tick is not None:
+            cache, frame = tick
+            bpy.ops.emp.drag_frame('INVOKE_DEFAULT', frame=frame, obj_name=cache.obj_name,
+                                   bone_name=cache.bone_name, chart=True)
+            return {'FINISHED'}
         hit = pick.hit_test(context, mx, my)
+        if hit is not None and hit.part == 'DOT':
+            if event.ctrl:
+                hit = None      # Ctrl+Click on the path inserts a key, dots included
+            else:
+                self.dot = (hit.cache, hit.t)
+                self.press = Vector((event.mouse_region_x, event.mouse_region_y))
+                self.threshold = context.preferences.inputs.drag_threshold_mouse * compat.ui_scale()
+                self.hit_key = None
+                self.gizmo = self.ring = None
+                context.window_manager.modal_handler_add(self)
+                return {'RUNNING_MODAL'}
+        self.dot = None
 
         if hit is None and event.ctrl:
             lh = pick.line_hit(context, mx, my)
@@ -80,6 +98,18 @@ class EMP_OT_click(bpy.types.Operator):
             return {'FINISHED'}
 
         k = hit.key
+        if hit.part[:1] == 'W' and len(hit.part) == 3:
+            # scale whisker: drag the handle of the active scale channel
+            bpy.ops.emp.scale_whisker('INVOKE_DEFAULT', frame=hit.key.t, part=hit.part)
+            return {'FINISHED'}
+        if hit.part in space.RING_AXES:
+            # rotation ring: click picks the axis (Shift: both), drag turns around it
+            self.gizmo = None
+            self.ring = hit.part
+            self.ring_shift = event.shift
+            self._start_wait(context, event, hit, None)
+            return {'RUNNING_MODAL'}
+        self.ring = None
         if hit.part in GIZMO_AXES:
             # scale gizmo: drag a handle to scale that axis (the white one: all of them)
             self.gizmo = hit.part
@@ -168,10 +198,30 @@ class EMP_OT_click(bpy.types.Operator):
         return cache, None
 
     def modal(self, context, event):
+        if getattr(self, "dot", None):
+            # a frame dot: drag it along the path (spacing), or click to go to that frame
+            cache, frame = self.dot
+            if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+                m = Vector((event.mouse_region_x, event.mouse_region_y))
+                if (m - self.press).length >= max(self.threshold, 3):
+                    bpy.ops.emp.drag_frame('INVOKE_DEFAULT', frame=frame, obj_name=cache.obj_name,
+                                           bone_name=cache.bone_name)
+                    return {'FINISHED'}
+                return {'RUNNING_MODAL'}
+            if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+                context.scene.frame_set(int(frame))
+                return {'FINISHED'}
+            if event.type in {'ESC', 'RIGHTMOUSE'}:
+                return {'FINISHED'}
+            return {'RUNNING_MODAL'}
         if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             m = Vector((event.mouse_region_x, event.mouse_region_y))
             if (m - self.press).length >= max(self.threshold, 3):
-                if getattr(self, "gizmo", None):
+                if getattr(self, "ring", None):
+                    bpy.ops.emp.transform('INVOKE_DEFAULT', mode='TRANSLATE', release_confirm=True,
+                                          start_x=int(self.press.x), start_y=int(self.press.y),
+                                          ring_axis=space.RING_AXES[self.ring])
+                elif getattr(self, "gizmo", None):
                     bpy.ops.emp.transform('INVOKE_DEFAULT', mode='SCALE', release_confirm=True,
                                           start_x=int(self.press.x), start_y=int(self.press.y),
                                           axis_index=GIZMO_AXES[self.gizmo])
@@ -180,6 +230,25 @@ class EMP_OT_click(bpy.types.Operator):
                                           start_x=int(self.press.x), start_y=int(self.press.y))
                 return {'FINISHED'}
             return {'RUNNING_MODAL'}
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and getattr(self, "gizmo", None):
+            # a click (no drag) on a scale gizmo handle shows that channel's handles
+            st = state.settings(context.scene)
+            st.scale_channel = {'GX': 'X', 'GXn': 'X', 'GY': 'Y', 'GZ': 'Z', 'GZn': 'Z'}.get(self.gizmo, 'NONE')
+            state.tag_redraw()
+            return {'FINISHED'}
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and getattr(self, "ring", None):
+            st = state.settings(context.scene)
+            axis = 'X' if self.ring == 'RX' else 'Z'
+            axes = set(st.rot_axes)
+            if self.ring_shift:
+                axes ^= {axis}
+                if not axes:
+                    axes = {axis}       # one axis always stays on
+            else:
+                axes = {axis}
+            st.rot_axes = axes
+            state.tag_redraw()
+            return {'FINISHED'}
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
             cache, k = self._find_key()
             if k is not None and self.release_action is not None:
@@ -193,6 +262,25 @@ class EMP_OT_click(bpy.types.Operator):
         if event.type in {'ESC', 'RIGHTMOUSE'}:
             return {'FINISHED'}
         return {'RUNNING_MODAL'}
+
+
+def _chart_tick(context, mx, my):
+    """(cache, frame) of a frame tick of the timing chart under the mouse."""
+    ch = state.chart
+    if ch is None or context.area is None or ch["area"] != context.area.as_pointer():
+        return None
+    us = compat.ui_scale()
+    if abs(my - ch["y"]) > 12.0 * us:
+        return None
+    best = None
+    for x, frame, is_key in ch["ticks"]:
+        d = abs(x - mx)
+        if not is_key and d <= 6.0 * us and (best is None or d < best[0]):
+            best = (d, frame)
+    if best is None:
+        return None
+    cache = state.caches.get(ch["cache"])
+    return (cache, best[1]) if cache is not None else None
 
 
 def _arc(cache, a, b):

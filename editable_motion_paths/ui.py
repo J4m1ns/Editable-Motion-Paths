@@ -61,6 +61,7 @@ TOOL_KEYMAP = (
     _k("emp.exaggerate", 'E', alt=True),
     _k("emp.ease", 'E', shift=True),
     _k("emp.context_menu", 'RIGHTMOUSE'),
+    _k("emp.timing_menu", 'T', shift=True),
     _k("wm.call_panel", 'U', {"name": "EMP_PT_display_popover", "keep_open": True}),
     # modes, proportional editing (Blender's own settings)
     _k("wm.context_set_enum", 'ONE', {"data_path": "scene.emp.edit_mode", "value": 'LOCATION'}),
@@ -116,6 +117,8 @@ HELP = (
         ("Alt+S", "smooth (T: shape / time; Scale mode: shrink / fatten)"),
         ("Alt+E", "exaggerate"),
         ("Shift+E", "ease (I / O / B)"),
+        ("Shift+T", "timing menu: tween, scale time, add frames, hold..."),
+        ("Drag a frame dot", "move that frame along the path (spacing)"),
         ("Right-click", "path menu (Edit Value, Space, LoopTools...)"),
         ("U", "display settings under the mouse"),
     )),
@@ -137,6 +140,7 @@ def _draw_tool_settings(context, layout, tool):
     layout.operator("emp.path_add", text="Add Path", icon='ADD')
     layout.prop(st, "show_all_handles")
     layout.popover("EMP_PT_display_popover", text="", icon='COLOR')
+    layout.popover("EMP_PT_modifiers_popover", text="", icon='MODIFIER')
 
 
 def _draw_proportional(layout, st, compact=False):
@@ -532,6 +536,10 @@ def _draw_display(layout, st):
     col.prop(st, "show_ghost")
     col.prop(st, "show_repeats")
     col.prop(st, "show_spokes")
+    col.prop(st, "show_rot_rings")
+    col.prop(st, "show_reach")
+    col.prop(st, "show_timing_chart")
+    col.prop(st, "show_speed_graph")
     col.prop(st, "on_top")
     layout.prop(st, "line_width")
     layout.prop(st, "key_size")
@@ -543,6 +551,15 @@ def _draw_display(layout, st):
     sub.active = st.show_scale_box
     sub.prop(st, "scale_box_size", text="Size")
     layout.prop(st, "value_track")
+    layout.prop(st, "layout", text="Scale / Value Layout")
+    if st.layout != 'PATH':
+        col = layout.column(align=True)
+        col.prop(st, "circle_radius", text="Radius")
+        col.prop(st, "circle_use_range")
+        sub = col.column(align=True)
+        sub.active = st.circle_use_range
+        sub.prop(st, "circle_start")
+        sub.prop(st, "circle_end")
     layout.prop(st, "pin_partial")
 
 
