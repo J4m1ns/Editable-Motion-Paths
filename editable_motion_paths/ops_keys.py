@@ -1095,6 +1095,10 @@ class EMP_MT_loop(bpy.types.Menu):
     bl_label = "Loop"
     bl_idname = "EMP_MT_loop"
 
+    @classmethod
+    def poll(cls, context):
+        return bool(state.editable_caches(context.scene))
+
     def draw(self, context):
         layout = self.layout
         layout.operator("emp.toggle_cycles", icon='FILE_REFRESH')

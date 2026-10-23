@@ -53,15 +53,16 @@ TOOL_KEYMAP = (
     _k("emp.merge", 'M'),
     _k("emp.copy_keys", 'C', ctrl=True),
     _k("emp.paste_keys", 'V', ctrl=True),
-    _k("emp.loop_menu", 'C', alt=True),
-    _k("emp.handle_type_menu", 'V'),
-    _k("emp.interpolation_menu", 'T'),
+    _k("wm.call_menu", 'C', {"name": "EMP_MT_loop"}, alt=True),
+    # menu calls (not operators), so buttons and menus show the shortcut; when a menu can't
+    # be used (nothing selected) the key goes on to Blender (T: toolbar)
+    _k("wm.call_menu", 'V', {"name": "EMP_MT_handle_type"}),
+    _k("wm.call_menu", 'T', {"name": "EMP_MT_interpolation"}),
     # shape / timing
     _k("emp.smooth", 'S', alt=True),
     _k("emp.exaggerate", 'E', alt=True),
     _k("emp.ease", 'E', shift=True),
     _k("emp.context_menu", 'RIGHTMOUSE'),
-    # a menu call (not an operator), so menus show Shift+T next to "Timing"
     _k("wm.call_menu", 'T', {"name": "EMP_MT_timing"}, shift=True),
     _k("wm.call_panel", 'U', {"name": "EMP_PT_display_popover", "keep_open": True}),
     # modes, proportional editing (Blender's own settings)
@@ -210,9 +211,17 @@ class EMP_ObjectTool(bpy.types.WorkSpaceTool):
 # Menus
 # ----------------------------------------------------------------------------
 
+def _any_key_selected(context):
+    return any(k.sel or k.sel_l or k.sel_r for c in state.editable_caches(context.scene) for k in c.keys)
+
+
 class EMP_MT_handle_type(bpy.types.Menu):
     bl_label = "Handle Type"
     bl_idname = "EMP_MT_handle_type"
+
+    @classmethod
+    def poll(cls, context):
+        return _any_key_selected(context)
 
     def draw(self, context):
         self.layout.operator_enum("emp.handle_type", "type")
@@ -221,6 +230,10 @@ class EMP_MT_handle_type(bpy.types.Menu):
 class EMP_MT_interpolation(bpy.types.Menu):
     bl_label = "Interpolation"
     bl_idname = "EMP_MT_interpolation"
+
+    @classmethod
+    def poll(cls, context):
+        return _any_key_selected(context)
 
     def draw(self, context):
         self.layout.operator_enum("emp.interpolation", "type")
@@ -268,7 +281,7 @@ class EMP_MT_space(bpy.types.Menu):
 
     def draw(self, context):
         layout = self.layout
-        layout.operator_context = 'INVOKE_DEFAULT'
+        layout.operator_context = 'INVOKE_REGION_WIN'
         for ident, name, _d in (('EVEN', "Even (constant speed)", ""), ('SLOW_IN_OUT', "Slow In & Out", ""),
                                 ('SLOW_IN', "Slow In (decelerate)", ""), ('SLOW_OUT', "Slow Out (accelerate)", "")):
             layout.operator("emp.space", text=name).profile = ident
@@ -284,7 +297,7 @@ class EMP_MT_looptools(bpy.types.Menu):
         layout.operator("emp.flatten", icon='MESH_PLANE')
         layout.operator("emp.straighten", icon='IPO_LINEAR')
         layout.operator("emp.gstretch", icon='GREASEPENCIL')
-        layout.operator_context = 'INVOKE_DEFAULT'
+        layout.operator_context = 'INVOKE_REGION_WIN'
         layout.operator("emp.smooth", text="Relax", icon='SMOOTHCURVE')
 
 
@@ -310,7 +323,7 @@ class EMP_MT_curves(bpy.types.Menu):
     def draw(self, context):
         layout = self.layout
         layout.operator_menu_enum("emp.export_curve", "kind", text="Path to Curve", icon='CURVE_BEZCURVE')
-        layout.operator_context = 'INVOKE_DEFAULT'
+        layout.operator_context = 'INVOKE_REGION_WIN'
         layout.operator("emp.import_curve", text="Follow Curve...", icon='CURVE_PATH')
 
 
@@ -321,7 +334,7 @@ class EMP_MT_context(bpy.types.Menu):
 
     def draw(self, context):
         layout = self.layout
-        layout.operator_context = 'INVOKE_DEFAULT'
+        layout.operator_context = 'INVOKE_REGION_WIN'
         layout.operator("emp.edit_value", text="Edit Value...", icon='GREASEPENCIL')
         layout.separator()
         layout.operator("emp.subdivide", icon='SNAP_EDGE')
@@ -439,7 +452,7 @@ class EMP_PT_shape(_Panel, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.operator_context = 'INVOKE_DEFAULT'
+        layout.operator_context = 'INVOKE_REGION_WIN'
         col = layout.column(align=True)
         row = col.row(align=True)
         row.operator("emp.smooth", text="Smooth", icon='SMOOTHCURVE')
@@ -458,7 +471,7 @@ class EMP_PT_timing(_Panel, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.operator_context = 'INVOKE_DEFAULT'
+        layout.operator_context = 'INVOKE_REGION_WIN'
         col = layout.column(align=True)
         row = col.row(align=True)
         row.operator("emp.space", text="Even Spacing", icon='ALIGN_JUSTIFY').profile = 'EVEN'
@@ -476,7 +489,7 @@ class EMP_PT_keys(_Panel, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.operator_context = 'INVOKE_DEFAULT'
+        layout.operator_context = 'INVOKE_REGION_WIN'
         col = layout.column(align=True)
         row = col.row(align=True)
         row.operator("emp.insert_key", text="Insert", icon='KEY_HLT')

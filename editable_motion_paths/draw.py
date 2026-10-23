@@ -410,10 +410,13 @@ def _draw_scale_gizmos(st, cache, keys, us):
             lines += [k.co, g['GY']]
             cols += [GIZMO_COLORS['GY']] * 2
         part = {'X': 'GX', 'Y': 'GY', 'Z': 'GZ'}.get(st.scale_channel)
-        for _p, pts, _end in scale_whiskers(st, cache, k):
+        ch = {'X': 0, 'Y': 1, 'Z': 2}.get(st.scale_channel)
+        for p, pts, _end in scale_whiskers(st, cache, k):
+            # a picked handle (V / T work on it) is drawn white
+            picked = (cache.key, round(k.t, 3), ch, p[1]) in state.whisker_sel
             for a, b in zip(pts, pts[1:]):
                 lines += [a, b]
-                cols += [GIZMO_COLORS[part]] * 2
+                cols += [(1.0, 1.0, 1.0, 1.0) if picked else GIZMO_COLORS[part]] * 2
     _lines(lines, cols, 2.0 * us)
 
 
@@ -700,10 +703,17 @@ def _flat(pts, color, kind='LINES'):
     batch_for_shader(sh, kind, {"pos": pts}).draw(sh)
 
 
-def chart_span(region, us):
-    """Left and right end of the timing chart (the speed graph above it is as wide)."""
-    x0 = 40.0 * us
-    return x0, x0 + min(region.width - 80.0 * us, 560.0 * us)
+def chart_span(region, us, area=None):
+    """Left and right end of the timing chart, in the bottom right corner of the view (left of
+    the sidebar when it overlaps the view); the speed graph above it is as wide."""
+    right = region.width
+    if area is not None:
+        for r in area.regions:
+            # an overlapping sidebar covers the right part of the view
+            if r.type == 'UI' and r.width > 1 and region.x < r.x < region.x + region.width:
+                right = min(right, r.x - region.x)
+    x1 = right - 40.0 * us
+    return max(x1 - 560.0 * us, 40.0 * us), x1
 
 
 def speed_window(scene, st, cache):
@@ -721,6 +731,10 @@ def speed_window(scene, st, cache):
     ks = [k.t for k in cache.keys]
     if len(ks) < 2:
         return None
+    if len(sel) == 1:
+        # one key: the segments on both sides of it
+        i = ks.index(sel[0])
+        return ks[max(i - 1, 0)], ks[min(i + 1, len(ks) - 1)]
     cur = scene.frame_current
     before = [t for t in ks if t <= cur]
     after = [t for t in ks if t > cur]
@@ -750,8 +764,8 @@ def _draw_chart(ctx, st, us):
         arc.append(arc[-1] + (q - p).length)
     total = arc[-1] or 1.0
     region = ctx.region
-    x0, x1 = chart_span(region, us)
-    y = 62.0 * us
+    x0, x1 = chart_span(region, us, ctx.area)
+    y = 80.0 * us
     keys = {round(k.t, 3) for k in cache.keys}
     ticks = []
     lines = [(x0, y), (x1, y)]
@@ -782,6 +796,7 @@ def _draw_chart(ctx, st, us):
 def _draw_speed_graph(ctx, st, us):
     """Speed of the active path (the one the timing chart shows, else the first editable one),
     right above the timing chart and as wide."""
+    state.speed_graph = None
     if not st.show_speed_graph:
         return
     caches = state.editable_caches(ctx.scene)
@@ -797,8 +812,9 @@ def _draw_speed_graph(ctx, st, us):
     if len(data) < 2:
         return
     vmax = max(s for _t, s in data) or 1.0
-    x0, x1 = chart_span(ctx.region, us)
-    y0 = 100.0 * us
+    x0, x1 = chart_span(ctx.region, us, ctx.area)
+    y0 = 118.0 * us
+    state.speed_graph = (cache.key, lo, hi)
     w, h = x1 - x0, 60.0 * us
     t0, t1 = data[0][0], data[-1][0]
 

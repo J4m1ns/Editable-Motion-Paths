@@ -609,9 +609,13 @@ class EMP_MT_timing(bpy.types.Menu):
     bl_label = "Timing"
     bl_idname = "EMP_MT_timing"
 
+    @classmethod
+    def poll(cls, context):
+        return bool(state.editable_caches(context.scene))
+
     def draw(self, context):
         layout = self.layout
-        layout.operator_context = 'INVOKE_DEFAULT'
+        layout.operator_context = 'INVOKE_REGION_WIN'
         st = state.settings(context.scene)
         layout.operator("emp.ease", text="Ease", icon='IPO_EASE_IN_OUT')
         layout.menu("EMP_MT_space", icon='ALIGN_JUSTIFY')

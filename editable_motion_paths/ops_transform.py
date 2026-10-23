@@ -1006,13 +1006,18 @@ class EMP_OT_transform(bpy.types.Operator):
 
     def _ring_point(self, region, rv3d, e, axis, co2d, mouse):
         """Tip of a rotation key turned along one ring (axis 0 / 2 of the bone) or around the
-        view axis (3). The angle is followed continuously from where the drag started, so it
-        never flips; a ring seen nearly edge-on turns with the mouse along its direction on
-        the screen instead of the (unstable) point under the mouse."""
+        view axis (3), like Blender's rotate gizmo: the tip turns by the angle the mouse sweeps
+        around the ring's center, measured from where the ring was grabbed, and followed
+        continuously (no flips). A ring seen nearly edge-on turns with the mouse along its
+        direction on the screen; near the center the angle holds still."""
         c = e.center
+        proj = view3d_utils.location_3d_to_region_2d
         st = self._ring_state.get((e.cache.key, round(e.k.t, 3)))
         if st is None:
-            vd = _view_dir(rv3d)
+            c2 = proj(region, rv3d, c)
+            if c2 is None:
+                return None
+            vd = _ray(region, rv3d, c2)[1].normalized()     # the view ray through the center
             n = -vd if axis == 3 else e.basis.col[axis].normalized()
             u = (e.co - c) - n * (e.co - c).dot(n)
             r = u.length
@@ -1020,42 +1025,56 @@ class EMP_OT_transform(bpy.types.Operator):
                 return None
             u /= r
             v = n.cross(u)
-            c2 = view3d_utils.location_3d_to_region_2d(region, rv3d, c)
-            if c2 is None:
-                return None
-            st = dict(n=n, u=u, v=v, r=r, c2=c2, theta=0.0, edge=abs(n.dot(vd)) < 0.3)
+            w = n.cross(vd)
+            w = w.normalized() if w.length > 1e-9 else u
+            pw = proj(region, rv3d, c + w * r)
+            major = max((pw - c2).length if pw is not None else 0.0, 20.0)   # screen radius
+            st = dict(n=n, u=u, v=v, r=r, c2=c2, theta=0.0, major=major,
+                      edge=axis != 3 and abs(n.dot(vd)) < 0.4)
             if axis == 3:
                 rel = self.mouse_start - c2
                 st['a0'] = math.atan2(rel.y, rel.x) if rel.length > 1e-6 else 0.0
-            elif st['edge']:
-                p0 = view3d_utils.location_3d_to_region_2d(region, rv3d, c + u * r)
-                p1 = view3d_utils.location_3d_to_region_2d(region, rv3d, c + (u * math.cos(0.05) + v * math.sin(0.05)) * r)
-                w = n.cross(vd)
-                w = w.normalized() if w.length > 1e-9 else u
-                pw = view3d_utils.location_3d_to_region_2d(region, rv3d, c + w * r)
-                major = (pw - c2).length if pw is not None else 0.0
+            elif not st['edge']:
+                hit = _plane_hit(region, rv3d, self.mouse_start, c, n)
+                q = (hit - c) if hit is not None else u
+                st['a0'] = math.atan2(q.dot(v), q.dot(u))
+            else:
+                # the point of the ring nearest to where it was grabbed, and the ring's
+                # direction on the screen there
+                best = None
+                for i in range(64):
+                    a = i * math.pi / 32.0
+                    s = proj(region, rv3d, c + (u * math.cos(a) + v * math.sin(a)) * r)
+                    if s is not None and (best is None or (s - self.mouse_start).length < best[0]):
+                        best = ((s - self.mouse_start).length, a)
+                ag = best[1] if best else 0.0
+                p0 = proj(region, rv3d, c + (u * math.cos(ag) + v * math.sin(ag)) * r)
+                p1 = proj(region, rv3d, c + (u * math.cos(ag + 0.05) + v * math.sin(ag + 0.05)) * r)
                 tang = (p1 - p0) / 0.05 if p0 is not None and p1 is not None else Vector((0.0, 0.0))
-                if tang.length < 0.2 * major:
+                if tang.length < 0.25 * major:
                     tang = (pw - c2) if pw is not None else Vector((1.0, 0.0))
                 st['tdir'] = tang.normalized() if tang.length > 1e-9 else Vector((1.0, 0.0))
-                st['major'] = max(major, 20.0)
             self._ring_state[(e.cache.key, round(e.k.t, 3))] = st
+        hold = None     # the mouse is too close to the center to tell the angle
         if axis == 3:
             rel = mouse - st['c2']
-            if rel.length < 1e-6:
-                return None
-            raw = math.atan2(rel.y, rel.x) - st['a0']
+            if rel.length < 0.15 * st['major']:
+                hold = True
+            else:
+                raw = math.atan2(rel.y, rel.x) - st['a0']
         elif st['edge']:
             raw = (mouse - self.mouse_start).dot(st['tdir']) / st['major']
         else:
-            hit = _plane_hit(region, rv3d, co2d, c, st['n'])
-            if hit is None or (hit - c).length < 1e-9:
-                return None
-            q = hit - c
-            raw = math.atan2(q.dot(st['v']), q.dot(st['u']))
-        # continue from the last angle: no jump of a full turn (or a flip) between updates
-        theta = st['theta'] + ((raw - st['theta'] + math.pi) % (2.0 * math.pi) - math.pi)
-        st['theta'] = theta
+            hit = _plane_hit(region, rv3d, mouse, c, st['n'])
+            if hit is None or (hit - c).length < 0.15 * st['r']:
+                hold = True
+            else:
+                q = hit - c
+                raw = math.atan2(q.dot(st['v']), q.dot(st['u'])) - st['a0']
+        if not hold:
+            # continue from the last angle: no jump of a full turn (or a flip) between updates
+            st['theta'] += (raw - st['theta'] + math.pi) % (2.0 * math.pi) - math.pi
+        theta = st['theta']
         if axis == 3:
             return c + Quaternion(st['n'], theta) @ (e.co - c)
         return c + (st['u'] * math.cos(theta) + st['v'] * math.sin(theta)) * st['r'] + \

@@ -38,6 +38,8 @@ class EMP_OT_click(bpy.types.Operator):
                                    bone_name=cache.bone_name, chart=True)
             return {'FINISHED'}
         hit = pick.hit_test(context, mx, my)
+        if hit is None or not (hit.part[:1] == 'W' and len(hit.part) == 3):
+            state.whisker_sel.clear()       # any other click drops the picked scale handles
         if hit is not None and hit.part == 'DOT':
             if event.ctrl:
                 hit = None      # Ctrl+Click on the path inserts a key, dots included
@@ -99,7 +101,17 @@ class EMP_OT_click(bpy.types.Operator):
 
         k = hit.key
         if hit.part[:1] == 'W' and len(hit.part) == 3:
-            # scale whisker: drag the handle of the active scale channel
+            # scale whisker: pick that handle (Shift: add / remove it), drag it to edit it
+            ch = {'X': 0, 'Y': 1, 'Z': 2}.get(state.settings(context.scene).scale_channel)
+            entry = (cache.key, round(k.t, 3), ch, hit.part[1])
+            if not event.shift:
+                state.whisker_sel.clear()
+                state.whisker_sel.add(entry)
+            elif entry in state.whisker_sel:
+                state.whisker_sel.discard(entry)
+            else:
+                state.whisker_sel.add(entry)
+            state.tag_redraw()
             bpy.ops.emp.scale_whisker('INVOKE_DEFAULT', frame=hit.key.t, part=hit.part)
             return {'FINISHED'}
         if hit.part in space.RING_AXES:

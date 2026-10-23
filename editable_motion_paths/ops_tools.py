@@ -164,6 +164,20 @@ def _sel_keys(cache):
     return [k for k in cache.keys if k.sel]
 
 
+def picked_handles(context):
+    """Scale handles picked on their whiskers: [(cache, key, channel, side)] (Scale mode)."""
+    if state.edit_mode(context.scene) != core.SCALE or not state.whisker_sel:
+        return []
+    out = []
+    for cache in state.editable_caches(context.scene):
+        for k in cache.keys:
+            for ck, t, ch, side in state.whisker_sel:
+                if ck == cache.key and abs(k.t - t) < 1e-3 and ch is not None and \
+                        ch < len(k.idx) and k.idx[ch] >= 0:
+                    out.append((cache, k, ch, side))
+    return out
+
+
 class EMP_OT_handle_type(bpy.types.Operator):
     """Set the handle type of the selected path keys"""
     bl_idname = "emp.handle_type"
@@ -180,6 +194,21 @@ class EMP_OT_handle_type(bpy.types.Operator):
 
     def execute(self, context):
         touched = set()
+        picked = picked_handles(context)
+        if picked:
+            # Scale mode: only the handles picked on their whiskers (one channel, one side)
+            for cache, k, c, side in picked:
+                fc = cache.target().channels(cache.ptype).fcurves[c]
+                kp = fc.keyframe_points[k.idx[c]]
+                if side == 'L':
+                    kp.handle_left_type = self.type
+                else:
+                    kp.handle_right_type = self.type
+                touched.add(fc)
+                cache.dirty = True
+            core.update_fcurves(touched)
+            pick.tag_anim_editors()
+            return {'FINISHED'}
         for cache in state.editable_caches(context.scene):
             tg = cache.target()
             ch = tg.channels(cache.ptype)
@@ -210,6 +239,20 @@ class EMP_OT_interpolation(bpy.types.Operator):
 
     def execute(self, context):
         touched = set()
+        picked = picked_handles(context)
+        if picked:
+            # Scale mode, picked handles: the segment that handle shapes (before the key for the
+            # left one, after it for the right one), on that channel only
+            for cache, k, c, side in picked:
+                fc = cache.target().channels(cache.ptype).fcurves[c]
+                i = k.idx[c] - (1 if side == 'L' else 0)
+                if 0 <= i < len(fc.keyframe_points):
+                    fc.keyframe_points[i].interpolation = self.type
+                    touched.add(fc)
+                cache.dirty = True
+            core.update_fcurves(touched)
+            pick.tag_anim_editors()
+            return {'FINISHED'}
         for cache in state.editable_caches(context.scene):
             tg = cache.target()
             ch = tg.channels(cache.ptype)
