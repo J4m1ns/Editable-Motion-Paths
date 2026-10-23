@@ -66,6 +66,7 @@ TOOL_KEYMAP = (
     _k("emp.context_menu", 'RIGHTMOUSE'),
     _k("wm.call_menu", 'T', {"name": "EMP_MT_timing"}, shift=True),
     _k("wm.call_panel", 'U', {"name": "EMP_PT_display_popover", "keep_open": True}),
+    _k("wm.call_panel", 'J', {"name": "EMP_PT_modifiers_popover", "keep_open": True}),
     # modes, proportional editing (Blender's own settings)
     _k("wm.context_set_enum", 'ONE', {"data_path": "scene.emp.edit_mode", "value": 'LOCATION'}),
     _k("wm.context_set_enum", 'TWO', {"data_path": "scene.emp.edit_mode", "value": 'ROTATION'}),
@@ -125,6 +126,7 @@ HELP = (
         ("Drag a frame dot", "move that frame along the path (spacing)"),
         ("Right-click", "path menu (Edit Value, Space, LoopTools...)"),
         ("U", "display settings under the mouse"),
+        ("J", "modifiers of the active path under the mouse"),
     )),
 )
 

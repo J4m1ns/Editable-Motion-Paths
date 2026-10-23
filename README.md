@@ -116,6 +116,7 @@ The tool uses the settings you know from modeling, in the header and with the us
 | **Shift+T** | timing menu (see Timing and speed) |
 | Drag a **frame dot** | move that frame along the path: the frames around it follow, the keys and the shape stay (click a dot: go to that frame) |
 | **U** | display settings under the mouse |
+| **J** | modifiers of the active path under the mouse (the mouse wheel scrolls a long list) |
 | Right-click | path menu: **Edit Value…** (type exact values for the active key), Subdivide, Spin, Space, LoopTools, Snap, Curves, … |
 
 Nothing is written until you actually move: starting a tool and confirming without moving
@@ -189,7 +190,7 @@ That is Blender's own behaviour; set the smoothing to *None* if you want edits t
 
 ## Modifiers
 
-The **Modifiers** panel (sidebar, or the wrench in the tool header) is an F-Curve modifier stack
+The **Modifiers** panel (sidebar, the wrench in the tool header, or **J** under the mouse) is an F-Curve modifier stack
 for the active path in the current mode, like the modifier stack in modeling: add Noise, Cycles,
 Built-In Function, Generator, Envelope, Limits or Stepped; the X / Y / Z buttons (W X Y Z on
 quaternions, the components of a value) choose which channels it works on: click one to use only
