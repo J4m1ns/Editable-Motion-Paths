@@ -224,35 +224,86 @@ class EMP_OT_fmod_remove(_StackOp, bpy.types.Operator):
 
 
 class EMP_OT_fmod_axis(_StackOp, bpy.types.Operator):
-    """Use this modifier on this channel or not (one channel always keeps it)"""
+    """Use this modifier on this channel only. Shift+Click: add or remove this channel """ \
+        """(one channel always keeps it)"""
     bl_idname = "emp.fmod_axis"
     bl_label = "Modifier Channel"
 
     name: StringProperty()
-    index: IntProperty()
+    index: IntProperty(description="Channel (-1: all of them)")
+    extend: BoolProperty(name="Extend", options={'SKIP_SAVE'},
+                         description="Add or remove this channel, keep the others")
+
+    @classmethod
+    def description(cls, context, properties):
+        if properties.index < 0:
+            return "Use this modifier on all channels"
+        return cls.__doc__
+
+    def invoke(self, context, event):
+        self.extend = event.shift
+        return self.execute(context)
 
     def execute(self, context):
         cache = active_cache(context)
         chans = channels(cache)
         entry = next((e for e in stack(cache) if e[0] == self.name), None)
-        if entry is None or not 0 <= self.index < len(chans):
+        if entry is None or self.index >= len(chans):
             return {'CANCELLED'}
         _n, typ, mods = entry
-        fc = chans[self.index][1]
-        if fc is None:
+        on = {i for i, m in enumerate(mods) if m is not None}
+        animated = {i for i, (_l, fc) in enumerate(chans) if fc is not None}
+        if self.index < 0:
+            want = set(animated)
+        elif chans[self.index][1] is None:
             self.report({'WARNING'}, "This channel is not animated")
             return {'CANCELLED'}
-        m = mods[self.index]
-        if m is not None:
-            if sum(1 for x in mods if x is not None) <= 1:
-                return {'CANCELLED'}        # the last channel: use Remove instead
-            fc.modifiers.remove(m)
+        elif self.extend:
+            want = on ^ {self.index}
         else:
-            master = next(x for x in mods if x is not None)
-            names = [n for n, _t, ms in stack(cache) if any(x is not None for x in ms)]
+            want = {self.index}
+        if not want or want == on:
+            return {'CANCELLED'}        # (one channel always keeps it: use X to remove it)
+        master = next(x for x in mods if x is not None)
+        data = settings_of(master)
+        names = [n for n, _t, ms in stack(cache) if any(x is not None for x in ms)]
+        for i, (_l, fc) in enumerate(chans):
+            if fc is None:
+                continue
+            if i in want and mods[i] is None:
+                new = fc.modifiers.new(typ)
+                new.name = self.name
+                apply_settings(new, data)
+                _rebuild_order(fc, names)
+            elif i not in want and mods[i] is not None:
+                fc.modifiers.remove(mods[i])
+        _done(cache)
+        return {'FINISHED'}
+
+
+class EMP_OT_fmod_duplicate(_StackOp, bpy.types.Operator):
+    """Duplicate the modifier (on the same channels, right after it)"""
+    bl_idname = "emp.fmod_duplicate"
+    bl_label = "Duplicate Modifier"
+
+    name: StringProperty()
+
+    def execute(self, context):
+        cache = active_cache(context)
+        entry = next((e for e in stack(cache) if e[0] == self.name), None)
+        if entry is None:
+            return {'CANCELLED'}
+        _n, typ, mods = entry
+        new_name = _unique_name(cache, self.name)
+        names = [n for n, _t, _m in stack(cache)]
+        names.insert(names.index(self.name) + 1, new_name)
+        for (_l, fc), m in zip(channels(cache), mods):
+            if fc is None or m is None:
+                continue
             new = fc.modifiers.new(typ)
-            new.name = self.name
-            copy_settings(master, new)
+            new.name = new_name
+            apply_settings(new, settings_of(m))
+            new.show_expanded = m.show_expanded
             _rebuild_order(fc, names)
         _done(cache)
         return {'FINISHED'}
@@ -483,6 +534,7 @@ class EMP_MT_fmod_entry(bpy.types.Menu):
             return
         name = m.name
         layout.operator("emp.fmod_apply", text="Apply", icon='CHECKMARK').name = name
+        layout.operator("emp.fmod_duplicate", text="Duplicate", icon='DUPLICATE').name = name
         layout.operator("emp.fmod_copy", text="Copy", icon='COPYDOWN').name = name
         layout.operator("emp.fmod_paste", text="Paste", icon='PASTEDOWN')
         layout.separator()
@@ -516,6 +568,10 @@ def draw_stack(layout, context):
         row.prop(master, "show_expanded", text="", emboss=False, icon='RIGHTARROW')
         row.label(text=name, icon=ICONS.get(typ, 'MODIFIER'))
         row = split.row(align=True)
+        # the dot puts it on every channel (a big dot: it is on all of them already)
+        every = all(m is not None for m, (_l, fc) in zip(mods, chans) if fc is not None)
+        op = row.operator("emp.fmod_axis", text="", emboss=False, icon='LAYER_ACTIVE' if every else 'DOT')
+        op.name, op.index = name, -1
         sub = row.row(align=True)
         for i, (label, fc) in enumerate(chans):
             op = sub.operator("emp.fmod_axis", text=label, depress=mods[i] is not None)
@@ -566,7 +622,8 @@ class EMP_PT_modifiers_popover(bpy.types.Panel):
         draw_stack(self.layout, context)
 
 
-classes = (EMP_OT_fmod_add, EMP_OT_fmod_remove, EMP_OT_fmod_axis, EMP_OT_fmod_mute, EMP_OT_fmod_move,
+classes = (EMP_OT_fmod_add, EMP_OT_fmod_remove, EMP_OT_fmod_axis, EMP_OT_fmod_duplicate, EMP_OT_fmod_mute,
+           EMP_OT_fmod_move,
            EMP_OT_fmod_apply,
            EMP_OT_fmod_copy, EMP_OT_fmod_paste, EMP_OT_fmod_tools, EMP_MT_fmod_add, EMP_MT_fmod_tools,
            EMP_MT_fmod_entry)

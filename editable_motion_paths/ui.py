@@ -60,6 +60,7 @@ TOOL_KEYMAP = (
     _k("wm.call_menu", 'T', {"name": "EMP_MT_interpolation"}),
     # shape / timing
     _k("emp.smooth", 'S', alt=True),
+    _k("emp.scale_handle_values", 'S', alt=True, shift=True),
     _k("emp.exaggerate", 'E', alt=True),
     _k("emp.ease", 'E', shift=True),
     _k("emp.context_menu", 'RIGHTMOUSE'),
@@ -116,7 +117,8 @@ HELP = (
         ("Alt+C", "loop: cycles, fix seam"),
     )),
     ("Shape & Timing", (
-        ("Alt+S", "smooth (T: shape / time; Scale mode: handles of the picked channel)"),
+        ("Alt+S", "smooth (T: shape / time; Scale mode: longer / shorter handles)"),
+        ("Alt+Shift+S", "Scale mode: move the handles up / down"),
         ("Alt+E", "exaggerate"),
         ("Shift+E", "ease (I / O / B)"),
         ("Shift+T", "timing menu: breakdown, scale time, add frames, hold..."),

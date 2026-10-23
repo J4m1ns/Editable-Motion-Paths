@@ -262,6 +262,10 @@ class EMP_OT_click(bpy.types.Operator):
             # a click (no drag) on a scale gizmo handle shows that channel's handles
             st = state.settings(context.scene)
             st.scale_channel = {'GX': 'X', 'GXn': 'X', 'GY': 'Y', 'GZ': 'Z', 'GZn': 'Z'}.get(self.gizmo, 'NONE')
+            # ... and picks both of them (Alt+S / Alt+Shift+S work on them right away)
+            ch = {'X': 0, 'Y': 1, 'Z': 2}.get(st.scale_channel)
+            state.set_whisker_sel(set() if ch is None else
+                                  {(self.hit_key, round(self.hit_t, 3), ch, s) for s in ('L', 'R')}, context.scene)
             state.tag_redraw()
             return {'FINISHED'}
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and getattr(self, "ring", None):

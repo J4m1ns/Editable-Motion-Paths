@@ -488,6 +488,7 @@ class _AdjustOp:
     bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
     label = ""
     pixels_per_unit = 250.0
+    vertical = False        # drag up / down instead of left / right
 
     @classmethod
     def poll(cls, context):
@@ -525,9 +526,10 @@ class _AdjustOp:
         if not self.jobs:
             self.report({'WARNING'}, "No editable path: select a bone/object that has a path")
             return {'CANCELLED'}
-        self.x0 = event.mouse_x
-        self.x_virtual = float(event.mouse_x)
-        self.x_last = event.mouse_x
+        m = event.mouse_y if self.vertical else event.mouse_x
+        self.x0 = m
+        self.x_virtual = float(m)
+        self.x_last = m
         self.numinput = NumInput(1)
         self.factor = 0.0
         self.area = context.area
@@ -588,8 +590,9 @@ class _AdjustOp:
         txt = "%s: %s" % (self._label(), self.numinput.text(0, self.factor, "%.3f"))
         state.hud = (txt, self._hud_pos(context, event))
         if self.area is not None:
-            self.area.header_text_set(txt + "   (drag left/right, Ctrl: snap, Shift: precise, "
-                                            "type a value, LMB/Enter: confirm, RMB/Esc: cancel)")
+            self.area.header_text_set(txt + "   (drag %s, Ctrl: snap, Shift: precise, type a value, "
+                                            "LMB/Enter: confirm, RMB/Esc: cancel)" % (
+                                                "up/down" if self.vertical else "left/right"))
         state.tag_redraw()
 
     def _finish(self, context):
@@ -603,8 +606,9 @@ class _AdjustOp:
     def modal(self, context, event):
         t, v = event.type, event.value
         if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
-            d = event.mouse_x - self.x_last
-            self.x_last = event.mouse_x
+            m = event.mouse_y if self.vertical else event.mouse_x
+            d = m - self.x_last
+            self.x_last = m
             self.x_virtual += d * (0.1 if event.shift else 1.0)
             self._update(context, event)
         elif t in {'LEFT_CTRL', 'RIGHT_CTRL', 'LEFT_SHIFT', 'RIGHT_SHIFT'}:
@@ -1032,27 +1036,8 @@ class EMP_OT_ease(_AdjustOp, bpy.types.Operator):
             touched.add(fc)
 
 
-class EMP_OT_scale_handles(_AdjustOp, bpy.types.Operator):
-    """Make the picked scale handles (whiskers) longer or shorter; with none picked, the """ \
-        """handles of the selected keys on the channel picked on the scale gizmo (all channels if """ \
-        """none). Drag right for longer handles. I / O / B while dragging: the handle before the """ \
-        """key, after it, or both"""
-    bl_idname = "emp.scale_handles"
-    bl_label = "Scale Handles"
-    bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
-    label = "Scale Handles"
-    pixels_per_unit = 250.0
-
-    factor: FloatProperty(name="Factor", default=0.0, soft_min=-1.0, soft_max=2.0, min=-1.0,
-                          description="0.5: handles 50% longer, -1: no handles")
-    side: EnumProperty(name="Side", items=[
-        ('BOTH', "Both", "The handles on both sides of the key"),
-        ('IN', "In", "The handle before the key"),
-        ('OUT', "Out", "The handle after the key"),
-    ], default='BOTH')
-    channel: EnumProperty(name="Channel", items=[
-        ('ACTIVE', "Picked", "The channel picked on the scale gizmo (all if none)"),
-        ('X', "X", ""), ('Y', "Y", ""), ('Z', "Z", ""), ('ALL', "All", "")], default='ACTIVE')
+class _ScaleHandleOp(_AdjustOp):
+    """Shared by the scale handle tools (Scale mode): which handles they work on."""
 
     @classmethod
     def poll(cls, context):
@@ -1063,14 +1048,6 @@ class EMP_OT_scale_handles(_AdjustOp, bpy.types.Operator):
         if ch == 'ACTIVE':
             ch = state.settings(context.scene).scale_channel
         return {'X': {0}, 'Y': {1}, 'Z': {2}}.get(ch, {0, 1, 2})
-
-    def _label(self):
-        ch = self.channel
-        if ch == 'ACTIVE':
-            ch = state.settings(bpy.context.scene).scale_channel
-        name = {'X': "X", 'Y': "Y", 'Z': "Z"}.get(ch, "all channels (click a gizmo handle to pick one)")
-        return "Scale Handles %s, %s  (I / O / B)" % (
-            name, {"BOTH": "both sides", "IN": "in", "OUT": "out"}[self.side])
 
     def _modal_key(self, context, event):
         m = {'I': 'IN', 'O': 'OUT', 'B': 'BOTH'}.get(event.type)
@@ -1109,6 +1086,37 @@ class EMP_OT_scale_handles(_AdjustOp, bpy.types.Operator):
         job.handle_orig = orig
         return orig
 
+
+class EMP_OT_scale_handles(_ScaleHandleOp, bpy.types.Operator):
+    """Make the picked scale handles (whiskers) longer or shorter; with none picked, the """ \
+        """handles of the selected keys on the channel picked on the scale gizmo (all channels if """ \
+        """none). Drag right for longer handles. I / O / B while dragging: the handle before the """ \
+        """key, after it, or both"""
+    bl_idname = "emp.scale_handles"
+    bl_label = "Scale Handles"
+    bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
+    label = "Scale Handles"
+    pixels_per_unit = 250.0
+
+    factor: FloatProperty(name="Factor", default=0.0, soft_min=-1.0, soft_max=2.0, min=-1.0,
+                          description="0.5: handles 50% longer, -1: no handles")
+    side: EnumProperty(name="Side", items=[
+        ('BOTH', "Both", "The handles on both sides of the key"),
+        ('IN', "In", "The handle before the key"),
+        ('OUT', "Out", "The handle after the key"),
+    ], default='BOTH')
+    channel: EnumProperty(name="Channel", items=[
+        ('ACTIVE', "Picked", "The channel picked on the scale gizmo (all if none)"),
+        ('X', "X", ""), ('Y', "Y", ""), ('Z', "Z", ""), ('ALL', "All", "")], default='ACTIVE')
+
+    def _label(self):
+        ch = self.channel
+        if ch == 'ACTIVE':
+            ch = state.settings(bpy.context.scene).scale_channel
+        name = {'X': "X", 'Y': "Y", 'Z': "Z"}.get(ch, "all channels (click a gizmo handle to pick one)")
+        return "Scale Handles %s, %s  (I / O / B)" % (
+            name, {"BOTH": "both sides", "IN": "in", "OUT": "out"}[self.side])
+
     @staticmethod
     def _scaled(x, y, h, s, gap):
         dx, dy = h[0] - x, h[1] - y
@@ -1142,7 +1150,77 @@ class EMP_OT_scale_handles(_AdjustOp, bpy.types.Operator):
             touched.add(fc)
 
 
+class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
+    """Move the picked scale handles (whiskers) up or down: drag the mouse up / down. With both """ \
+        """handles of a smooth key picked they tilt together (the key stays smooth). With none """ \
+        """picked: the handles of the selected keys on the channel picked on the scale gizmo. """ \
+        """I / O / B while dragging: the handle before the key, after it, or both"""
+    bl_idname = "emp.scale_handle_values"
+    bl_label = "Move Scale Handles"
+    bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
+    label = "Move Handles"
+    pixels_per_unit = 200.0
+    vertical = True
+
+    factor: FloatProperty(name="Offset", default=0.0, soft_min=-2.0, soft_max=2.0,
+                          description="How far the handle after the key goes up (scale value)")
+    side: EnumProperty(name="Side", items=[
+        ('BOTH', "Both", "The handles on both sides of the key"),
+        ('IN', "In", "The handle before the key"),
+        ('OUT', "Out", "The handle after the key"),
+    ], default='BOTH')
+    channel: EnumProperty(name="Channel", items=[
+        ('ACTIVE', "Picked", "The channel picked on the scale gizmo (all if none)"),
+        ('X', "X", ""), ('Y', "Y", ""), ('Z', "Z", ""), ('ALL', "All", "")], default='ACTIVE')
+
+    def _label(self):
+        ch = self.channel
+        if ch == 'ACTIVE':
+            ch = state.settings(bpy.context.scene).scale_channel
+        name = {'X': "X", 'Y': "Y", 'Z': "Z"}.get(ch, "all channels")
+        return "Move Handles %s, %s  (I / O / B)" % (
+            name, {"BOTH": "both sides", "IN": "in", "OUT": "out"}[self.side])
+
+    def _apply_job(self, job, tg, touched):
+        coll = tg.coll
+        dv = self.factor
+        fixed = {'AUTO': 'ALIGNED', 'AUTO_CLAMPED': 'ALIGNED', 'VECTOR': 'FREE'}
+        for o in self._originals(job, tg):
+            do_l = self.side in {'BOTH', 'IN'} and 'L' in o['sides']
+            do_r = self.side in {'BOTH', 'OUT'} and 'R' in o['sides']
+            fc = coll.find(o['path'], index=o['index'])
+            if fc is None:
+                continue
+            kp = fc.keyframe_points[o['i']]
+            x, y = o['x'], o['y']
+            hl, hr = o['hl'], o['hr']
+            tl, tr = o['tl'], o['tr']
+            if abs(dv) > 1e-9 and (do_l or do_r):
+                tl, tr = fixed.get(tl, tl), fixed.get(tr, tr)
+                smooth = tl == 'ALIGNED' and tr == 'ALIGNED'
+                dl, dr = x - hl[0], hr[0] - x
+                if do_l and do_r:
+                    # both: they tilt around the key (up after it, down before it), so a smooth
+                    # key stays smooth
+                    hr = (hr[0], hr[1] + dv)
+                    hl = (hl[0], hl[1] - dv * (dl / dr if dr > 1e-6 else 1.0))
+                elif do_r:
+                    hr = (hr[0], hr[1] + dv)
+                    if smooth and dr > 1e-6:
+                        # the other handle stays in line (keeping its length in time)
+                        hl = (x - dl, y - (hr[1] - y) * dl / dr)
+                else:
+                    hl = (hl[0], hl[1] + dv)
+                    if smooth and dl > 1e-6:
+                        hr = (x + dr, y - (hl[1] - y) * dr / dl)
+            kp.handle_left_type = tl
+            kp.handle_right_type = tr
+            kp.handle_left = hl
+            kp.handle_right = hr
+            touched.add(fc)
+
+
 classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_path_update, EMP_OT_edit_tool,
            EMP_OT_handle_type, EMP_OT_interpolation,
-           EMP_OT_smooth, EMP_OT_exaggerate, EMP_OT_ease, EMP_OT_scale_handles, EMP_OT_fix_loop,
-           EMP_OT_cleanup)
+           EMP_OT_smooth, EMP_OT_exaggerate, EMP_OT_ease, EMP_OT_scale_handles,
+           EMP_OT_scale_handle_values, EMP_OT_fix_loop, EMP_OT_cleanup)
