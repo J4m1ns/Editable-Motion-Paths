@@ -194,7 +194,8 @@ for the active path in the current mode, like the modifier stack in modeling: ad
 Built-In Function, Generator, Envelope, Limits or Stepped; the X / Y / Z buttons (W X Y Z on
 quaternions, the components of a value) choose which channels it works on: click one to use only
 that channel, Shift+Click to add or remove it, and the dot next to them puts it on all of them (a
-big dot: it is on all already). Its settings stay the same on all of them. Its header works like a modeling modifier's: collapse arrow, monitor
+ring: some are left out, a filled dot: it is on all already). Its settings stay the same on all of
+them. Its header works like a modeling modifier's: collapse arrow, monitor
 (show it in the viewport), a drop-down with Apply (bake into keys and clean up), Duplicate, Copy, Paste and
 Move Up / Down / to First / to Last, and X to remove. The Modifier Tools menu next to Add
 Modifier applies, removes, hides or expands them all. Alt+C's Cycles shows up here too. The
