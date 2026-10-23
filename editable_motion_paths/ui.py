@@ -188,7 +188,8 @@ class EMP_PoseTool(bpy.types.WorkSpaceTool):
     bl_idname = "emp.edit_path_pose"
     bl_label = "Edit Motion Path"
     bl_description = ("Edit motion paths like curves: click keys, drag keys and handles, G R S, "
-                      "E extrude, Ctrl+Click on a path to insert a key")
+                      "E extrude, Ctrl+Click on a path to insert a key, right-click for the menu, "
+                      "1 / 2 / 3 / 4: Location / Rotation / Scale / Value")
     bl_icon = "ops.curve.pen"
     bl_widget = None
     bl_keymap = TOOL_KEYMAP

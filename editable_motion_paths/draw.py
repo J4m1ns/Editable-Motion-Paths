@@ -398,6 +398,7 @@ def scale_whiskers(st, cache, k):
 
 def _draw_scale_gizmos(st, cache, keys, us):
     lines, cols = [], []
+    picked_sel = state.whisker_sel()
     for k in keys:
         if not k.sel:
             continue
@@ -413,7 +414,7 @@ def _draw_scale_gizmos(st, cache, keys, us):
         ch = {'X': 0, 'Y': 1, 'Z': 2}.get(st.scale_channel)
         for p, pts, _end in scale_whiskers(st, cache, k):
             # a picked handle (V / T work on it) is drawn white
-            picked = (cache.key, round(k.t, 3), ch, p[1]) in state.whisker_sel
+            picked = (cache.key, round(k.t, 3), ch, p[1]) in picked_sel
             for a, b in zip(pts, pts[1:]):
                 lines += [a, b]
                 cols += [(1.0, 1.0, 1.0, 1.0) if picked else GIZMO_COLORS[part]] * 2
@@ -440,7 +441,6 @@ def _draw_rot_rings(st, cache, tg, keys, rv3d, us):
     from . import space
     if not (st.show_rot_rings or st.show_reach):
         return
-    on = {'RX': 'X' in st.rot_axes, 'RY': True, 'RZ': 'Z' in st.rot_axes}
     for k in keys:
         if not k.sel:
             continue
@@ -450,8 +450,7 @@ def _draw_rot_rings(st, cache, tg, keys, rv3d, us):
             _lines(circ, [(1.0, 1.0, 1.0, 0.22)] * len(circ), 1.2 * us, 'LINE_STRIP')
         if st.show_rot_rings:
             for part, pts in rings.items():
-                col = RING_COLORS[part] + ((0.9,) if on[part] else (0.25,))
-                _lines(pts, [col] * len(pts), (2.0 if on[part] else 1.2) * us, 'LINE_STRIP')
+                _lines(pts, [RING_COLORS[part] + (0.9,)] * len(pts), 2.0 * us, 'LINE_STRIP')
 
 
 def _draw_view():
@@ -906,9 +905,8 @@ def _draw_mode_indicator(ctx, st, us):
             break
         if cache.ptype == core.ROTATION and st.show_rot_rings and cache.owner_selected() and \
                 any(k.sel for k in cache.keys):
-            axes = " + ".join(sorted(st.rot_axes))
-            hint = "Turning around %s   (click a ring: that axis, Shift+Click: both;  drag the " \
-                   "key: trackball, the green ring: twist, the faint circle: around the view)" % axes
+            hint = "Drag a ring: turn around that axis (green: twist)   drag the key: turn freely   " \
+                   "the faint circle: around the view"
     widths = [blf.dimensions(font, t)[0] for t, _a in parts]
     x = (region.width - sum(widths)) * 0.5
     y = 24 * us

@@ -121,16 +121,10 @@ class EMP_Settings(bpy.types.PropertyGroup):
     show_repeats: BoolProperty(name="Loop Repeats", default=True,
                                description="Looping motion: draw the path outside the loop's keys "
                                            "(the repeats) faintly", update=_redraw)
-    rot_axes: EnumProperty(
-        name="Rotation Axes",
-        description="Rotation paths: which of the bone's axes moving a key turns it around. Click "
-                    "a ring in the viewport to use one, Shift+Click the other ring to use both",
-        items=[('X', "X", "Turn around the bone's X axis (the red ring)"),
-               ('Z', "Z", "Turn around the bone's Z axis (the blue ring)")],
-        options={'ENUM_FLAG'}, default={'X', 'Z'}, update=_redraw)
     show_rot_rings: BoolProperty(name="Axis Rings", default=True,
                                  description="Rotation paths: the bone's X, Y and Z rings at selected "
-                                             "keys (click X / Z to pick the axis, drag Y to twist)",
+                                             "keys. Drag a ring to turn around that axis (Y: twist), "
+                                             "drag the key to turn freely",
                                  update=_redraw)
     show_reach: BoolProperty(name="Reach", default=True,
                              description="Rotation paths: a circle showing how far the tip can go "
@@ -198,6 +192,10 @@ class EMP_Settings(bpy.types.PropertyGroup):
         description="Rotation paths trace a point along the bone axis at this multiple of the bone "
                     "length (object: in meters). Larger values make small rotations easier to see",
         default=1.0, min=0.05, soft_max=5.0, update=_refresh)
+    picked_handles: StringProperty(
+        options={'HIDDEN'},
+        description="Scale handles picked on their whiskers (JSON). Saved in the scene so undo "
+                    "brings them back")
     select_history: StringProperty(
         options={'HIDDEN'},
         description="Clicked keys, oldest first (JSON); the last one is the active key. Saved in "

@@ -20,7 +20,6 @@ circle = None        # (x, y, radius, area pointer) circle select brush
 chart = None         # timing chart geometry of the last draw (see draw._draw_chart)
 speed_graph = None   # (path key, first, last frame) the speed graph showed last
 knife = None         # ([region points], area pointer) knife line
-whisker_sel = set()  # scale handles picked by clicking their whiskers: (path key, frame, channel, 'L' / 'R')
 markers = None       # ([world points], area pointer) previews of keys about to be added
 constraint = None    # (pivot, axis, color) axis line shown while transforming
 snap_point = None    # world point the transform snapped to
@@ -458,6 +457,25 @@ def set_active(path_key, t, scene=None):
     item = (tuple(path_key), round(t, 3))
     items = [i for i in select_history(scene) if i != item] + [item]
     st.select_history = json.dumps([[k[0], k[1], k[2], f] for k, f in items[-100:]])
+
+
+def whisker_sel(scene=None):
+    """Scale handles picked by clicking their whiskers: {(path key, frame, channel, 'L' / 'R')}.
+    They live in the scene, so undo brings the picking back."""
+    import json
+    st = settings(scene)
+    try:
+        return {((o, b, m), round(float(t), 3), c, s)
+                for o, b, m, t, c, s in json.loads((st.picked_handles if st is not None else "") or "[]")}
+    except (ValueError, TypeError):
+        return set()
+
+
+def set_whisker_sel(sel, scene=None):
+    import json
+    st = settings(scene)
+    if st is not None:
+        st.picked_handles = json.dumps(sorted([k[0], k[1], k[2], t, c, s] for k, t, c, s in sel))
 
 
 def flash_message(text, seconds=3.0):

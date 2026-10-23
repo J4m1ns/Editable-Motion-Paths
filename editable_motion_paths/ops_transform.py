@@ -365,7 +365,7 @@ def _ts_get(ts, name, default):
 
 
 class EMP_OT_transform(bpy.types.Operator):
-    """Move, rotate or scale the selected path keys and handles"""
+    """Move (G), rotate (R) or scale (S) the selected path keys and handles"""
     bl_idname = "emp.transform"
     bl_label = "Transform Path Keys"
     bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
@@ -1004,15 +1004,9 @@ class EMP_OT_transform(bpy.types.Operator):
         self.value = v
 
     def _ring_axis(self):
-        """Channel axis index rotation keys turn around (3: the view axis, None: free on the
-        sphere)."""
-        if self.ring_axis >= 0:
-            return self.ring_axis
-        st = state.settings()
-        axes = set(st.rot_axes) if st is not None else {'X', 'Z'}
-        if len(axes) == 1:
-            return 0 if 'X' in axes else 2
-        return None
+        """Channel axis index rotation keys turn around (a dragged ring; 3: the view axis), or
+        None: free on the sphere."""
+        return self.ring_axis if self.ring_axis >= 0 else None
 
     def _ring_angle(self, region, rv3d, skey, c, n, ref, mouse, view_axis=False):
         """Angle (radians, right-handed around n) the mouse has turned a ring around center c

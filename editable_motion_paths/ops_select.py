@@ -38,8 +38,8 @@ class EMP_OT_click(bpy.types.Operator):
                                    bone_name=cache.bone_name, chart=True)
             return {'FINISHED'}
         hit = pick.hit_test(context, mx, my)
-        if hit is None or not (hit.part[:1] == 'W' and len(hit.part) == 3):
-            state.whisker_sel.clear()       # any other click drops the picked scale handles
+        if (hit is None or not (hit.part[:1] == 'W' and len(hit.part) == 3)) and state.whisker_sel(context.scene):
+            state.set_whisker_sel(set(), context.scene)     # any other click drops the picked scale handles
         if hit is not None and hit.part == 'DOT':
             if event.ctrl:
                 hit = None      # Ctrl+Click on the path inserts a key, dots included
@@ -104,18 +104,19 @@ class EMP_OT_click(bpy.types.Operator):
             # scale whisker: pick that handle (Shift: add / remove it), drag it to edit it
             ch = {'X': 0, 'Y': 1, 'Z': 2}.get(state.settings(context.scene).scale_channel)
             entry = (cache.key, round(k.t, 3), ch, hit.part[1])
+            sel = state.whisker_sel(context.scene)
             if not event.shift:
-                state.whisker_sel.clear()
-                state.whisker_sel.add(entry)
-            elif entry in state.whisker_sel:
-                state.whisker_sel.discard(entry)
+                sel = {entry}
+            elif entry in sel:
+                sel.discard(entry)
             else:
-                state.whisker_sel.add(entry)
+                sel.add(entry)
+            state.set_whisker_sel(sel, context.scene)
             state.tag_redraw()
             bpy.ops.emp.scale_whisker('INVOKE_DEFAULT', frame=hit.key.t, part=hit.part)
             return {'FINISHED'}
         if hit.part in space.RING_AXES:
-            # rotation ring: click picks the axis (Shift: both), drag turns around it
+            # rotation ring: drag it to turn around its axis
             self.gizmo = None
             self.ring = hit.part
             self.ring_shift = event.shift
@@ -212,8 +213,7 @@ class EMP_OT_click(bpy.types.Operator):
     def _key_trackball(self, context):
         st = state.settings(context.scene)
         cache = state.caches.get(self.hit_key)
-        return cache is not None and cache.ptype == core.ROTATION and st.show_rot_rings and \
-            set(st.rot_axes) == {'X', 'Z'}
+        return cache is not None and cache.ptype == core.ROTATION and st.show_rot_rings
 
     def modal(self, context, event):
         if getattr(self, "dot", None):
@@ -265,20 +265,7 @@ class EMP_OT_click(bpy.types.Operator):
             state.tag_redraw()
             return {'FINISHED'}
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and getattr(self, "ring", None):
-            if self.ring in {'RV', 'RY'}:
-                return {'FINISHED'}     # the reach circle and the twist ring are only dragged
-            st = state.settings(context.scene)
-            axis = 'X' if self.ring == 'RX' else 'Z'
-            axes = set(st.rot_axes)
-            if self.ring_shift:
-                axes ^= {axis}
-                if not axes:
-                    axes = {axis}       # one axis always stays on
-            else:
-                axes = {axis}
-            st.rot_axes = axes
-            state.tag_redraw()
-            return {'FINISHED'}
+            return {'FINISHED'}         # rings are only dragged
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
             cache, k = self._find_key()
             if k is not None and self.release_action is not None:

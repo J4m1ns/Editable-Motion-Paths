@@ -45,8 +45,8 @@ def _targets(context):
 
 
 class EMP_OT_path_add(bpy.types.Operator):
-    """Show an editable motion path for the selected bones (Pose Mode) or objects. """ \
-        """Location or Rotation is chosen with the edit mode (1 / 2)"""
+    """Show an editable motion path for the selected bones (Pose Mode) or objects. What it """ \
+        """shows (Location, Rotation, Scale or Value) is chosen with the edit mode (1 / 2 / 3 / 4)"""
     bl_idname = "emp.path_add"
     bl_label = "Add Motion Path"
     bl_options = {'REGISTER', 'UNDO'}
@@ -83,15 +83,22 @@ class EMP_OT_path_add(bpy.types.Operator):
 
 
 class EMP_OT_path_remove(bpy.types.Operator):
-    """Remove motion paths"""
+    """Remove motion paths from the list"""
     bl_idname = "emp.path_remove"
     bl_label = "Remove Motion Paths"
     bl_options = {'REGISTER', 'UNDO'}
 
+    TIPS = {'ACTIVE': "Remove the selected motion path from the list",
+            'SELECTED': "Remove the motion paths of the selected bones / objects from the list",
+            'ALL': "Remove all motion paths from the list"}
     scope: EnumProperty(items=[
-        ('ACTIVE', "Active", "Remove the active path in the list"),
-        ('SELECTED', "Selected", "Remove paths of the selected bones / objects"),
-        ('ALL', "All", "Remove all paths")], default='ACTIVE')
+        ('ACTIVE', "Active", TIPS['ACTIVE']),
+        ('SELECTED', "Selected", TIPS['SELECTED']),
+        ('ALL', "All", TIPS['ALL'])], default='ACTIVE')
+
+    @classmethod
+    def description(cls, context, properties):
+        return cls.TIPS.get(properties.scope, cls.__doc__)
 
     def execute(self, context):
         st = state.settings(context.scene)
@@ -114,7 +121,8 @@ class EMP_OT_path_remove(bpy.types.Operator):
 
 
 class EMP_OT_path_update(bpy.types.Operator):
-    """Recalculate all motion paths"""
+    """Recalculate all motion paths (for changes they can't see by themselves, like """ \
+        """constraints or drivers)"""
     bl_idname = "emp.path_update"
     bl_label = "Update Motion Paths"
 
@@ -127,7 +135,8 @@ class EMP_OT_path_update(bpy.types.Operator):
 
 
 class EMP_OT_edit_tool(bpy.types.Operator):
-    """Activate the Edit Motion Path tool (click keys to see handles, drag them, G/R/S...)"""
+    """Turn the Edit Motion Path tool on or off (click keys to see their handles, drag them, """ \
+        """G / R / S...)"""
     bl_idname = "emp.edit_tool"
     bl_label = "Edit Paths"
 
@@ -164,22 +173,16 @@ def _sel_keys(cache):
     return [k for k in cache.keys if k.sel]
 
 
-def picked_handles(context):
-    """Scale handles picked on their whiskers: [(cache, key, channel, side)] (Scale mode)."""
-    if state.edit_mode(context.scene) != core.SCALE or not state.whisker_sel:
-        return []
-    out = []
-    for cache in state.editable_caches(context.scene):
-        for k in cache.keys:
-            for ck, t, ch, side in state.whisker_sel:
-                if ck == cache.key and abs(k.t - t) < 1e-3 and ch is not None and \
-                        ch < len(k.idx) and k.idx[ch] >= 0:
-                    out.append((cache, k, ch, side))
-    return out
+def picked_channel(context):
+    """Scale mode: the channel picked on the scale gizmo (0 / 1 / 2), else None."""
+    if state.edit_mode(context.scene) != core.SCALE:
+        return None
+    return {'X': 0, 'Y': 1, 'Z': 2}.get(state.settings(context.scene).scale_channel)
 
 
 class EMP_OT_handle_type(bpy.types.Operator):
-    """Set the handle type of the selected path keys"""
+    """Set the handle type of the selected path keys (V). In Scale mode: on the channel picked """ \
+        """on the scale gizmo"""
     bl_idname = "emp.handle_type"
     bl_label = "Set Path Handle Type"
     bl_options = {'REGISTER', 'UNDO'}
@@ -194,18 +197,20 @@ class EMP_OT_handle_type(bpy.types.Operator):
 
     def execute(self, context):
         touched = set()
-        picked = picked_handles(context)
-        if picked:
-            # Scale mode: only the handles picked on their whiskers (one channel, one side)
-            for cache, k, c, side in picked:
-                fc = cache.target().channels(cache.ptype).fcurves[c]
-                kp = fc.keyframe_points[k.idx[c]]
-                if side == 'L':
-                    kp.handle_left_type = self.type
-                else:
-                    kp.handle_right_type = self.type
-                touched.add(fc)
+        only = picked_channel(context)
+        if only is not None:
+            # Scale mode, a channel picked on the gizmo: its keys only (like a curve in the
+            # Graph Editor)
+            for cache in state.editable_caches(context.scene):
+                fc = cache.target().channels(cache.ptype).fcurves[only]
+                for k in _sel_keys(cache):
+                    if fc is not None and only < len(k.idx) and k.idx[only] >= 0:
+                        kp = fc.keyframe_points[k.idx[only]]
+                        kp.handle_left_type = kp.handle_right_type = self.type
+                        touched.add(fc)
                 cache.dirty = True
+            if not touched:
+                return {'CANCELLED'}
             core.update_fcurves(touched)
             pick.tag_anim_editors()
             return {'FINISHED'}
@@ -226,7 +231,8 @@ class EMP_OT_handle_type(bpy.types.Operator):
 
 
 class EMP_OT_interpolation(bpy.types.Operator):
-    """Set the interpolation of the selected path keys"""
+    """Set the interpolation of the selected path keys: the segment after each key (T). In """ \
+        """Scale mode: on the channel picked on the scale gizmo"""
     bl_idname = "emp.interpolation"
     bl_label = "Set Path Interpolation"
     bl_options = {'REGISTER', 'UNDO'}
@@ -239,26 +245,13 @@ class EMP_OT_interpolation(bpy.types.Operator):
 
     def execute(self, context):
         touched = set()
-        picked = picked_handles(context)
-        if picked:
-            # Scale mode, picked handles: the segment that handle shapes (before the key for the
-            # left one, after it for the right one), on that channel only
-            for cache, k, c, side in picked:
-                fc = cache.target().channels(cache.ptype).fcurves[c]
-                i = k.idx[c] - (1 if side == 'L' else 0)
-                if 0 <= i < len(fc.keyframe_points):
-                    fc.keyframe_points[i].interpolation = self.type
-                    touched.add(fc)
-                cache.dirty = True
-            core.update_fcurves(touched)
-            pick.tag_anim_editors()
-            return {'FINISHED'}
+        only = picked_channel(context)     # Scale mode: the channel picked on the gizmo
         for cache in state.editable_caches(context.scene):
             tg = cache.target()
             ch = tg.channels(cache.ptype)
             for k in _sel_keys(cache):
                 for c, fc in enumerate(ch.fcurves):
-                    if fc is not None and k.idx[c] >= 0:
+                    if fc is not None and k.idx[c] >= 0 and (only is None or c == only):
                         fc.keyframe_points[k.idx[c]].interpolation = self.type
                         touched.add(fc)
             cache.dirty = True
@@ -1040,9 +1033,10 @@ class EMP_OT_ease(_AdjustOp, bpy.types.Operator):
 
 
 class EMP_OT_scale_handles(_AdjustOp, bpy.types.Operator):
-    """Make the handles (whiskers) of the selected scale keys longer or shorter: the channel """ \
-        """picked on the scale gizmo (all channels if none). Drag right for longer handles. """ \
-        """I / O / B while dragging: the handle before the key, after it, or both"""
+    """Make the picked scale handles (whiskers) longer or shorter; with none picked, the """ \
+        """handles of the selected keys on the channel picked on the scale gizmo (all channels if """ \
+        """none). Drag right for longer handles. I / O / B while dragging: the handle before the """ \
+        """key, after it, or both"""
     bl_idname = "emp.scale_handles"
     bl_label = "Scale Handles"
     bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
@@ -1088,16 +1082,21 @@ class EMP_OT_scale_handles(_AdjustOp, bpy.types.Operator):
     def _originals(self, job, tg):
         if getattr(job, "handle_orig", None) is not None:
             return job.handle_orig
-        use = self._channels(bpy.context)
+        picked = {(round(t, 3), c, s) for ck, t, c, s in state.whisker_sel(bpy.context.scene)
+                  if ck == job.cache.key}
+        use = {c for _t, c, _s in picked} if picked else self._channels(bpy.context)
         ch = tg.channels(job.cache.ptype)
         orig = []
         for k, m in zip(job.keys, job.mask):
-            if not m:
+            if not m and not picked:
                 continue
             for c, fc in enumerate(ch.fcurves):
                 i = k.idx[c] if c < len(k.idx) else -1
                 if fc is None or i < 0 or c not in use:
                     continue
+                sides = {s for t, cc, s in picked if cc == c and abs(t - k.t) < 1e-3}
+                if picked and not sides:
+                    continue        # picked handles: only those
                 kps = fc.keyframe_points
                 kp = kps[i]
                 orig.append(dict(
@@ -1105,7 +1104,8 @@ class EMP_OT_scale_handles(_AdjustOp, bpy.types.Operator):
                     hl=tuple(kp.handle_left), hr=tuple(kp.handle_right),
                     tl=kp.handle_left_type, tr=kp.handle_right_type,
                     gap_l=kp.co[0] - kps[i - 1].co[0] if i > 0 else None,
-                    gap_r=kps[i + 1].co[0] - kp.co[0] if i + 1 < len(kps) else None))
+                    gap_r=kps[i + 1].co[0] - kp.co[0] if i + 1 < len(kps) else None,
+                    sides=sides or {'L', 'R'}))
         job.handle_orig = orig
         return orig
 
@@ -1119,9 +1119,9 @@ class EMP_OT_scale_handles(_AdjustOp, bpy.types.Operator):
     def _apply_job(self, job, tg, touched):
         coll = tg.coll
         s = max(0.0, 1.0 + self.factor)
-        do_l = self.side in {'BOTH', 'IN'}
-        do_r = self.side in {'BOTH', 'OUT'}
         for o in self._originals(job, tg):
+            do_l = self.side in {'BOTH', 'IN'} and 'L' in o['sides']
+            do_r = self.side in {'BOTH', 'OUT'} and 'R' in o['sides']
             fc = coll.find(o['path'], index=o['index'])
             if fc is None:
                 continue
