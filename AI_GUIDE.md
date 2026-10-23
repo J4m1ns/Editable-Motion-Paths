@@ -80,7 +80,7 @@ emp.move_key("Zombie_Rig", "CTRL_Foot_L", frame=25, target=(0.1, -0.2, 0.3))
 emp.insert_key("Zombie_Rig", "CTRL_Foot_L", frame=30)       # keeps the motion
 emp.smooth("Zombie_Rig", "CTRL_Foot_L", frames=[19, 25, 27], factor=1.0)  # shape; <0 sharpens
 emp.ease("Zombie_Rig", "CTRL_Foot_L", frames=[25], factor=0.8)            # slow in/out at a key
-emp.ease("Zombie_Rig", "CTRL_Foot_L", frames=[25], factor=0.8, side='IN') # start slowly after the key
+emp.ease("Zombie_Rig", "CTRL_Foot_L", frames=[25], factor=0.8, side='IN') # slow in only (arrive gently)
 emp.exaggerate("Zombie_Rig", "CTRL_Foot_L", factor=0.3)     # <0 tones down, -1 flattens
 emp.slide("Zombie_Rig", "CTRL_Foot_L", frames=[33], offset=3)              # retime, keep pose (TIMING)
 emp.slide("Zombie_Rig", "CTRL_Foot_L", frames=[33], offset=3, slide_mode='SPACING')

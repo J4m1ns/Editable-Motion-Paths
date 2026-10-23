@@ -112,7 +112,7 @@ The tool uses the settings you know from modeling, in the header and with the us
 |---|---|
 | **Alt+S** | smooth (T: Shape / Time; in Scale mode: the handles of the picked channel) |
 | **Alt+E** | exaggerate |
-| **Shift+E** | ease (I / O / B while dragging: in = start slowly after the key, out = slow down into it, both) |
+| **Shift+E** | ease (I / O / B while dragging: slow in, slow out, both) |
 | **Shift+T** | timing menu (see Timing and speed) |
 | Drag a **frame dot** | move that frame along the path: the frames around it follow, the keys and the shape stay (click a dot: go to that frame) |
 | **U** | display settings under the mouse |
@@ -170,8 +170,8 @@ That is Blender's own behaviour; set the smoothing to *None* if you want edits t
   blend in. Keys are added only where the old ones can't follow; the report shows how close
   the result is.
 * **Ease (Shift+E)**: slow in / slow out at the selected keys, by changing the handle slope and
-  its length in time. As in Blender's easing, *In* is the start of a segment (the bone leaves
-  the key slowly) and *Out* its end (it slows down into the key).
+  its length in time. *In* slows the bone down into the key, *Out* lets it leave the key
+  slowly.
 
 ## Shape tools
 

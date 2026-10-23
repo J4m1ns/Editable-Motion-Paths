@@ -304,8 +304,8 @@ def smooth(obj, bone=None, frames=None, factor=1.0, method='SHAPE', mode=None):
 
 def ease(obj, bone=None, frames=None, factor=0.7, side='BOTH', mode=None):
     """Slow in / slow out at keys: factor 1 = the motion comes to rest at the key (frames
-    bunch up there), negative = more constant speed through the key. side: BOTH, IN (start
-    slowly after the key), OUT (slow down into the key)."""
+    bunch up there), negative = more constant speed through the key. side: BOTH, IN (arrive
+    gently: the part before the key), OUT (leave gently: the part after it)."""
     return _run_op(bpy.ops.emp.ease, frames, obj, bone, mode, factor=factor, side=side)
 
 

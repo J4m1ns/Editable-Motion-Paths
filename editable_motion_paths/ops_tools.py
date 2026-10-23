@@ -949,10 +949,8 @@ class EMP_OT_ease(_AdjustOp, bpy.types.Operator):
                                       "-1: constant speed through the key")
     side: EnumProperty(name="Side", items=[
         ('BOTH', "In & Out", "Slow in and slow out"),
-        # like Blender's easing: "in" is the start of a segment (leaving the key slowly),
-        # "out" its end (arriving at the key slowly)
-        ('IN', "In", "Ease in: start slowly after the key (the beginning of the segment after it)"),
-        ('OUT', "Out", "Ease out: slow down into the key (the end of the segment before it)"),
+        ('IN', "In", "Slow in: arrive gently (the part before the key)"),
+        ('OUT', "Out", "Slow out: leave gently (the part after the key)"),
     ], default='BOTH')
 
     def _label(self):
@@ -1020,8 +1018,8 @@ class EMP_OT_ease(_AdjustOp, bpy.types.Operator):
             if fc is None:
                 continue
             kp = fc.keyframe_points[o['i']]
-            do_l = self.side in {'BOTH', 'OUT'}
-            do_r = self.side in {'BOTH', 'IN'}
+            do_l = self.side in {'BOTH', 'IN'}
+            do_r = self.side in {'BOTH', 'OUT'}
             hl = self._eased(e, o['x'], o['y'], o['hl'], o['prev'], 'L') if do_l else o['hl']
             hr = self._eased(e, o['x'], o['y'], o['hr'], o['next'], 'R') if do_r else o['hr']
             collinear = o['tl'] in {'AUTO', 'AUTO_CLAMPED', 'ALIGNED'} and \
