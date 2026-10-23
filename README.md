@@ -30,7 +30,7 @@ to Blender's normal bone / object behaviour.
 | Mode | What is drawn | What editing changes |
 |---|---|---|
 | **1 Location** | Trajectory of the bone head / object origin | Location keys |
-| **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. A selected key shows the bone's **X and Z rings**: click one to turn only around that axis, Shift+Click the other to use both; drag a ring to turn along it (it follows the mouse steadily even when the ring is seen edge-on). With both rings on, dragging the key itself turns the tip like a **trackball**. The faint circle shows how far the tip can reach; drag it to turn around the view axis (like R). **Ctrl+T** twists the bone around its own axis |
+| **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. A selected key shows the bone's **X and Z rings**: click one to turn only around that axis, Shift+Click the other to use both; drag a ring to turn along it (it follows the mouse steadily even when the ring is seen edge-on). The green **Y ring** around the bone twists it around its own axis (like Ctrl+T). With both rings on, dragging the key itself turns the tip like a **trackball**. The faint circle shows how far the tip can reach; drag it to turn around the view axis (like R). **Ctrl+T** twists the bone around its own axis |
 | **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale; their color shows the Y scale (blue below 1, red above). A box at the current frame shows the current scale | Scale keys: a selected key shows a **scale gizmo** whose X and Z handles sit on the ribbon edges (drag an edge to make that ribbon wider; Y along the bone; the white one scales all). **Click** a gizmo handle to show that channel's handles as **whiskers** along the ribbon (time along the path, value across it) and drag them. Clicking a whisker picks that handle (Shift: add another): **V** and **T** then work on the picked handles only (interpolation: the segment that handle shapes); with none picked, on the whole key. **S** scales all axes (X / Y / Z: one), **Alt+S** makes the handles of the picked channel longer or shorter (I / O / B: before the key, after it, both) |
 | **4 Value** | A **track** for one animated value (IK/FK switch, custom property, constraint influence…), *above the path* or *beside the path* (follows its shape, so it works however the path turns) | That value: move its keys away from / toward the path. Pick the value in the sidebar or tool header |
 
@@ -196,7 +196,8 @@ quaternions, the components of a value) choose which channels it works on, and i
 the same on all of them. Its header works like a modeling modifier's: collapse arrow, monitor
 (show it in the viewport), a drop-down with Apply (bake into keys and clean up), Copy, Paste and
 Move Up / Down / to First / to Last, and X to remove. The Modifier Tools menu next to Add
-Modifier applies, removes, hides or expands them all. Alt+C's Cycles shows up here too.
+Modifier applies, removes, hides or expands them all. Alt+C's Cycles shows up here too. The
+path follows every change of a modifier's settings right away.
 
 ## Clean Up and loops
 

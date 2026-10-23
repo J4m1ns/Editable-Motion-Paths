@@ -744,6 +744,7 @@ class EMP_OT_transform(bpy.types.Operator):
         self.numinput = NumInput()
         self.value = (1.0, 1.0, 1.0) if self.mode == 'SCALE' else (0.0, 0.0, 0.0)
         self.angle = 0.0
+        self._ring_state = {}
         self._reset_mode_state(context)
         for cache, _es in self.groups:
             state.ghosts[cache.key] = list(cache.points)
@@ -957,6 +958,15 @@ class EMP_OT_transform(bpy.types.Operator):
             self.value = (a, b, 0.0)
             return
 
+        if self.mode == 'ROTATE' and self.twist and self.ring_axis == 1 and not num.active:
+            # dragging the green ring: twist by the angle swept around it
+            ang = self._twist_ring_angle(region, rv3d, mouse)
+            if ang is not None:
+                if snap_rot:
+                    inc = _angle_increment(ts, fine)
+                    ang = round(ang / inc) * inc
+                self.angle = ang
+            return
         if self.mode == 'ROTATE':
             if cons is None:
                 axis_w = toward
@@ -1004,22 +1014,23 @@ class EMP_OT_transform(bpy.types.Operator):
             return 0 if 'X' in axes else 2
         return None
 
-    def _ring_point(self, region, rv3d, e, axis, co2d, mouse):
-        """Tip of a rotation key turned along one ring (axis 0 / 2 of the bone) or around the
-        view axis (3), like Blender's rotate gizmo: the tip turns by the angle the mouse sweeps
-        around the ring's center, measured from where the ring was grabbed, and followed
-        continuously (no flips). A ring seen nearly edge-on turns with the mouse along its
-        direction on the screen; near the center the angle holds still."""
-        c = e.center
+    def _ring_angle(self, region, rv3d, skey, c, n, ref, mouse, view_axis=False):
+        """Angle (radians, right-handed around n) the mouse has turned a ring around center c
+        since the drag started, like Blender's rotate gizmo: the angle the mouse sweeps around
+        the center, measured from where the ring was grabbed and followed continuously (no
+        flips). A ring seen nearly edge-on turns with the mouse along its direction on the
+        screen; near the center the angle holds still. `ref` is a point on the ring (angle 0);
+        view_axis: n is the view direction (the reach circle). Returns (state, angle) or None."""
         proj = view3d_utils.location_3d_to_region_2d
-        st = self._ring_state.get((e.cache.key, round(e.k.t, 3)))
+        st = self._ring_state.get(skey)
         if st is None:
             c2 = proj(region, rv3d, c)
             if c2 is None:
                 return None
             vd = _ray(region, rv3d, c2)[1].normalized()     # the view ray through the center
-            n = -vd if axis == 3 else e.basis.col[axis].normalized()
-            u = (e.co - c) - n * (e.co - c).dot(n)
+            if view_axis:
+                n = -vd
+            u = (ref - c) - n * (ref - c).dot(n)
             r = u.length
             if r < 1e-9:
                 return None
@@ -1030,8 +1041,8 @@ class EMP_OT_transform(bpy.types.Operator):
             pw = proj(region, rv3d, c + w * r)
             major = max((pw - c2).length if pw is not None else 0.0, 20.0)   # screen radius
             st = dict(n=n, u=u, v=v, r=r, c2=c2, theta=0.0, major=major,
-                      edge=axis != 3 and abs(n.dot(vd)) < 0.4)
-            if axis == 3:
+                      edge=not view_axis and abs(n.dot(vd)) < 0.4)
+            if view_axis:
                 rel = self.mouse_start - c2
                 st['a0'] = math.atan2(rel.y, rel.x) if rel.length > 1e-6 else 0.0
             elif not st['edge']:
@@ -1054,9 +1065,9 @@ class EMP_OT_transform(bpy.types.Operator):
                 if tang.length < 0.25 * major:
                     tang = (pw - c2) if pw is not None else Vector((1.0, 0.0))
                 st['tdir'] = tang.normalized() if tang.length > 1e-9 else Vector((1.0, 0.0))
-            self._ring_state[(e.cache.key, round(e.k.t, 3))] = st
+            self._ring_state[skey] = st
         hold = None     # the mouse is too close to the center to tell the angle
-        if axis == 3:
+        if view_axis:
             rel = mouse - st['c2']
             if rel.length < 0.15 * st['major']:
                 hold = True
@@ -1074,11 +1085,36 @@ class EMP_OT_transform(bpy.types.Operator):
         if not hold:
             # continue from the last angle: no jump of a full turn (or a flip) between updates
             st['theta'] += (raw - st['theta'] + math.pi) % (2.0 * math.pi) - math.pi
-        theta = st['theta']
+        return st, st['theta']
+
+    def _ring_point(self, region, rv3d, e, axis, co2d, mouse):
+        """Tip of a rotation key turned along one ring (axis 0 / 2 of the bone) or around the
+        view axis (3, the reach circle); see _ring_angle."""
+        c = e.center
+        n = e.basis.col[axis].normalized() if axis != 3 else None
+        res = self._ring_angle(region, rv3d, (e.cache.key, round(e.k.t, 3)), c, n, e.co, mouse,
+                               view_axis=axis == 3)
+        if res is None:
+            return None
+        st, theta = res
         if axis == 3:
             return c + Quaternion(st['n'], theta) @ (e.co - c)
         return c + (st['u'] * math.cos(theta) + st['v'] * math.sin(theta)) * st['r'] + \
             st['n'] * (e.co - c).dot(st['n'])
+
+    def _twist_ring_angle(self, region, rv3d, mouse):
+        """The green (Y) ring: twist angle of the bone around its own axis."""
+        for _c, es in self.groups:
+            for e in es:
+                if e.part != 'KEY' or e.center is None or e.src is not None:
+                    continue
+                n = e.basis.col[1].normalized()
+                r = (e.co - e.center).length
+                ref = e.center + e.basis.col[2].normalized() * r
+                res = self._ring_angle(region, rv3d, ('twist', e.cache.key, round(e.k.t, 3)), e.center, n, ref,
+                                       mouse)
+                return None if res is None else res[1]
+        return None
 
     def _trackball_point(self, region, rv3d, e, mouse):
         """Dragging the key of a rotation path: the tip turns like a trackball around the

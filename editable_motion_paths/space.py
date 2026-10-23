@@ -74,19 +74,20 @@ def element_basis(cache, tg, k):
     return _normalized(M.to_3x3() @ q.to_matrix())
 
 
-RING_AXES = {'RX': 0, 'RZ': 2, 'RV': 3}    # RV: the reach circle, turning around the view axis
+RING_AXES = {'RX': 0, 'RY': 1, 'RZ': 2, 'RV': 3}   # RY: twist; RV: the reach circle (view axis)
 
 
 def rot_rings(cache, tg, k, segments=48):
-    """Rotation paths: {'RX': points, 'RZ': points} circles around the bone head through the
-    key's tip, perpendicular to the bone's X and Z axes (the ways the tip turns), and the
-    head and radius."""
+    """Rotation paths: {'RX', 'RY', 'RZ': points} circles around the bone head, perpendicular
+    to the bone's X, Y and Z axes: X and Z pass through the key's tip (the ways the tip turns),
+    Y is the equator around the bone (twisting it). Also the head and the radius."""
     import math
     center = cache.rot_frame(tg, k.t)[0].translation.copy()
     b = element_basis(cache, tg, k)
     r = (k.co - center).length
     out = {}
-    for part, (u, v) in (('RX', (b.col[1], b.col[2])), ('RZ', (b.col[1], b.col[0]))):
+    for part, (u, v) in (('RX', (b.col[1], b.col[2])), ('RY', (b.col[2], b.col[0])),
+                         ('RZ', (b.col[1], b.col[0]))):
         out[part] = [center + (u * math.cos(a * 2 * math.pi / segments) +
                                v * math.sin(a * 2 * math.pi / segments)) * r for a in range(segments + 1)]
     return out, center, r

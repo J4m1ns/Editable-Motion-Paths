@@ -326,6 +326,23 @@ def _sync_cycle_partner(fc, idx, d):
     kp.handle_right = (hr[0], hr[1] + d)
 
 
+def _fmod_signature(m):
+    """Every setting of an F-Curve modifier (editing one changes the curve's shape)."""
+    out = [m.type]
+    for p in m.bl_rna.properties:
+        if p.identifier in {'rna_type', 'show_expanded', 'active', 'name'}:
+            continue
+        try:
+            v = getattr(m, p.identifier)
+        except AttributeError:
+            continue
+        if p.type in {'BOOLEAN', 'INT', 'FLOAT', 'ENUM', 'STRING'}:
+            out.append(tuple(v) if getattr(p, "is_array", False) or isinstance(v, set) else v)
+    for cp in getattr(m, "control_points", ()):
+        out.append((cp.frame, cp.min, cp.max))
+    return tuple(out)
+
+
 def _fc_signature(fc):
     if fc is None:
         return None
@@ -343,8 +360,8 @@ def _fc_signature(fc):
     kps.foreach_get("select_control_point", s0)
     kps.foreach_get("select_left_handle", s1)
     kps.foreach_get("select_right_handle", s2)
-    return (fc.mute, n, len(fc.modifiers), co.tobytes(), hl.tobytes(), hr.tobytes(),
-            tuple(s0), tuple(s1), tuple(s2))
+    return (fc.mute, n, tuple(_fmod_signature(m) for m in fc.modifiers), co.tobytes(), hl.tobytes(),
+            hr.tobytes(), tuple(s0), tuple(s1), tuple(s2))
 
 
 # ----------------------------------------------------------------------------

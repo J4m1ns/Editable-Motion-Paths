@@ -235,7 +235,12 @@ class EMP_OT_click(bpy.types.Operator):
         if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             m = Vector((event.mouse_region_x, event.mouse_region_y))
             if (m - self.press).length >= max(self.threshold, 3):
-                if getattr(self, "ring", None):
+                if getattr(self, "ring", None) == 'RY':
+                    # the green ring: twist the bone around its own axis
+                    bpy.ops.emp.transform('INVOKE_DEFAULT', mode='ROTATE', twist=True, release_confirm=True,
+                                          start_x=int(self.press.x), start_y=int(self.press.y),
+                                          ring_axis=1)
+                elif getattr(self, "ring", None):
                     bpy.ops.emp.transform('INVOKE_DEFAULT', mode='TRANSLATE', release_confirm=True,
                                           start_x=int(self.press.x), start_y=int(self.press.y),
                                           ring_axis=space.RING_AXES[self.ring])
@@ -260,8 +265,8 @@ class EMP_OT_click(bpy.types.Operator):
             state.tag_redraw()
             return {'FINISHED'}
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and getattr(self, "ring", None):
-            if self.ring == 'RV':
-                return {'FINISHED'}     # the reach circle is only dragged
+            if self.ring in {'RV', 'RY'}:
+                return {'FINISHED'}     # the reach circle and the twist ring are only dragged
             st = state.settings(context.scene)
             axis = 'X' if self.ring == 'RX' else 'Z'
             axes = set(st.rot_axes)

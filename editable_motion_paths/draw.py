@@ -433,14 +433,14 @@ def _draw_value_base(cache, lo, hi, us):
     _lines(stems, [(0.7, 0.7, 0.7, 0.45)] * len(stems), 1.0 * us)
 
 
-RING_COLORS = {'RX': (1.0, 0.3, 0.35), 'RZ': (0.3, 0.55, 1.0)}
+RING_COLORS = {'RX': (1.0, 0.3, 0.35), 'RY': (0.45, 0.9, 0.3), 'RZ': (0.3, 0.55, 1.0)}
 
 
 def _draw_rot_rings(st, cache, tg, keys, rv3d, us):
     from . import space
     if not (st.show_rot_rings or st.show_reach):
         return
-    on = {'RX': 'X' in st.rot_axes, 'RZ': 'Z' in st.rot_axes}
+    on = {'RX': 'X' in st.rot_axes, 'RY': True, 'RZ': 'Z' in st.rot_axes}
     for k in keys:
         if not k.sel:
             continue
@@ -908,7 +908,7 @@ def _draw_mode_indicator(ctx, st, us):
                 any(k.sel for k in cache.keys):
             axes = " + ".join(sorted(st.rot_axes))
             hint = "Turning around %s   (click a ring: that axis, Shift+Click: both;  drag the " \
-                   "key: trackball, the faint circle: around the view)" % axes
+                   "key: trackball, the green ring: twist, the faint circle: around the view)" % axes
     widths = [blf.dimensions(font, t)[0] for t, _a in parts]
     x = (region.width - sum(widths)) * 0.5
     y = 24 * us

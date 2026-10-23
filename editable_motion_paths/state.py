@@ -389,6 +389,7 @@ def _on_depsgraph(scene, depsgraph):
                 ops_fmods.sync_active(bpy.context)     # modifier stack entries stay alike
             except Exception:
                 pass
+            tag_redraw()        # the path follows right away (e.g. a modifier's settings)
             schedule_rebake()
             return
 

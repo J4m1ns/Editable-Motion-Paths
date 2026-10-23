@@ -129,8 +129,9 @@ class EMP_Settings(bpy.types.PropertyGroup):
                ('Z', "Z", "Turn around the bone's Z axis (the blue ring)")],
         options={'ENUM_FLAG'}, default={'X', 'Z'}, update=_redraw)
     show_rot_rings: BoolProperty(name="Axis Rings", default=True,
-                                 description="Rotation paths: the bone's X and Z rings at selected "
-                                             "keys (click to pick the axis)", update=_redraw)
+                                 description="Rotation paths: the bone's X, Y and Z rings at selected "
+                                             "keys (click X / Z to pick the axis, drag Y to twist)",
+                                 update=_redraw)
     show_reach: BoolProperty(name="Reach", default=True,
                              description="Rotation paths: a circle showing how far the tip can go "
                                          "(it stays on a sphere around the bone head)", update=_redraw)
