@@ -11,8 +11,9 @@ from .ops_tools import _AdjustOp
 
 PROFILES = [
     ('EVEN', "Even", "Constant speed: the frame dots are evenly spaced (E)"),
-    ('SLOW_OUT', "Slow Out", "Leave slowly and speed up: accelerate (O)"),
-    ('SLOW_IN', "Slow In", "Arrive slowly: decelerate (I)"),
+    # like Blender's easing: "in" is the start of the segment, "out" its end
+    ('SLOW_OUT', "Slow Out", "Slow down at the end of the segment: decelerate (O)"),
+    ('SLOW_IN', "Slow In", "Start slowly at the beginning of the segment: accelerate (I)"),
     ('SLOW_IN_OUT', "Slow In & Out", "Start and end slowly, fastest in the middle (B)"),
 ]
 
@@ -20,9 +21,9 @@ PROFILES = [
 def profile(kind, u, power):
     """Share of the distance covered after the share u of the time."""
     u = min(1.0, max(0.0, u))
-    if kind == 'SLOW_OUT':
-        return u ** power
     if kind == 'SLOW_IN':
+        return u ** power
+    if kind == 'SLOW_OUT':
         return 1.0 - (1.0 - u) ** power
     if kind == 'SLOW_IN_OUT':
         a, b = u ** power, (1.0 - u) ** power

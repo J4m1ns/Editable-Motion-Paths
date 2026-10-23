@@ -304,7 +304,8 @@ def smooth(obj, bone=None, frames=None, factor=1.0, method='SHAPE', mode=None):
 
 def ease(obj, bone=None, frames=None, factor=0.7, side='BOTH', mode=None):
     """Slow in / slow out at keys: factor 1 = the motion comes to rest at the key (frames
-    bunch up there), negative = more constant speed through the key. side: BOTH, IN, OUT."""
+    bunch up there), negative = more constant speed through the key. side: BOTH, IN (start
+    slowly after the key), OUT (slow down into the key)."""
     return _run_op(bpy.ops.emp.ease, frames, obj, bone, mode, factor=factor, side=side)
 
 
@@ -343,8 +344,8 @@ def set_handle_type(obj, bone=None, frames=None, handle_type='AUTO_CLAMPED', mod
 
 def space(obj, bone=None, frames=None, profile='EVEN', factor=1.0, strength=2.0, mode=None):
     """Re-space the motion between the first and last of `frames` (None: whole path) while
-    the path keeps its shape. profile: 'EVEN' (constant speed), 'SLOW_IN', 'SLOW_OUT',
-    'SLOW_IN_OUT'."""
+    the path keeps its shape. profile: 'EVEN' (constant speed), 'SLOW_IN' (start slowly),
+    'SLOW_OUT' (end slowly), 'SLOW_IN_OUT'."""
     return _run_op(bpy.ops.emp.space, frames if frames is not None else [], obj, bone, mode,
                    profile=profile, factor=factor, power=strength)
 

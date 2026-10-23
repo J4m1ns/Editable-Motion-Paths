@@ -283,7 +283,7 @@ class EMP_MT_space(bpy.types.Menu):
         layout = self.layout
         layout.operator_context = 'INVOKE_REGION_WIN'
         for ident, name, _d in (('EVEN', "Even (constant speed)", ""), ('SLOW_IN_OUT', "Slow In & Out", ""),
-                                ('SLOW_IN', "Slow In (decelerate)", ""), ('SLOW_OUT', "Slow Out (accelerate)", "")):
+                                ('SLOW_IN', "Slow In (start slowly)", ""), ('SLOW_OUT', "Slow Out (end slowly)", "")):
             layout.operator("emp.space", text=name).profile = ident
 
 
