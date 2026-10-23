@@ -25,8 +25,6 @@ def register():
         bpy.utils.register_class(c)
     ops_keys.register_macros()
     ui.register()
-    for c in ops_fmods.ui_classes:
-        bpy.utils.register_class(c)
     draw.register()
     state.register()
 
@@ -34,8 +32,6 @@ def register():
 def unregister():
     state.unregister()
     draw.unregister()
-    for c in reversed(ops_fmods.ui_classes):
-        bpy.utils.unregister_class(c)
     ui.unregister()
     for c in reversed(_classes):
         bpy.utils.unregister_class(c)

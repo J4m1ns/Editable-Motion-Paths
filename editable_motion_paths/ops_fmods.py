@@ -258,13 +258,33 @@ class EMP_OT_fmod_axis(_StackOp, bpy.types.Operator):
         return {'FINISHED'}
 
 
+class EMP_OT_fmod_mute(_StackOp, bpy.types.Operator):
+    """Show the modifier's effect in the viewport, or turn it off (on all its channels)"""
+    bl_idname = "emp.fmod_mute"
+    bl_label = "Toggle Modifier"
+
+    name: StringProperty()
+
+    def execute(self, context):
+        cache = active_cache(context)
+        mods = [m for _l, fc in channels(cache) if fc is not None for m in fc.modifiers if m.name == self.name]
+        if not mods:
+            return {'CANCELLED'}
+        on = not mods[0].mute
+        for m in mods:
+            m.mute = on
+        _done(cache)
+        return {'FINISHED'}
+
+
 class EMP_OT_fmod_move(_StackOp, bpy.types.Operator):
     """Move the modifier up or down the stack (it changes the result, like in modeling)"""
     bl_idname = "emp.fmod_move"
     bl_label = "Move Modifier"
 
     name: StringProperty()
-    direction: EnumProperty(items=[('UP', "Up", ""), ('DOWN', "Down", "")])
+    direction: EnumProperty(items=[('UP', "Up", ""), ('DOWN', "Down", ""), ('FIRST', "First", ""),
+                                   ('LAST', "Last", "")])
 
     def execute(self, context):
         cache = active_cache(context)
@@ -272,10 +292,17 @@ class EMP_OT_fmod_move(_StackOp, bpy.types.Operator):
         if self.name not in names:
             return {'CANCELLED'}
         i = names.index(self.name)
-        j = i - 1 if self.direction == 'UP' else i + 1
-        if not 0 <= j < len(names):
-            return {'CANCELLED'}
-        names[i], names[j] = names[j], names[i]
+        if self.direction in {'FIRST', 'LAST'}:
+            names.remove(self.name)
+            j = 0 if self.direction == 'FIRST' else len(names)
+            if j == i:
+                return {'CANCELLED'}
+            names.insert(j, self.name)
+        else:
+            j = i - 1 if self.direction == 'UP' else i + 1
+            if not 0 <= j < len(names):
+                return {'CANCELLED'}
+            names[i], names[j] = names[j], names[i]
         for _l, fc in channels(cache):
             if fc is not None and len(fc.modifiers) > 1:
                 _rebuild_order(fc, names)
@@ -391,8 +418,8 @@ class EMP_OT_fmod_tools(_StackOp, bpy.types.Operator):
 
     action: EnumProperty(items=[
         ('REMOVE', "Remove All", "Remove every modifier", 'X', 0),
-        ('MUTE', "Toggle Visibility", "Turn all modifiers off, or all on again", 'HIDE_OFF', 1),
-        ('EXPAND', "Expand / Collapse", "Show or hide the settings of all modifiers", 'DISCLOSURE_TRI_DOWN', 2),
+        ('MUTE', "Toggle Visibility", "Turn all modifiers off, or all on again", 'RESTRICT_VIEW_OFF', 1),
+        ('EXPAND', "Expand / Collapse", "Show or hide the settings of all modifiers", 'DOWNARROW_HLT', 2),
     ])
 
     def execute(self, context):
@@ -444,6 +471,27 @@ class EMP_MT_fmod_tools(bpy.types.Menu):
         layout.operator("emp.fmod_paste", text="Paste", icon='PASTEDOWN')
 
 
+class EMP_MT_fmod_entry(bpy.types.Menu):
+    """The drop-down of one modifier (like the one in the modeling modifier panel)"""
+    bl_label = "Modifier"
+    bl_idname = "EMP_MT_fmod_entry"
+
+    def draw(self, context):
+        layout = self.layout
+        m = getattr(context, "emp_fmod", None)
+        if m is None:
+            return
+        name = m.name
+        layout.operator("emp.fmod_apply", text="Apply", icon='CHECKMARK').name = name
+        layout.operator("emp.fmod_copy", text="Copy", icon='COPYDOWN').name = name
+        layout.operator("emp.fmod_paste", text="Paste", icon='PASTEDOWN')
+        layout.separator()
+        for d, text, icon in (('UP', "Move Up", 'TRIA_UP'), ('DOWN', "Move Down", 'TRIA_DOWN'),
+                              ('FIRST', "Move to First", 'TRIA_UP_BAR'), ('LAST', "Move to Last", 'TRIA_DOWN_BAR')):
+            op = layout.operator("emp.fmod_move", text=text, icon=icon)
+            op.name, op.direction = name, d
+
+
 def draw_stack(layout, context):
     cache = active_cache(context)
     if cache is None:
@@ -460,24 +508,24 @@ def draw_stack(layout, context):
     for idx, (name, typ, mods) in enumerate(st):
         master = next(m for m in mods if m is not None)
         box = layout.box()
-        row = box.row(align=True)
-        row.prop(master, "show_expanded", text="", emboss=False,
-                 icon='DISCLOSURE_TRI_DOWN' if master.show_expanded else 'DISCLOSURE_TRI_RIGHT')
+        split = box.row().split(factor=0.4, align=True)
+        row = split.row(align=True)
+        # laid out like the modeling modifier header: collapse, name, channels, show in the
+        # viewport, drop-down (apply, copy, move), remove. (Blender shows the next icon,
+        # DOWNARROW_HLT, while it is expanded)
+        row.prop(master, "show_expanded", text="", emboss=False, icon='RIGHTARROW')
         row.label(text=name, icon=ICONS.get(typ, 'MODIFIER'))
+        row = split.row(align=True)
         sub = row.row(align=True)
         for i, (label, fc) in enumerate(chans):
             op = sub.operator("emp.fmod_axis", text=label, depress=mods[i] is not None)
             op.name, op.index = name, i
-            sub.enabled = True
-        row.prop(master, "mute", text="", icon='HIDE_ON' if master.mute else 'HIDE_OFF', emboss=False)
-        sub = row.row(align=True)
-        op = sub.operator("emp.fmod_move", text="", icon='TRIA_UP')
-        op.name, op.direction = name, 'UP'
-        op = sub.operator("emp.fmod_move", text="", icon='TRIA_DOWN')
-        op.name, op.direction = name, 'DOWN'
-        row.operator("emp.fmod_apply", text="", icon='CHECKMARK').name = name
-        row.operator("emp.fmod_copy", text="", icon='COPYDOWN').name = name
-        row.operator("emp.fmod_remove", text="", icon='X').name = name
+        row.separator()
+        row.operator("emp.fmod_mute", text="", emboss=False,
+                     icon='RESTRICT_VIEW_ON' if master.mute else 'RESTRICT_VIEW_OFF').name = name
+        row.context_pointer_set("emp_fmod", master)
+        row.menu("EMP_MT_fmod_entry", text="", icon='DOWNARROW_HLT')
+        row.operator("emp.fmod_remove", text="", icon='X', emboss=False).name = name
         if master.show_expanded:
             col = box.column()
             col.use_property_split = True
@@ -518,10 +566,11 @@ class EMP_PT_modifiers_popover(bpy.types.Panel):
         draw_stack(self.layout, context)
 
 
-classes = (EMP_OT_fmod_add, EMP_OT_fmod_remove, EMP_OT_fmod_axis, EMP_OT_fmod_move, EMP_OT_fmod_apply,
-           EMP_OT_fmod_copy, EMP_OT_fmod_paste, EMP_OT_fmod_tools, EMP_MT_fmod_add, EMP_MT_fmod_tools)
-# panels: registered after the main panel (ui.register)
-ui_classes = (EMP_PT_modifiers, EMP_PT_modifiers_popover)
+classes = (EMP_OT_fmod_add, EMP_OT_fmod_remove, EMP_OT_fmod_axis, EMP_OT_fmod_mute, EMP_OT_fmod_move,
+           EMP_OT_fmod_apply,
+           EMP_OT_fmod_copy, EMP_OT_fmod_paste, EMP_OT_fmod_tools, EMP_MT_fmod_add, EMP_MT_fmod_tools,
+           EMP_MT_fmod_entry)
+# panels: registered by ui.register, right after the Keys panel
 
 
 def sync_active(context):

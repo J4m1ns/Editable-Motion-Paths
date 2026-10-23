@@ -197,6 +197,12 @@ class EMP_OT_click(bpy.types.Operator):
                 return cache, k
         return cache, None
 
+    def _key_trackball(self, context):
+        st = state.settings(context.scene)
+        cache = state.caches.get(self.hit_key)
+        return cache is not None and cache.ptype == core.ROTATION and st.show_rot_rings and \
+            set(st.rot_axes) == {'X', 'Z'}
+
     def modal(self, context, event):
         if getattr(self, "dot", None):
             # a frame dot: drag it along the path (spacing), or click to go to that frame
@@ -221,6 +227,11 @@ class EMP_OT_click(bpy.types.Operator):
                     bpy.ops.emp.transform('INVOKE_DEFAULT', mode='TRANSLATE', release_confirm=True,
                                           start_x=int(self.press.x), start_y=int(self.press.y),
                                           ring_axis=space.RING_AXES[self.ring])
+                elif self.hit_part == 'KEY' and self._key_trackball(context):
+                    # a rotation key with its rings shown: the key is the trackball of the gizmo
+                    bpy.ops.emp.transform('INVOKE_DEFAULT', mode='TRANSLATE', release_confirm=True,
+                                          start_x=int(self.press.x), start_y=int(self.press.y),
+                                          key_trackball=True)
                 elif getattr(self, "gizmo", None):
                     bpy.ops.emp.transform('INVOKE_DEFAULT', mode='SCALE', release_confirm=True,
                                           start_x=int(self.press.x), start_y=int(self.press.y),
@@ -237,6 +248,8 @@ class EMP_OT_click(bpy.types.Operator):
             state.tag_redraw()
             return {'FINISHED'}
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and getattr(self, "ring", None):
+            if self.ring == 'RV':
+                return {'FINISHED'}     # the reach circle is only dragged
             st = state.settings(context.scene)
             axis = 'X' if self.ring == 'RX' else 'Z'
             axes = set(st.rot_axes)

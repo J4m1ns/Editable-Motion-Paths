@@ -7,7 +7,7 @@ import random
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty
 from bpy_extras import view3d_utils
-from mathutils import Matrix, Vector
+from mathutils import Matrix, Quaternion, Vector
 
 from . import compat, core, pick, snap, space, state
 
@@ -401,6 +401,8 @@ class EMP_OT_transform(bpy.types.Operator):
     axis_index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
     axis_plane: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
     ring_axis: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
+    key_trackball: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'},
+                                description="Rotation keys turn like a trackball (dragging the key)")
     time_wheel: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'},
                              description="Mouse wheel moves the keys in time (Shift+D)")
     start_x: IntProperty(default=-100000, options={'HIDDEN', 'SKIP_SAVE'})
@@ -992,7 +994,8 @@ class EMP_OT_transform(bpy.types.Operator):
         self.value = v
 
     def _ring_axis(self):
-        """Channel axis index rotation keys turn around (None: free on the sphere)."""
+        """Channel axis index rotation keys turn around (3: the view axis, None: free on the
+        sphere)."""
         if self.ring_axis >= 0:
             return self.ring_axis
         st = state.settings()
@@ -1001,9 +1004,86 @@ class EMP_OT_transform(bpy.types.Operator):
             return 0 if 'X' in axes else 2
         return None
 
+    def _ring_point(self, region, rv3d, e, axis, co2d, mouse):
+        """Tip of a rotation key turned along one ring (axis 0 / 2 of the bone) or around the
+        view axis (3). The angle is followed continuously from where the drag started, so it
+        never flips; a ring seen nearly edge-on turns with the mouse along its direction on
+        the screen instead of the (unstable) point under the mouse."""
+        c = e.center
+        st = self._ring_state.get((e.cache.key, round(e.k.t, 3)))
+        if st is None:
+            vd = _view_dir(rv3d)
+            n = -vd if axis == 3 else e.basis.col[axis].normalized()
+            u = (e.co - c) - n * (e.co - c).dot(n)
+            r = u.length
+            if r < 1e-9:
+                return None
+            u /= r
+            v = n.cross(u)
+            c2 = view3d_utils.location_3d_to_region_2d(region, rv3d, c)
+            if c2 is None:
+                return None
+            st = dict(n=n, u=u, v=v, r=r, c2=c2, theta=0.0, edge=abs(n.dot(vd)) < 0.3)
+            if axis == 3:
+                rel = self.mouse_start - c2
+                st['a0'] = math.atan2(rel.y, rel.x) if rel.length > 1e-6 else 0.0
+            elif st['edge']:
+                p0 = view3d_utils.location_3d_to_region_2d(region, rv3d, c + u * r)
+                p1 = view3d_utils.location_3d_to_region_2d(region, rv3d, c + (u * math.cos(0.05) + v * math.sin(0.05)) * r)
+                w = n.cross(vd)
+                w = w.normalized() if w.length > 1e-9 else u
+                pw = view3d_utils.location_3d_to_region_2d(region, rv3d, c + w * r)
+                major = (pw - c2).length if pw is not None else 0.0
+                tang = (p1 - p0) / 0.05 if p0 is not None and p1 is not None else Vector((0.0, 0.0))
+                if tang.length < 0.2 * major:
+                    tang = (pw - c2) if pw is not None else Vector((1.0, 0.0))
+                st['tdir'] = tang.normalized() if tang.length > 1e-9 else Vector((1.0, 0.0))
+                st['major'] = max(major, 20.0)
+            self._ring_state[(e.cache.key, round(e.k.t, 3))] = st
+        if axis == 3:
+            rel = mouse - st['c2']
+            if rel.length < 1e-6:
+                return None
+            raw = math.atan2(rel.y, rel.x) - st['a0']
+        elif st['edge']:
+            raw = (mouse - self.mouse_start).dot(st['tdir']) / st['major']
+        else:
+            hit = _plane_hit(region, rv3d, co2d, c, st['n'])
+            if hit is None or (hit - c).length < 1e-9:
+                return None
+            q = hit - c
+            raw = math.atan2(q.dot(st['v']), q.dot(st['u']))
+        # continue from the last angle: no jump of a full turn (or a flip) between updates
+        theta = st['theta'] + ((raw - st['theta'] + math.pi) % (2.0 * math.pi) - math.pi)
+        st['theta'] = theta
+        if axis == 3:
+            return c + Quaternion(st['n'], theta) @ (e.co - c)
+        return c + (st['u'] * math.cos(theta) + st['v'] * math.sin(theta)) * st['r'] + \
+            st['n'] * (e.co - c).dot(st['n'])
+
+    def _trackball_point(self, region, rv3d, e, mouse):
+        """Dragging the key of a rotation path: the tip turns like a trackball around the
+        head (a drag as long as the reach circle's radius on the screen turns it 1 radian)."""
+        c = e.center
+        r = (e.co - c).length
+        right = rv3d.view_rotation @ Vector((1.0, 0.0, 0.0))
+        up = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
+        c2 = view3d_utils.location_3d_to_region_2d(region, rv3d, c)
+        e2 = view3d_utils.location_3d_to_region_2d(region, rv3d, c + right * r)
+        if c2 is None or e2 is None:
+            return None
+        rad = max((e2 - c2).length, 20.0)
+        dv = mouse - self.mouse_start
+        if dv.length < 1e-6:
+            return e.co.copy()
+        axis = (up * dv.x - right * dv.y).normalized()
+        return c + Quaternion(axis, dv.length / rad) @ (e.co - c)
+
     def _rotation_path_deltas(self, region, rv3d, mouse):
         """Rotation path points live on a sphere around the bone head: put them exactly
         under the mouse (ray/sphere for tips, tangent plane for handles)."""
+        if not hasattr(self, "_ring_state"):
+            self._ring_state = {}
         for _c, es in self.groups:
             for e in es:
                 if e.center is None or e.src is not None:
@@ -1018,13 +1098,11 @@ class EMP_OT_transform(bpy.types.Operator):
                     axis = self._ring_axis()
                     if axis is not None:
                         # one axis: the tip stays on that ring (turning around the bone's axis)
-                        n = e.basis.col[axis].normalized()
-                        if abs(n.dot(d.normalized())) < 1e-3:
+                        p = self._ring_point(region, rv3d, e, axis, co2d, mouse)
+                        if p is None:
                             continue
-                        hit = _plane_hit(region, rv3d, co2d, e.center, n)
-                        if hit is None or (hit - e.center).length < 1e-9:
-                            continue
-                        p = e.center + (hit - e.center).normalized() * r
+                    elif self.key_trackball:
+                        p = self._trackball_point(region, rv3d, e, mouse)
                     else:
                         front = (e.co - e.center).dot(_view_dir(rv3d)) <= 0.0
                         p = _ray_sphere(o, d, e.center, r, front)
@@ -1117,6 +1195,7 @@ class EMP_OT_transform(bpy.types.Operator):
 
     def _switch_mode(self, context, event, new):
         self._restore()
+        self._ring_state = {}
         self.snapshots = []
         self.created = []
         self.applied = False

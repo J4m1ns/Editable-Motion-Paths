@@ -637,9 +637,8 @@ class EMP_OT_smooth(_AdjustOp, bpy.types.Operator):
 
     def invoke(self, context, event):
         if state.edit_mode(context.scene) == core.SCALE:
-            # Alt+S on scale paths: Shrink / Fatten, like on curves
-            # Alt+S on scale paths: Shrink / Fatten the ribbons (X and Z, the length Y stays)
-            bpy.ops.emp.transform('INVOKE_DEFAULT', mode='SCALE', axis_index=1, axis_plane=True)
+            # Alt+S on scale paths: longer / shorter handles (whiskers) of the picked channel
+            bpy.ops.emp.scale_handles('INVOKE_DEFAULT')
             return {'CANCELLED'}
         return _AdjustOp.invoke(self, context, event)
 
@@ -997,6 +996,110 @@ class EMP_OT_ease(_AdjustOp, bpy.types.Operator):
             touched.add(fc)
 
 
+class EMP_OT_scale_handles(_AdjustOp, bpy.types.Operator):
+    """Make the handles (whiskers) of the selected scale keys longer or shorter: the channel """ \
+        """picked on the scale gizmo (all channels if none). Drag right for longer handles. """ \
+        """I / O / B while dragging: the handle before the key, after it, or both"""
+    bl_idname = "emp.scale_handles"
+    bl_label = "Scale Handles"
+    bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
+    label = "Scale Handles"
+    pixels_per_unit = 250.0
+
+    factor: FloatProperty(name="Factor", default=0.0, soft_min=-1.0, soft_max=2.0, min=-1.0,
+                          description="0.5: handles 50% longer, -1: no handles")
+    side: EnumProperty(name="Side", items=[
+        ('BOTH', "Both", "The handles on both sides of the key"),
+        ('IN', "In", "The handle before the key"),
+        ('OUT', "Out", "The handle after the key"),
+    ], default='BOTH')
+    channel: EnumProperty(name="Channel", items=[
+        ('ACTIVE', "Picked", "The channel picked on the scale gizmo (all if none)"),
+        ('X', "X", ""), ('Y', "Y", ""), ('Z', "Z", ""), ('ALL', "All", "")], default='ACTIVE')
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode in {'POSE', 'OBJECT'} and state.edit_mode(context.scene) == core.SCALE
+
+    def _channels(self, context):
+        ch = self.channel
+        if ch == 'ACTIVE':
+            ch = state.settings(context.scene).scale_channel
+        return {'X': {0}, 'Y': {1}, 'Z': {2}}.get(ch, {0, 1, 2})
+
+    def _label(self):
+        ch = self.channel
+        if ch == 'ACTIVE':
+            ch = state.settings(bpy.context.scene).scale_channel
+        name = {'X': "X", 'Y': "Y", 'Z': "Z"}.get(ch, "all channels (click a gizmo handle to pick one)")
+        return "Scale Handles %s, %s  (I / O / B)" % (
+            name, {"BOTH": "both sides", "IN": "in", "OUT": "out"}[self.side])
+
+    def _modal_key(self, context, event):
+        m = {'I': 'IN', 'O': 'OUT', 'B': 'BOTH'}.get(event.type)
+        if m is None:
+            return False
+        self.side = m
+        return True
+
+    def _originals(self, job, tg):
+        if getattr(job, "handle_orig", None) is not None:
+            return job.handle_orig
+        use = self._channels(bpy.context)
+        ch = tg.channels(job.cache.ptype)
+        orig = []
+        for k, m in zip(job.keys, job.mask):
+            if not m:
+                continue
+            for c, fc in enumerate(ch.fcurves):
+                i = k.idx[c] if c < len(k.idx) else -1
+                if fc is None or i < 0 or c not in use:
+                    continue
+                kps = fc.keyframe_points
+                kp = kps[i]
+                orig.append(dict(
+                    path=fc.data_path, index=fc.array_index, i=i, x=kp.co[0], y=kp.co[1],
+                    hl=tuple(kp.handle_left), hr=tuple(kp.handle_right),
+                    tl=kp.handle_left_type, tr=kp.handle_right_type,
+                    gap_l=kp.co[0] - kps[i - 1].co[0] if i > 0 else None,
+                    gap_r=kps[i + 1].co[0] - kp.co[0] if i + 1 < len(kps) else None))
+        job.handle_orig = orig
+        return orig
+
+    @staticmethod
+    def _scaled(x, y, h, s, gap):
+        dx, dy = h[0] - x, h[1] - y
+        if gap is not None and abs(dx) * s > gap * 0.98 and abs(dx) > 1e-9:
+            s = gap * 0.98 / abs(dx)   # the handle stays short of the next key
+        return (x + dx * s, y + dy * s)
+
+    def _apply_job(self, job, tg, touched):
+        coll = tg.coll
+        s = max(0.0, 1.0 + self.factor)
+        do_l = self.side in {'BOTH', 'IN'}
+        do_r = self.side in {'BOTH', 'OUT'}
+        for o in self._originals(job, tg):
+            fc = coll.find(o['path'], index=o['index'])
+            if fc is None:
+                continue
+            kp = fc.keyframe_points[o['i']]
+            if abs(self.factor) < 1e-9:
+                tl, tr, hl, hr = o['tl'], o['tr'], o['hl'], o['hr']
+            else:
+                hl = self._scaled(o['x'], o['y'], o['hl'], s, o['gap_l']) if do_l else o['hl']
+                hr = self._scaled(o['x'], o['y'], o['hr'], s, o['gap_r']) if do_r else o['hr']
+                # auto handles would be set again by Blender: they keep their direction
+                fixed = {'AUTO': 'ALIGNED', 'AUTO_CLAMPED': 'ALIGNED', 'VECTOR': 'FREE'}
+                tl = fixed.get(o['tl'], o['tl'])
+                tr = fixed.get(o['tr'], o['tr'])
+            kp.handle_left_type = tl
+            kp.handle_right_type = tr
+            kp.handle_left = hl
+            kp.handle_right = hr
+            touched.add(fc)
+
+
 classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_path_update, EMP_OT_edit_tool,
            EMP_OT_handle_type, EMP_OT_interpolation,
-           EMP_OT_smooth, EMP_OT_exaggerate, EMP_OT_ease, EMP_OT_fix_loop, EMP_OT_cleanup)
+           EMP_OT_smooth, EMP_OT_exaggerate, EMP_OT_ease, EMP_OT_scale_handles, EMP_OT_fix_loop,
+           EMP_OT_cleanup)

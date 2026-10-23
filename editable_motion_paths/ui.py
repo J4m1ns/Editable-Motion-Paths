@@ -2,7 +2,7 @@
 
 import bpy
 
-from . import core, state
+from . import core, ops_fmods, state
 
 
 def _k(op, key, props=None, **mods):
@@ -61,7 +61,8 @@ TOOL_KEYMAP = (
     _k("emp.exaggerate", 'E', alt=True),
     _k("emp.ease", 'E', shift=True),
     _k("emp.context_menu", 'RIGHTMOUSE'),
-    _k("emp.timing_menu", 'T', shift=True),
+    # a menu call (not an operator), so menus show Shift+T next to "Timing"
+    _k("wm.call_menu", 'T', {"name": "EMP_MT_timing"}, shift=True),
     _k("wm.call_panel", 'U', {"name": "EMP_PT_display_popover", "keep_open": True}),
     # modes, proportional editing (Blender's own settings)
     _k("wm.context_set_enum", 'ONE', {"data_path": "scene.emp.edit_mode", "value": 'LOCATION'}),
@@ -114,10 +115,10 @@ HELP = (
         ("Alt+C", "loop: cycles, fix seam"),
     )),
     ("Shape & Timing", (
-        ("Alt+S", "smooth (T: shape / time; Scale mode: shrink / fatten)"),
+        ("Alt+S", "smooth (T: shape / time; Scale mode: handles of the picked channel)"),
         ("Alt+E", "exaggerate"),
         ("Shift+E", "ease (I / O / B)"),
-        ("Shift+T", "timing menu: tween, scale time, add frames, hold..."),
+        ("Shift+T", "timing menu: breakdown, scale time, add frames, hold..."),
         ("Drag a frame dot", "move that frame along the path (spacing)"),
         ("Right-click", "path menu (Edit Value, Space, LoopTools...)"),
         ("U", "display settings under the mouse"),
@@ -336,6 +337,7 @@ class EMP_MT_context(bpy.types.Menu):
         layout.operator("emp.ease", text="Ease", icon='IPO_EASE_IN_OUT')
         layout.menu("EMP_MT_space", icon='ALIGN_JUSTIFY')
         layout.menu("EMP_MT_looptools", icon='MESH_CIRCLE')
+        layout.menu("EMP_MT_timing", icon='TIME')
         layout.separator()
         layout.menu("EMP_MT_handle_type", icon='HANDLE_ALIGNED')
         layout.menu("EMP_MT_interpolation", icon='IPO_BEZIER')
@@ -464,6 +466,7 @@ class EMP_PT_timing(_Panel, bpy.types.Panel):
         row = col.row(align=True)
         row.operator("emp.ease", text="Ease", icon='IPO_SINE')
         row.operator("emp.slide", text="Slide", icon='TRACKING_FORWARDS')
+        col.menu("EMP_MT_timing", text="Timing Tools", icon='TIME')
 
 
 class EMP_PT_keys(_Panel, bpy.types.Panel):
@@ -540,6 +543,12 @@ def _draw_display(layout, st):
     col.prop(st, "show_reach")
     col.prop(st, "show_timing_chart")
     col.prop(st, "show_speed_graph")
+    if st.show_speed_graph:
+        col.prop(st, "speed_range", text="Range")
+        if st.speed_range == 'RANGE':
+            sub = col.column(align=True)
+            sub.prop(st, "speed_start")
+            sub.prop(st, "speed_end")
     col.prop(st, "on_top")
     layout.prop(st, "line_width")
     layout.prop(st, "key_size")
@@ -596,8 +605,9 @@ class EMP_PT_help(_Panel, bpy.types.Panel):
 
 classes = (EMP_MT_handle_type, EMP_MT_interpolation, EMP_MT_value_channel, EMP_OT_set_value_channel,
            EMP_MT_space, EMP_MT_looptools, EMP_MT_snap, EMP_MT_curves, EMP_MT_context, EMP_UL_paths,
-           EMP_PT_main, EMP_PT_shape, EMP_PT_timing, EMP_PT_keys, EMP_PT_range, EMP_PT_display,
-           EMP_PT_display_popover, EMP_PT_help)
+           EMP_PT_main, EMP_PT_shape, EMP_PT_timing, EMP_PT_keys, ops_fmods.EMP_PT_modifiers,
+           EMP_PT_range, EMP_PT_display, EMP_PT_display_popover, ops_fmods.EMP_PT_modifiers_popover,
+           EMP_PT_help)
 
 _addon_keymaps = []
 

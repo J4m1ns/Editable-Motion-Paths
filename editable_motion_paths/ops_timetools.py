@@ -358,18 +358,14 @@ class EMP_OT_add_frames(_HorizontalDrag, bpy.types.Operator):
 
 
 class EMP_OT_tween(_HorizontalDrag, bpy.types.Operator):
-    """Tween (favor): put the selected keys between their neighbors, closer to the previous """ \
-        """(drag left) or the next one (drag right). T: along the path / between the poses"""
+    """Breakdown: blend the selected keys between the poses of their neighbors, closer to the """ \
+        """previous one (drag left) or the next one (drag right), like Tween Machine. (To move """ \
+        """keys in time or along the path, use Slide, G G)"""
     bl_idname = "emp.tween"
-    bl_label = "Tween"
-    hint = "T: along the path / between the poses   "
+    bl_label = "Breakdown"
 
     amount: FloatProperty(name="Favor", default=0.0, min=-1.0, max=1.0, subtype='FACTOR',
                           description="-1: the previous key's pose, 0: halfway, 1: the next key's pose")
-    mode: EnumProperty(name="Mode", items=[
-        ('PATH', "Along the Path", "Halfway along the path between the neighbors (keeps the arc)"),
-        ('POSE', "Between the Poses", "Blend of the neighbors' channel values (like Tween Machine)")],
-        default='PATH')
 
     def _neutral(self):
         return -9.0         # any drag applies (0 = halfway is a real result)
@@ -379,13 +375,9 @@ class EMP_OT_tween(_HorizontalDrag, bpy.types.Operator):
         return f if event.ctrl else round(f / 0.05) * 0.05
 
     def _label(self):
-        return "Tween %s: %+.2f" % ("along the path" if self.mode == 'PATH' else "between poses", self.amount)
-
-    def _modal_key(self, context, event):
-        if event.type == 'T':
-            self.mode = 'POSE' if self.mode == 'PATH' else 'PATH'
-            return True
-        return False
+        side = "the previous pose" if self.amount < 0 else "the next pose"
+        return "Breakdown: %+.2f%s" % (self.amount, "  (halfway)" if abs(self.amount) < 1e-6 else
+                                       "  (toward %s)" % side)
 
     def _apply(self, context):
         from . import edit
@@ -408,12 +400,8 @@ class EMP_OT_tween(_HorizontalDrag, bpy.types.Operator):
                 k = by_t.get(round(t, 3))
                 if k is None:
                     continue
-                if self.mode == 'POSE':
-                    vals = [x + (y - x) * u for x, y in zip(a.vals, b.vals)]
-                    core.write_key(tg.channels(c.ptype), k, vals, True, w.touched)
-                else:
-                    src = a.t + (b.t - a.t) * u
-                    w.key(c, tg, k, c.point(tg, src))
+                vals = [x + (y - x) * u for x, y in zip(a.vals, b.vals)]
+                core.write_key(tg.channels(c.ptype), k, vals, True, w.touched)
             w.done([c])
 
 
@@ -425,8 +413,23 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
 
     amount: FloatProperty(name="Frames per Path", default=0.0)
 
+    WHY = "Offset Cascade works across several paths: select keys on 2 or more bones / objects " \
+          "(each one then starts a few frames after the one before)"
+
     def _label(self):
-        return "Offset Cascade: %+g frames per path" % self.amount
+        return "Offset Cascade: %+g frames per path (%d paths)" % (self.amount, len(self.caches))
+
+    def execute(self, context):
+        if len(self._caches(context)) < 2:
+            self.report({'WARNING'}, self.WHY)
+            return {'CANCELLED'}
+        return _HorizontalDrag.execute(self, context)
+
+    def invoke(self, context, event):
+        if len(self._caches(context)) < 2:
+            self.report({'WARNING'}, self.WHY)
+            return {'CANCELLED'}
+        return _HorizontalDrag.invoke(self, context, event)
 
     def _caches(self, context):
         caches = _selected_caches(context)
@@ -454,10 +457,11 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
 
 class EMP_OT_moving_hold(bpy.types.Operator):
     """Moving hold: copy the selected key's pose a few frames later and let it drift a little in """ \
-        """the direction it was moving, so the hold doesn't look frozen"""
+        """the direction it was moving, so the hold doesn't look frozen. Wheel: how long, """ \
+        """mouse left / right: how far it drifts"""
     bl_idname = "emp.moving_hold"
     bl_label = "Moving Hold"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
 
     frames: FloatProperty(name="Frames", default=0.0, min=0.0,
                           description="Length of the hold (0: halfway to the next key)")
@@ -465,14 +469,98 @@ class EMP_OT_moving_hold(bpy.types.Operator):
                          description="How far it keeps drifting, as part of the distance it covered in "
                                      "the same number of frames before the key")
 
+    @staticmethod
+    def _source(c):
+        return (space.active_key([c]) or (None, next(k for k in c.keys if k.sel)))[1]
+
+    @staticmethod
+    def _auto_frames(c, k):
+        after = [kk.t for kk in c.keys if kk.t > k.t + 1e-3]
+        return max(1.0, float(round((after[0] - k.t) / 2.0))) if after else 6.0
+
+    def invoke(self, context, event):
+        caches = _selected_caches(context)
+        if not caches:
+            return {'PASS_THROUGH'}
+        c = caches[0]
+        if not self.frames:
+            self.frames = self._auto_frames(c, self._source(c))
+        self.drift0 = self.drift
+        self.caches = caches
+        self.snaps = [(c, pose_snapshot(c), c.fs, list(c.B)) for c in caches]
+        self.x0 = event.mouse_x
+        self.area = context.area
+        state.modal_running += 1
+        state.force_numbers = True
+        context.window_manager.modal_handler_add(self)
+        self._update(context, event)
+        return {'RUNNING_MODAL'}
+
+    def _restore(self):
+        for c, s, fs, B in self.snaps:
+            s.restore()
+            c.fs, c.B = fs, list(B)
+            c.dirty = True
+            c.refresh(force=True)
+
+    def _update(self, context, event):
+        self.drift = max(0.0, self.drift0 + (event.mouse_x - self.x0) / (400.0 * compat.ui_scale()))
+        self._restore()
+        ok = self._apply(context)
+        txt = "Moving Hold: %d frame%s, drift %.2f%s" % (
+            self.frames, "" if self.frames == 1 else "s", self.drift, "" if ok else "  (no room after the key)")
+        state.hud = (txt, (event.mouse_region_x, event.mouse_region_y))
+        if self.area is not None:
+            self.area.header_text_set(txt + "   wheel / PgUp PgDn: frames   mouse left / right: drift   "
+                                            "click: confirm   Esc: cancel")
+        pick.tag_anim_editors()
+        state.tag_redraw()
+
+    def modal(self, context, event):
+        t, v = event.type, event.value
+        if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            self._update(context, event)
+        elif t in {'WHEELUPMOUSE', 'PAGE_UP', 'NUMPAD_PLUS'} and v == 'PRESS':
+            self.frames += 1.0
+            self._update(context, event)
+        elif t in {'WHEELDOWNMOUSE', 'PAGE_DOWN', 'NUMPAD_MINUS'} and v == 'PRESS':
+            self.frames = max(1.0, self.frames - 1.0)
+            self._update(context, event)
+        elif t in {'LEFTMOUSE', 'RET', 'NUMPAD_ENTER', 'SPACE'} and v == 'PRESS':
+            self._finish(context)
+            state.schedule_rebake(0.3)
+            return {'FINISHED'}
+        elif t in {'RIGHTMOUSE', 'ESC'} and v == 'PRESS':
+            self._restore()
+            self._finish(context)
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
+
+    def _finish(self, context):
+        state.modal_running = max(0, state.modal_running - 1)
+        state.force_numbers = False
+        state.hud = None
+        if self.area is not None:
+            self.area.header_text_set(None)
+        pick.tag_anim_editors()
+        state.tag_redraw()
+
     def execute(self, context):
+        if not self._apply(context):
+            self.report({'WARNING'}, "Select a key with room after it")
+            return {'CANCELLED'}
+        pick.tag_anim_editors()
+        state.schedule_rebake(0.3)
+        return {'FINISHED'}
+
+    def _apply(self, context):
         from . import edit
         from .ops_keys import copy_keys_to
         done = 0
         for c in _selected_caches(context):
-            k = (space.active_key([c]) or (None, next(k for k in c.keys if k.sel)))[1]
+            k = self._source(c)
             after = [kk.t for kk in c.keys if kk.t > k.t + 1e-3]
-            n = self.frames or (max(1.0, float(round((after[0] - k.t) / 2.0))) if after else 6.0)
+            n = self.frames or self._auto_frames(c, k)
             t_new = k.t + n
             if after and t_new >= after[0] - 0.5:
                 continue
@@ -489,12 +577,7 @@ class EMP_OT_moving_hold(bpy.types.Operator):
                 w.key(c, tg, kk, kk.co + drift)
             w.done([c])
             done += 1
-        if not done:
-            self.report({'WARNING'}, "Select a key with room after it")
-            return {'CANCELLED'}
-        pick.tag_anim_editors()
-        state.schedule_rebake(0.3)
-        return {'FINISHED'}
+        return done
 
 
 class EMP_OT_snap_frames(bpy.types.Operator):
@@ -532,7 +615,7 @@ class EMP_MT_timing(bpy.types.Menu):
         st = state.settings(context.scene)
         layout.operator("emp.ease", text="Ease", icon='IPO_EASE_IN_OUT')
         layout.menu("EMP_MT_space", icon='ALIGN_JUSTIFY')
-        layout.operator("emp.tween", icon='IPO_SINE')
+        layout.operator("emp.tween", text="Breakdown", icon='IPO_SINE')
         layout.operator("emp.slide", text="Slide (G G)", icon='TRACKING_FORWARDS')
         layout.separator()
         layout.operator("emp.time_scale", icon='ARROW_LEFTRIGHT')

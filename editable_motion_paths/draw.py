@@ -438,16 +438,13 @@ def _draw_rot_rings(st, cache, tg, keys, rv3d, us):
     if not (st.show_rot_rings or st.show_reach):
         return
     on = {'RX': 'X' in st.rot_axes, 'RZ': 'Z' in st.rot_axes}
-    right = rv3d.view_rotation @ Vector((1.0, 0.0, 0.0))
-    up = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
     for k in keys:
         if not k.sel:
             continue
         rings, center, r = space.rot_rings(cache, tg, k)
         if st.show_reach:
-            circ = [center + (right * math.cos(a * math.pi / 32) + up * math.sin(a * math.pi / 32)) * r
-                    for a in range(65)]
-            _lines(circ, [(1.0, 1.0, 1.0, 0.18)] * len(circ), 1.0 * us, 'LINE_STRIP')
+            circ = space.reach_circle(center, r, rv3d)
+            _lines(circ, [(1.0, 1.0, 1.0, 0.22)] * len(circ), 1.2 * us, 'LINE_STRIP')
         if st.show_rot_rings:
             for part, pts in rings.items():
                 col = RING_COLORS[part] + ((0.9,) if on[part] else (0.25,))
@@ -474,10 +471,10 @@ def _draw_view():
     up = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
     look = rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))
     for cache in caches:
-        if cache.ptype in (core.VALUE, core.SCALE) and not state.modal_running and \
-                (cache.vdir.angle(up, 0.0) > 0.35 or cache.vview.angle(look, 0.0) > 0.35):
-            # the value track is placed relative to the screen; it turns with the view (not
-            # while editing)
+        if cache.ptype == core.VALUE and cache.circle is None and not state.modal_running and \
+                (cache.vdir.angle(up, 0.0) > 0.01 or cache.vview.angle(look, 0.0) > 0.01):
+            # the value track is placed relative to the screen; it turns with the view as it
+            # turns (not while editing). The circle layout stays put.
             cache.vdir = up.normalized()
             cache.vview = look.normalized()
             cache.dirty = True
@@ -703,6 +700,37 @@ def _flat(pts, color, kind='LINES'):
     batch_for_shader(sh, kind, {"pos": pts}).draw(sh)
 
 
+def chart_span(region, us):
+    """Left and right end of the timing chart (the speed graph above it is as wide)."""
+    x0 = 40.0 * us
+    return x0, x0 + min(region.width - 80.0 * us, 560.0 * us)
+
+
+def speed_window(scene, st, cache):
+    """Frames the speed graph shows: the selected keys or the keys around the current frame
+    (Segment), the set frames (Range) or the scene's frame range (Timeline)."""
+    if st.speed_range == 'RANGE':
+        return float(st.speed_start), float(max(st.speed_end, st.speed_start + 1))
+    if st.speed_range == 'AUTO':
+        if scene.use_preview_range:
+            return float(scene.frame_preview_start), float(scene.frame_preview_end)
+        return float(scene.frame_start), float(scene.frame_end)
+    sel = [k.t for k in cache.keys if k.sel]
+    if len(sel) >= 2:
+        return min(sel), max(sel)
+    ks = [k.t for k in cache.keys]
+    if len(ks) < 2:
+        return None
+    cur = scene.frame_current
+    before = [t for t in ks if t <= cur]
+    after = [t for t in ks if t > cur]
+    if not before:
+        return ks[0], ks[1]
+    if not after:
+        return ks[-2], ks[-1]
+    return before[-1], after[0]
+
+
 def _draw_chart(ctx, st, us):
     """Timing chart of the selected keys: a ruler with a tick where every frame is along the
     path between the first and the last selected key (like an animator's timing chart)."""
@@ -722,8 +750,7 @@ def _draw_chart(ctx, st, us):
         arc.append(arc[-1] + (q - p).length)
     total = arc[-1] or 1.0
     region = ctx.region
-    x0 = 40.0 * us
-    x1 = x0 + min(region.width - 80.0 * us, 560.0 * us)
+    x0, x1 = chart_span(region, us)
     y = 62.0 * us
     keys = {round(k.t, 3) for k in cache.keys}
     ticks = []
@@ -753,19 +780,26 @@ def _draw_chart(ctx, st, us):
 
 
 def _draw_speed_graph(ctx, st, us):
-    """Speed of the active (first editable) path over its visible frames."""
+    """Speed of the active path (the one the timing chart shows, else the first editable one),
+    right above the timing chart and as wide."""
     if not st.show_speed_graph:
         return
-    cache = next(iter(state.editable_caches(ctx.scene)), None)
+    caches = state.editable_caches(ctx.scene)
+    cache = next((c for c in caches if sum(1 for k in c.keys if k.sel) >= 2), None) or \
+        next(iter(caches), None)
     if cache is None or not cache.speeds:
         return
-    lo, hi = path_window(ctx.scene, st, cache)
-    data = [(t, s) for t, s in zip(cache.times, cache.speeds) if lo <= t <= hi]
+    win = speed_window(ctx.scene, st, cache)
+    if win is None:
+        return
+    lo, hi = win
+    data = [(t, s) for t, s in zip(cache.times, cache.speeds) if lo - 1e-6 <= t <= hi + 1e-6]
     if len(data) < 2:
         return
     vmax = max(s for _t, s in data) or 1.0
-    x0, y0 = 40.0 * us, 100.0 * us
-    w, h = 260.0 * us, 60.0 * us
+    x0, x1 = chart_span(ctx.region, us)
+    y0 = 100.0 * us
+    w, h = x1 - x0, 60.0 * us
     t0, t1 = data[0][0], data[-1][0]
 
     def X(t):
@@ -784,7 +818,7 @@ def _draw_speed_graph(ctx, st, us):
     blf.size(font, 10 * us)
     blf.color(font, 1.0, 1.0, 1.0, 0.8)
     blf.position(font, x0 + 4 * us, y0 + h - 12 * us, 0)
-    blf.draw(font, "speed  %s" % cache.label)
+    blf.draw(font, "speed  %s  (%d - %d)" % (cache.label, round(t0), round(t1)))
 
 
 def _draw_snap_point(ctx, us):
@@ -857,7 +891,8 @@ def _draw_mode_indicator(ctx, st, us):
         if cache.ptype == core.ROTATION and st.show_rot_rings and cache.owner_selected() and \
                 any(k.sel for k in cache.keys):
             axes = " + ".join(sorted(st.rot_axes))
-            hint = "Turning around %s   (click a ring: that axis, Shift+Click: both)" % axes
+            hint = "Turning around %s   (click a ring: that axis, Shift+Click: both;  drag the " \
+                   "key: trackball, the faint circle: around the view)" % axes
     widths = [blf.dimensions(font, t)[0] for t, _a in parts]
     x = (region.width - sum(widths)) * 0.5
     y = 24 * us

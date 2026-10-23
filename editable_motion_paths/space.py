@@ -74,7 +74,7 @@ def element_basis(cache, tg, k):
     return _normalized(M.to_3x3() @ q.to_matrix())
 
 
-RING_AXES = {'RX': 0, 'RZ': 2}
+RING_AXES = {'RX': 0, 'RZ': 2, 'RV': 3}    # RV: the reach circle, turning around the view axis
 
 
 def rot_rings(cache, tg, k, segments=48):
@@ -90,6 +90,15 @@ def rot_rings(cache, tg, k, segments=48):
         out[part] = [center + (u * math.cos(a * 2 * math.pi / segments) +
                                v * math.sin(a * 2 * math.pi / segments)) * r for a in range(segments + 1)]
     return out, center, r
+
+
+def reach_circle(center, r, rv3d, segments=64):
+    """The circle facing the view that shows how far the tip reaches."""
+    import math
+    right = rv3d.view_rotation @ Vector((1.0, 0.0, 0.0))
+    up = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
+    return [center + (right * math.cos(a * 2 * math.pi / segments) +
+                      up * math.sin(a * 2 * math.pi / segments)) * r for a in range(segments + 1)]
 
 
 def parent_basis(cache, tg, k):

@@ -53,8 +53,8 @@ class EMP_Settings(bpy.types.PropertyGroup):
              "Editing it changes the location keys (1)", 'CON_LOCLIKE', 0),
             ('ROTATION', "Rotation", "Trajectory of the bone tip. Editing it changes the rotation "
              "keys: Euler, Quaternion or Axis Angle (2)", 'CON_ROTLIKE', 1),
-            ('SCALE', "Scale", "The location path drawn as a ribbon as wide as the scale. S or "
-             "Alt+S (Shrink / Fatten) changes the scale keys (3)", 'CON_SIZELIKE', 2),
+            ('SCALE', "Scale", "The location path drawn as a ribbon as wide as the scale. S "
+             "changes the scale keys, Alt+S their handles (3)", 'CON_SIZELIKE', 2),
             ('VALUE', "Value", "One animated value (custom property, IK/FK switch, constraint "
              "influence...) drawn as a track above the path; move its keys up and down (4)",
              'DRIVER', 3),
@@ -89,11 +89,12 @@ class EMP_Settings(bpy.types.PropertyGroup):
     color_mode: EnumProperty(
         name="Color",
         items=[
-            ('SPEED', "Speed", "Color the path by speed: blue is slow, red is fast"),
-            ('TIME', "Before / After", "Darker before the current frame, brighter after"),
-            ('SOLID', "Solid", "One color"),
+            # (the numbers keep files saved with the old order)
+            ('SPEED', "Speed", "Color the path by speed: blue is slow, red is fast", 'NONE', 0),
             ('JITTER', "Jitter", "Heat map of roughness: smooth motion stays gray, hitches, pops "
-                                 "and wobbles glow yellow to red (select them and smooth)"),
+                                 "and wobbles glow yellow to red (select them and smooth)", 'NONE', 3),
+            ('TIME', "Before / After", "Darker before the current frame, brighter after", 'NONE', 1),
+            ('SOLID', "Solid", "One color", 'NONE', 2),
         ],
         default='SPEED', update=_redraw,
     )
@@ -138,7 +139,19 @@ class EMP_Settings(bpy.types.PropertyGroup):
         description="A timing chart of the selected keys at the bottom of the viewport: where every "
                     "frame is between them. Drag a frame tick (or a frame dot on the path) to change it")
     show_speed_graph: BoolProperty(name="Speed Graph", default=False, update=_redraw,
-                                   description="A small graph of the speed of the active path")
+                                   description="A graph of the speed of the active path, above the "
+                                               "timing chart")
+    speed_range: EnumProperty(
+        name="Speed Graph Range",
+        items=[('SEGMENT', "Segment", "The selected keys (like the timing chart), or the keys around "
+                                      "the current frame"),
+               ('RANGE', "Range", "The frames set below"),
+               ('AUTO', "Timeline", "The scene's frame range (preview range if used)")],
+        default='SEGMENT', update=_redraw)
+    speed_start: IntProperty(name="Start", default=1, update=_redraw,
+                             description="First frame of the speed graph")
+    speed_end: IntProperty(name="End", default=100, update=_redraw,
+                           description="Last frame of the speed graph")
     on_top: BoolProperty(name="In Front", default=True,
                          description="Draw paths in front of geometry", update=_redraw)
     line_width: FloatProperty(name="Line Width", default=2.0, min=1.0, max=10.0, update=_redraw)

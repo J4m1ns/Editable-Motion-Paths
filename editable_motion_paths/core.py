@@ -391,7 +391,7 @@ class PathCache:
         self.vgain = 1.0        # value track: world height per unit of value
         self.vgain_id = None
         self.size_ref = 1.0     # path size the value / scale drawing was set up for
-        self.vdir = Vector((0.0, 0.0, 1.0))   # value track: direction "up" (follows the view)
+        self.vdir = Vector((0.0, 0.0, 1.0))   # value track: up on the screen (follows the view)
         self.vview = Vector((0.0, 1.0, 0.0))  # value track: view direction (track beside the path)
         self.circle = None      # scale / value paths drawn around a circle (see _circle_layout)
         self.track_mode = 'UP'
@@ -738,8 +738,8 @@ class PathCache:
 
     def _circle_layout(self, tg):
         """(center, e1, e2, normal, radius, first frame, last frame) when scale / value paths are
-        drawn around a circle, else None. The circle faces the view, tilted so ribbons and
-        values standing out of it stay visible."""
+        drawn around a circle, else None. The circle lies flat around the world Z axis and
+        stays put while the view turns, so its handles are easy to catch."""
         st = state.settings()
         mode = st.layout if st is not None else 'AUTO'
         if mode == 'PATH':
@@ -751,15 +751,7 @@ class PathCache:
         if mode == 'AUTO' and travel > size * 0.05:
             return None
         center = sum(heads, Vector()) / max(len(heads), 1)
-        up = self.vdir.normalized()
-        toward = -self.vview.normalized()
-        e1 = up.cross(toward)
-        if e1.length < 1e-6:
-            e1 = up.orthogonal()
-        e1.normalize()
-        tilt = math.radians(55.0)
-        e2 = (up * math.cos(tilt) - toward * math.sin(tilt)).normalized()
-        n = e1.cross(e2).normalized()
+        e1, e2, n = Vector((1.0, 0.0, 0.0)), Vector((0.0, 1.0, 0.0)), Vector((0.0, 0.0, 1.0))
         r = st.circle_radius if st is not None and st.circle_radius > 0.0 else size * 1.2
         scene = bpy.context.scene
         if st is not None and st.circle_use_range:

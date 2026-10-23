@@ -89,12 +89,17 @@ def hit_test(context, mx, my, radius=None):
             if k.hidden or not (lo - 1e-4 <= k.t <= hi + 1e-4):
                 continue
             cands = [('KEY', k.co, 0.0)]
-            if editable and cache.ptype == core.ROTATION and k.sel and st.show_rot_rings:
+            if editable and cache.ptype == core.ROTATION and k.sel and (st.show_rot_rings or st.show_reach):
                 rings, _c, _r = space.rot_rings(cache, cache.target(), k, 32)
-                for part, pts in rings.items():
+                for part, pts in (rings.items() if st.show_rot_rings else ()):
                     d = _polyline_distance(region, rv3d, pts, m)
                     if d is not None and d <= radius * 0.8:
                         cands.append((part, None, d + 0.8))
+                if st.show_reach:
+                    # the faint reach circle: turn around the view axis (like R)
+                    d = _polyline_distance(region, rv3d, space.reach_circle(_c, _r, rv3d, 48), m)
+                    if d is not None and d <= radius * 0.8:
+                        cands.append(('RV', None, d + 1.2))
             if editable and cache.ptype == core.SCALE and k.sel:
                 cands += [(part, p, 0.3) for part, p in
                           draw.scale_gizmo_points(st, cache, k, region, rv3d).items()]

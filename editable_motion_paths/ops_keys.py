@@ -892,8 +892,11 @@ class EMP_OT_extrude(bpy.types.Operator):
     offset: FloatVectorProperty(name="Offset", size=3, subtype='TRANSLATION',
                                 description="Move from where the motion would continue")
 
+    MIDDLE_HINT = "Extrude works on the open ends of a path: use Duplicate (Shift+D) inside it"
+
     def _sources(self, context):
         out = []
+        self.middle = False
         for c in state.editable_caches(context.scene):
             ks = c.keys
             sel = [i for i, k in enumerate(ks) if k.sel]
@@ -907,7 +910,7 @@ class EMP_OT_extrude(bpy.types.Operator):
             elif sel[0] == 0:
                 out.append((c, ks[0], -1.0))
             else:
-                out.append((c, ks[sel[-1]], 1.0))
+                self.middle = True    # a key inside the path: nowhere to grow
         return out
 
     def _apply(self, context):
@@ -964,8 +967,8 @@ class EMP_OT_extrude(bpy.types.Operator):
 
     def execute(self, context):
         if not self._apply(context):
-            self.report({'WARNING'}, "Select the first or last key of a path to extrude "
-                                     "(not on looping paths)")
+            self.report({'WARNING'}, self.MIDDLE_HINT if getattr(self, "middle", False) else
+                        "Select the first or last key of a path to extrude (not on looping paths)")
             return {'CANCELLED'}
         state.schedule_rebake(0.2, force=True)
         pick.tag_anim_editors()
@@ -974,6 +977,9 @@ class EMP_OT_extrude(bpy.types.Operator):
     def invoke(self, context, event):
         from .ops_transform import _plane_hit, _view_dir
         src = self._sources(context)
+        if not src and self.middle:
+            self.report({'WARNING'}, self.MIDDLE_HINT)
+            return {'CANCELLED'}
         if not src or context.region_data is None:
             return {'PASS_THROUGH'}
         # a good default: the length of the last segment
