@@ -560,18 +560,21 @@ def draw_stack(layout, context):
     for idx, (name, typ, mods) in enumerate(st):
         master = next(m for m in mods if m is not None)
         box = layout.box()
-        split = box.row().split(factor=0.4, align=True)
+        split = box.row().split(factor=0.4)
         row = split.row(align=True)
         # laid out like the modeling modifier header: collapse, name, channels, show in the
         # viewport, drop-down (apply, copy, move), remove. (Blender shows the next icon,
         # DOWNARROW_HLT, while it is expanded)
         row.prop(master, "show_expanded", text="", emboss=False, icon='RIGHTARROW')
         row.label(text=name, icon=ICONS.get(typ, 'MODIFIER'))
-        row = split.row(align=True)
-        # the dot puts it on every channel (a big dot: it is on all of them already)
-        every = all(m is not None for m, (_l, fc) in zip(mods, chans) if fc is not None)
-        op = row.operator("emp.fmod_axis", text="", emboss=False, icon='LAYER_ACTIVE' if every else 'DOT')
-        op.name, op.index = name, -1
+        row = split.row()       # (not aligned: the channel buttons are a group of their own)
+        if len(chans) > 1:
+            # the dot puts it on every channel (filled: it is on all of them already, a ring:
+            # some are left out). One channel (Value): nothing to choose, no dot
+            every = all(m is not None for m, (_l, fc) in zip(mods, chans) if fc is not None)
+            op = row.operator("emp.fmod_axis", text="", emboss=False,
+                              icon='LAYER_ACTIVE' if every else 'LAYER_USED')
+            op.name, op.index = name, -1
         sub = row.row(align=True)
         for i, (label, fc) in enumerate(chans):
             op = sub.operator("emp.fmod_axis", text=label, depress=mods[i] is not None)
