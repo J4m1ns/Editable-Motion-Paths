@@ -325,7 +325,8 @@ class EMP_OT_knife(bpy.types.Operator):
         """motion stays (Ctrl+K). LMB: add a point or drag to draw, RMB: make this cut and start """ \
         """a new one, Shift: snap to """ \
         """the middle of a segment, Ctrl: no snapping, A: angle constraint, X / Y / Z: axis, """ \
-        """S: frame numbers, Ctrl+Z: undo a point, Enter / Space / double-click: cut, Esc: cancel"""
+        """S: frame numbers, Ctrl+Z: undo a point, Enter / Space / double-click: cut, Esc: drop """ \
+        """the open cut (the cuts made with RMB stay)"""
     bl_idname = "emp.knife"
     bl_label = "Knife Path"
     bl_options = {'REGISTER', 'UNDO'}
@@ -336,12 +337,44 @@ class EMP_OT_knife(bpy.types.Operator):
                                    min=math.radians(1.0), max=math.radians(180.0),
                                    description="The angle constraint (A) snaps the line to multiples "
                                                "of this angle")
+    # the frames cut, per path (JSON): the redo panel makes the same cuts again
+    made: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
+
+    def execute(self, context):
+        """Redo (Adjust Last Operation): the same cuts again, rounded as Whole Frames says."""
+        import json
+        try:
+            data = json.loads(self.made or "[]")
+        except ValueError:
+            data = []
+        caches = {c.key: c for c in state.editable_caches(context.scene)}
+        n = 0
+        for key, fs in data:
+            c = caches.get(tuple(key))
+            if c is None:
+                continue
+            c.refresh(force=True)
+            have = {round(k.t, 3) for k in c.keys}
+            fs = sorted({float(round(f)) if self.whole_frames else float(f) for f in fs})
+            n += _insert_and_select(c, [f for f in fs if round(f, 3) not in have and c.fs < f < c.fe])
+        if not n:
+            return {'CANCELLED'}
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+    def _record(self, cross):
+        import json
+        for c, fs in cross:
+            if fs:
+                self._made.setdefault(c.key, []).extend(fs)
+        self.made = json.dumps([[list(k), v] for k, v in self._made.items()])
 
     def invoke(self, context, event):
         if context.region_data is None or not state.editable_caches(context.scene):
             return {'PASS_THROUGH'}
         self.cuts = [[]]            # cut lines still open, as world points
         self.committed = 0          # keys of the cuts already made (RMB)
+        self._made = {}
         # the cut lies at the depth of the paths, so it stays on them when the view turns
         pts = [p for c in state.editable_caches(context.scene) for p in c.points]
         self.depth = sum(pts, Vector()) / len(pts) if pts else context.region_data.view_location.copy()
@@ -514,7 +547,7 @@ class EMP_OT_knife(bpy.types.Operator):
         context.area.header_text_set(
             "Knife: %d new key%s%s%s   LMB: point / drag   RMB: cut it, next cut   Shift: middle of a segment   "
             "Ctrl: no snapping   A: angle   X Y Z: axis   S: frame numbers   Ctrl+Z: undo point   "
-            "Enter / Space / double-click: cut   Esc: cancel" % (n, "" if n == 1 else "s", cons, snap))
+            "Enter / Space / double-click: cut   Esc: drop the open cut (RMB cuts stay)" % (n, "" if n == 1 else "s", cons, snap))
         state.tag_redraw()
 
     # -- events -------------------------------------------------------------------
@@ -589,6 +622,7 @@ class EMP_OT_knife(bpy.types.Operator):
             return
         if not self.committed:
             pick.deselect_all(state.editable_caches(context.scene))
+        self._record(cross)
         for c, fs in cross:
             c.refresh(force=True)
             self.committed += _insert_and_select(c, fs)
@@ -605,6 +639,7 @@ class EMP_OT_knife(bpy.types.Operator):
         n = self.committed
         if any(fs for _c, fs in cross) and not self.committed:
             pick.deselect_all(state.editable_caches(context.scene))
+        self._record(cross)
         for c, fs in cross:
             c.refresh(force=True)
             n += _insert_and_select(c, fs)

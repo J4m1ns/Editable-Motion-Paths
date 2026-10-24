@@ -215,6 +215,59 @@ class EMP_OT_lock_info(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def reset_property(owner, name):
+    """Set one property back to its default (and run its update), Python-defined or built in."""
+    p = owner.bl_rna.properties.get(name)
+    if p is None or p.is_readonly:
+        return False
+    if p.type in {'INT', 'FLOAT', 'BOOLEAN'}:
+        setattr(owner, name, p.default_array if getattr(p, "is_array", False) else p.default)
+    elif p.type == 'ENUM':
+        if p.is_enum_flag:
+            setattr(owner, name, set(p.default_flag))
+        elif p.default:
+            setattr(owner, name, p.default)
+        else:
+            owner.property_unset(name)      # (items made on the fly: the first one)
+    elif p.type == 'STRING':
+        setattr(owner, name, p.default)
+    else:
+        return False
+    return True
+
+
+class EMP_OT_reset_button(bpy.types.Operator):
+    """Set this setting back to its default value. Blender's own Reset to Default Value doesn't """ \
+        """reach the panels opened with a key under the mouse (U, J, P, the right click of the """ \
+        """sculpt tool); this one does"""
+    bl_idname = "emp.reset_button"
+    bl_label = "Reset to Default Value"
+    bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return getattr(context, "button_prop", None) is not None and \
+            getattr(context, "button_pointer", None) is not None
+
+    def execute(self, context):
+        if not reset_property(context.button_pointer, context.button_prop.identifier):
+            return {'CANCELLED'}
+        state.tag_redraw()
+        return {'FINISHED'}
+
+
+def button_context_entry(self, context):
+    """Right click on a setting in a panel opened under the mouse: a Reset that works there."""
+    region = getattr(context, "region", None)
+    area = getattr(context, "area", None)
+    if region is None or area is None or region.type != 'WINDOW' or area.type != 'VIEW_3D':
+        return              # (sidebar, headers: Blender's own Reset works)
+    if getattr(context, "button_prop", None) is None or getattr(context, "button_pointer", None) is None:
+        return
+    self.layout.separator()
+    self.layout.operator(EMP_OT_reset_button.bl_idname, text="Reset to Default (Motion Paths)", icon='LOOP_BACK')
+
+
 class EMP_OT_path_update(bpy.types.Operator):
     """Recalculate all motion paths (for changes they can't see by themselves, like """ \
         """constraints or drivers)"""
@@ -1514,7 +1567,8 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
             touched.add(fc)
 
 
-classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_path_update,
+classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
+           EMP_OT_path_update,
            EMP_OT_edit_tool,
            EMP_OT_handle_type, EMP_OT_interpolation,
            EMP_OT_smooth, EMP_OT_exaggerate, EMP_OT_ease, EMP_OT_scale_handles,

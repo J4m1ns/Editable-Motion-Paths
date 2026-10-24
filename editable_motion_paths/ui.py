@@ -2,7 +2,7 @@
 
 import bpy
 
-from . import core, ops_easing, ops_fmods, state
+from . import core, ops_easing, ops_fmods, ops_tools, state
 
 
 def _k(op, key, props=None, **mods):
@@ -675,6 +675,16 @@ classes = (EMP_MT_handle_type, EMP_MT_interpolation, EMP_MT_value_channel, EMP_O
 _addon_keymaps = []
 
 
+class _ButtonContext(bpy.types.Menu):
+    """Blender's hook for extra entries in the right-click menu of buttons (made by an add-on
+    when nobody has yet; it stays registered, others may use it too)"""
+    bl_idname = "WM_MT_button_context"
+    bl_label = ""
+
+    def draw(self, context):
+        pass
+
+
 def register():
     for c in classes:
         bpy.utils.register_class(c)
@@ -682,6 +692,10 @@ def register():
     bpy.utils.register_tool(EMP_ObjectTool, separator=True)
     bpy.types.VIEW3D_MT_pose_context_menu.append(_context_menu_entry)
     bpy.types.VIEW3D_MT_object_context_menu.append(_context_menu_entry)
+    # right click on a setting in the U / J / P panels: a Reset to Default that works there
+    if not hasattr(bpy.types, "WM_MT_button_context"):
+        bpy.utils.register_class(_ButtonContext)
+    bpy.types.WM_MT_button_context.append(ops_tools.button_context_entry)
     # Ctrl+T picks the tool in Pose Mode (also shown in the Shift+Space tool menu); in Object
     # Mode Ctrl+T stays Blender's Track menu
     kc = bpy.context.window_manager.keyconfigs.addon
@@ -701,6 +715,8 @@ def unregister():
     _addon_keymaps.clear()
     bpy.types.VIEW3D_MT_pose_context_menu.remove(_context_menu_entry)
     bpy.types.VIEW3D_MT_object_context_menu.remove(_context_menu_entry)
+    if hasattr(bpy.types, "WM_MT_button_context"):
+        bpy.types.WM_MT_button_context.remove(ops_tools.button_context_entry)
     bpy.utils.unregister_tool(EMP_ObjectTool)
     bpy.utils.unregister_tool(EMP_PoseTool)
     for c in reversed(classes):

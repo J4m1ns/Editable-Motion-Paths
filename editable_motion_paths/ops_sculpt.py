@@ -177,11 +177,11 @@ class _TimingJob:
     """One path: its original motion (a SpaceJob over all its keys) and the frame -> original
     time warp being painted."""
 
-    def __init__(self, cache, tg):
+    def __init__(self, cache, tg, span=None):
         from .ops_timing import SpaceJob
         ks = cache.keys
         self.cache = cache
-        self.r0, self.r1 = float(ks[0].t), float(ks[-1].t)
+        self.r0, self.r1 = span or (float(ks[0].t), float(ks[-1].t))
         self.job = SpaceJob(cache, tg, self.r0, self.r1)
         self.frames = list(range(int(self.r0), int(self.r1) + 1))
         self.w = {f: float(f) for f in self.frames}
@@ -213,8 +213,25 @@ class _TimingJob:
         return a + (b - a) * f
 
 
+def selection_mask(cache):
+    """The part of a path the brushes may change, like a mask in sculpt mode: between the first
+    and last selected key (one selected key: the segments around it; its neighbors stay).
+    None: no key selected, the whole path."""
+    ks = cache.keys
+    sel = [i for i, k in enumerate(ks) if k.sel and not k.hidden]
+    if not sel:
+        return None
+    if len(sel) == 1:
+        i = sel[0]
+        lo, hi = ks[max(0, i - 1)].t, ks[min(len(ks) - 1, i + 1)].t
+        return (float(lo), float(hi), lambda t: lo < t < hi or abs(t - ks[i].t) < 1e-3)
+    lo, hi = ks[sel[0]].t, ks[sel[-1]].t
+    return (float(lo), float(hi), lambda t: lo - 1e-3 <= t <= hi + 1e-3)
+
+
 class EMP_OT_sculpt_stroke(bpy.types.Operator):
-    """Paint on the paths with the active brush (Ctrl: the opposite effect)"""
+    """Paint on the paths with the active brush (Ctrl: the opposite effect). Selected keys mask
+    the path: only the selected part changes"""
     bl_idname = "emp.sculpt_stroke"
     bl_label = "Sculpt Path"
     bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
@@ -238,6 +255,11 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
         if st is None or not caches:
             self.report({'WARNING'}, "Select a bone / object with a path to sculpt it")
             return {'CANCELLED'}
+        # the selection is a mask: with keys selected, only those parts change (paths without
+        # a selection stay as they are)
+        self.masks = {c.key: selection_mask(c) for c in caches}
+        if any(self.masks.values()):
+            caches = [c for c in caches if self.masks[c.key] is not None]
         self.brush = self.brush_override or bs.brush
         self.radius = bs.radius * compat.ui_scale()
         self.snaps = []
@@ -252,8 +274,10 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
         if self.brush in TIMING:
             skipped = []
             for c in caches:
-                if c.ptype in (core.LOCATION, core.ROTATION) and c.keys[-1].t - c.keys[0].t >= 2.0:
-                    self.jobs.append(_TimingJob(c, c.target()))
+                mask = self.masks[c.key]
+                span = (mask[0], mask[1]) if mask else (float(c.keys[0].t), float(c.keys[-1].t))
+                if c.ptype in (core.LOCATION, core.ROTATION) and span[1] - span[0] >= 2.0:
+                    self.jobs.append(_TimingJob(c, c.target(), span))
                 else:
                     skipped.append(c.label)
             if skipped:
@@ -265,9 +289,10 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
             region, rv3d = context.region, context.region_data
             self.grab = []
             for c in caches:
+                mask = self.masks[c.key]
                 for k in c.keys:
                     s = location_3d_to_region_2d(region, rv3d, k.co)
-                    if s is None or k.hidden:
+                    if s is None or k.hidden or (mask and not mask[2](k.t)):
                         continue
                     wt = _falloff(bs, (s - m).length, self.radius)
                     if wt > 0.0:
@@ -407,7 +432,10 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
         """Smooth over a part of the path with (almost) no keys: add keys there first, so it has
         something to smooth (the motion doesn't change)."""
         under = []
+        mask = self.masks.get(c.key)
         for t, p in zip(c.times, c.points):
+            if mask and not mask[0] < t < mask[1]:
+                continue
             s = location_3d_to_region_2d(region, rv3d, p)
             if s is not None and (s - m).length < self.radius:
                 under.append(t)
@@ -431,7 +459,10 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
             if self.brush == 'SMOOTH':
                 self._add_keys_for_smooth(c, region, rv3d, m)
             ks = [k for k in c.keys if not k.hidden]
+            mask = self.masks.get(c.key)
             for i, k in enumerate(ks):
+                if mask and not mask[2](k.t):
+                    continue
                 s = location_3d_to_region_2d(region, rv3d, k.co)
                 if s is None:
                     continue
@@ -497,17 +528,24 @@ class EMP_OT_sculpt_size(bpy.types.Operator):
                                    area=context.area.as_pointer())
         state.tag_redraw()
 
+    def _end(self, context, event):
+        """The radial control goes; the brush circle shows at once where the mouse is, as big
+        as the brush is now (not where it was before F, with the old size, until the mouse moves)."""
+        state.sculpt_radial = None
+        state.sculpt_cursor = (event.mouse_region_x, event.mouse_region_y, self.bs.radius * compat.ui_scale(),
+                               context.area.as_pointer(), False)
+
     def modal(self, context, event):
         t, v = event.type, event.value
         if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             self._show(context, Vector((event.mouse_region_x, event.mouse_region_y)))
         elif (t in {'LEFTMOUSE', 'RET', 'NUMPAD_ENTER', 'SPACE'} and v == 'PRESS'):
-            state.sculpt_radial = None
+            self._end(context, event)
             state.tag_redraw()
             return {'FINISHED'}
         elif t in {'ESC', 'RIGHTMOUSE'} and v == 'PRESS':
             self.bs.radius, self.bs.strength = self.r0, self.s0
-            state.sculpt_radial = None
+            self._end(context, event)
             state.tag_redraw()
             return {'CANCELLED'}
         return {'RUNNING_MODAL'}
@@ -557,6 +595,9 @@ SCULPT_KEYMAP = (
     _k("wm.call_menu", 'C', {"name": "EMP_MT_loop"}, alt=True),
     _k("wm.context_toggle", 'H', {"data_path": "scene.emp.show_handles"}, ctrl=True),
     _k("wm.context_toggle", 'H', {"data_path": "scene.emp.show_frames"}, ctrl=True, shift=True),
+    # the selection masks the brushes: Alt+A clears it (the whole path again), A selects all
+    _k("emp.select_all", 'A', {"action": 'SELECT'}),
+    _k("emp.select_all", 'A', {"action": 'DESELECT'}, alt=True),
 )
 
 
@@ -592,6 +633,7 @@ def draw_brushes(layout, context):
     col = layout.column(align=True)
     col.label(text="F: radius   Shift+F: strength   Ctrl: the opposite effect")
     col.label(text="Shift: Smooth   Ctrl+Shift: Even   right click: these settings")
+    col.label(text="Selected keys mask the path (only that part changes)   Alt+A: clear the mask")
 
 
 class EMP_PT_sculpt_brushes(bpy.types.Panel):

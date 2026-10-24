@@ -894,6 +894,7 @@ def _draw_speed_graph(ctx, st, us):
         return gy0 + gh * s / (vmax * 1.2)       # some room above the fastest part
     # speed of a step, drawn in the middle of it
     pts = [((t + tn) * 0.5, s) for (t, s), (tn, _s) in zip(data, data[1:])]
+    pts = [(t0, pts[0][1])] + pts + [(t1, pts[-1][1])]     # the curve reaches the end keys
     _rounded_rect(x0, y0, w, h, 7.0 * us, (0.08, 0.08, 0.1, 0.62))
     # soft fill under the curve, fading out at the bottom
     tris, cols = [], []
@@ -1030,7 +1031,10 @@ def _draw_sculpt(ctx, us):
     if cur is None or cur[3] != ctx.area.as_pointer():
         return
     x, y, r, _a, painting = cur
-    ring = [(x + math.cos(a * math.pi / 32) * r, y + math.sin(a * math.pi / 32) * r) for a in range(65)]
+    bs = getattr(ctx.window_manager, "emp_brush", None)
+    if bs is not None:
+        r = bs.radius * us          # the radius as it is now (changed from the header, F, ...)
+    ring =[(x + math.cos(a * math.pi / 32) * r, y + math.sin(a * math.pi / 32) * r) for a in range(65)]
     gpu.state.line_width_set(1.5)
     _flat(ring, (1.0, 0.7, 0.25, 0.95) if painting else (1.0, 1.0, 1.0, 0.7), 'LINE_STRIP')
     gpu.state.line_width_set(1.0)

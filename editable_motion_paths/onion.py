@@ -3,8 +3,10 @@
 Ghost frames are captured once (scene.frame_set + the evaluated meshes and bones) in small
 chunks while Blender is idle, kept as plain arrays, and drawn from GPU batches, so drawing
 them costs almost nothing and the viewport stays fast. After an animation change they are
-captured again a moment later. Modes: Silhouette (one flat color per ghost), Wire, Points
-(the lightest), Bones (sticks)."""
+captured again right away, the nearest first, also while a tool drags (live); the old ghost
+stays drawn until its new one is ready, so nothing blinks. Modes: Silhouette (one flat color
+per ghost), Wire, Points (the lightest), Bones (sticks); heavy meshes are melted down to the
+Detail limit once and all modes draw that same simplified mesh."""
 
 import time
 
@@ -16,7 +18,9 @@ from . import state
 
 _frames = {}            # frame -> {"tris": array, "edges": array, "points": array, "bones": array}
 _batches = {}           # (frame, kind) -> GPU batch
-_dirty_since = None     # time of the last animation change (captured again after a pause)
+_stale = set()          # captured frames the animation has changed since (still drawn until renewed)
+_changed_at = 0.0       # time of the last animation change
+_cost = 0.0             # how long one ghost frame takes to capture (running average, seconds)
 _busy = False           # capturing right now (frame_set must not count as an edit)
 _timer_on = False
 _sig = None             # what the ghosts were captured for (objects, settings)
@@ -58,14 +62,17 @@ def _bone_shown(pb, st):
 def clear():
     _frames.clear()
     _batches.clear()
+    _stale.clear()
 
 
 def changed():
-    """The animation changed: capture the ghosts again (after a short pause)."""
-    global _dirty_since
+    """The animation changed: the ghosts are captured again right away, the nearest first,
+    also while a tool drags (the old ones stay drawn until each is renewed)."""
+    global _changed_at
     if _frames:
-        _dirty_since = time.time()
-        _schedule(0.6)
+        _stale.update(_frames)
+        _changed_at = time.time()
+        _schedule(0.01)
 
 
 def _targets(scene):
@@ -107,15 +114,16 @@ def frames_to_show(scene, st):
     return [(f, -(i + 1)) for i, f in enumerate(before)] + [(f, i + 1) for i, f in enumerate(after)]
 
 
-def _decimate(co, tri, limit):
+def _decimate(co, tri, limit, edges=None):
     """Fewer triangles without holes, like Decimate: vertices that fall into the same cell of a
     grid melt into one, triangles that collapse go away; the grid gets coarser until the mesh
-    fits the limit."""
+    fits the limit. With `edges` (the mesh's own edges, no triangle diagonals) they are melted
+    the same way and returned too: a coarser wire that stays connected."""
     import numpy as np
     lo, hi = co.min(axis=0), co.max(axis=0)
     diag = float(np.linalg.norm(hi - lo)) or 1.0
     cells = max(8.0, (limit * 0.5) ** 0.5 * 2.0)
-    best = (co, tri)
+    best = (co, tri, np.arange(len(co)))
     for _i in range(12):
         q = np.floor((co - lo) / (diag / cells)).astype(np.int64)
         uniq, inv = np.unique(q, axis=0, return_inverse=True)
@@ -128,11 +136,16 @@ def _decimate(co, tri, limit):
         t2 = t2[keep]
         _u, first = np.unique(np.sort(t2, axis=1), axis=0, return_index=True)
         t2 = t2[np.sort(first)]     # the same triangle twice: once (its winding kept for culling)
-        best = (newco, t2)
+        best = (newco, t2, inv)
         if len(t2) <= limit or cells <= 8.0:
             break
         cells *= 0.75
-    return best
+    if edges is None:
+        return best[:2]
+    newco, t2, inv = best
+    e2 = inv[edges]
+    e2 = np.unique(np.sort(e2[e2[:, 0] != e2[:, 1]], axis=1), axis=0)
+    return newco, t2, e2
 
 
 def _capture(scene, frames, meshes, arms, st):
@@ -157,24 +170,25 @@ def _capture(scene, frames, meshes, arms, st):
             co = co.reshape(-1, 3) @ M[:3, :3].T + M[:3, 3]
             me.calc_loop_triangles()
             nt = len(me.loop_triangles)
-            if nt:
-                tri = np.empty(nt * 3, dtype=np.int32)
-                me.loop_triangles.foreach_get("vertices", tri)
-                tri = tri.reshape(-1, 3)
-                vco = co
-                if nt > limit:
-                    vco, tri = _decimate(co, tri, limit)
-                data["tris"].append(vco[tri.ravel()])
+            tri = np.empty(nt * 3, dtype=np.int32)
+            me.loop_triangles.foreach_get("vertices", tri)
+            tri = tri.reshape(-1, 3)
             ne = len(me.edges)
-            if ne:
-                ed = np.empty(ne * 2, dtype=np.int32)
-                me.edges.foreach_get("vertices", ed)
-                ed = ed.reshape(-1, 2)
-                if ne > limit:
-                    ed = ed[::int(np.ceil(ne / limit))]
-                data["edges"].append(co[ed.ravel()])
-            data["points"].append(co[::max(1, n // limit)])
+            ed = np.empty(ne * 2, dtype=np.int32)
+            me.edges.foreach_get("vertices", ed)
+            ed = ed.reshape(-1, 2)
             ev.to_mesh_clear()
+            vco = co
+            if n and (nt > limit or ne > limit * 1.5 or n > limit):
+                # the same melted mesh for every mode: the wire stays connected (no stride
+                # gaps), the points spread evenly
+                vco, tri, ed = _decimate(co, tri, limit, ed)
+            if len(tri):
+                data["tris"].append(vco[tri.ravel()])
+            if len(ed):
+                data["edges"].append(vco[ed.ravel()])
+            if len(vco):
+                data["points"].append(vco)
         for arm in arms:
             M = arm.matrix_world
             for pb in arm.pose.bones:
@@ -195,8 +209,11 @@ def _schedule(delay=0.05):
 
 
 def _tick():
-    """Capture missing ghost frames a few at a time (about 40 ms per tick), while idle."""
-    global _timer_on, _busy, _dirty_since, _sig
+    """Capture missing or changed ghost frames, the nearest first, about 40 ms per tick.
+
+    While a tool drags, a light scene is captured on every tick (the ghosts follow the edit
+    live); a heavy one waits until the mouse rests a moment, so the drag never stutters."""
+    global _timer_on, _busy, _sig, _cost
     try:
         scene = bpy.context.scene
         st = state.settings(scene)
@@ -204,20 +221,18 @@ def _tick():
             _timer_on = False
             return None
         screen = bpy.context.screen
-        if state.modal_running or (screen is not None and screen.is_animation_playing):
+        if screen is not None and screen.is_animation_playing:
             return 0.3
-        if _dirty_since is not None:
-            if time.time() - _dirty_since < 0.5:
-                return 0.2
-            clear()
-            _dirty_since = None
+        if state.modal_running and _cost > 0.03 and time.time() - _changed_at < 0.15:
+            return 0.05
         meshes, arms = _targets(scene)
         sig = _signature(scene, st)
         if sig != _sig:
             clear()
             _sig = sig
-        want = [f for f, _i in frames_to_show(scene, st) if f not in _frames]
-        if not want:
+        shows = sorted(frames_to_show(scene, st), key=lambda x: abs(x[1]))
+        want = [f for f, _i in shows if f not in _frames] + [f for f, _i in shows if f in _stale]
+        if not want:            # (stale frames not shown now are renewed when they show again)
             _timer_on = False
             return None
         cur, sub = scene.frame_current, scene.frame_subframe
@@ -226,7 +241,10 @@ def _tick():
         try:
             done = []
             for f in want:
+                t1 = time.time()
+                _stale.discard(f)
                 _capture(scene, [f], meshes, arms, st)
+                _cost = (time.time() - t1) if not _cost else _cost * 0.7 + (time.time() - t1) * 0.3
                 done.append(f)
                 if time.time() - t0 > 0.04:
                     break
@@ -256,6 +274,15 @@ def _batch(f, kind, shader):
     return b
 
 
+def _point_shader():
+    """Points need a shader that sets their size (the plain one ignores point_size_set on
+    Vulkan / Metal)."""
+    try:
+        return gpu.shader.from_builtin('POINT_UNIFORM_COLOR')
+    except (ValueError, TypeError):
+        return gpu.shader.from_builtin('UNIFORM_COLOR')
+
+
 def draw(scene, st, us):
     """Draw the ghosts (called from the 3D view's draw handler)."""
     global _sig
@@ -269,8 +296,8 @@ def draw(scene, st, us):
     shows = frames_to_show(scene, st)
     if any(f not in _frames for f, _i in shows):
         _schedule()
-    sh = gpu.shader.from_builtin('UNIFORM_COLOR')
     kind = {'SILHOUETTE': "tris", 'WIRE': "edges", 'POINTS': "points", 'BONES': "bones"}[st.onion_mode]
+    sh = _point_shader() if kind == "points" else gpu.shader.from_builtin('UNIFORM_COLOR')
     prev_test = gpu.state.depth_test_get()
     # (in front: the depth still has to be written for the one-layer silhouette, and with the
     # depth test off nothing is written - so "always" passes instead)

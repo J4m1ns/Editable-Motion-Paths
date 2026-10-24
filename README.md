@@ -104,7 +104,7 @@ The tool uses the settings you know from modeling, in the header and with the us
 | **Shift+D** | duplicate: copies go halfway to the next key and follow the mouse; the **wheel** moves them through the motion a frame at a time (jumping over other keys). *Duplicate in Time* (menu) places copies with left / right instead |
 | **Ctrl+C / Ctrl+V** | copy the pose of the active key / paste it on the current frame: the channels of the current mode (*Whole Pose* in the redo panel: all of them) |
 | **Ctrl+R** | loop cut: evenly spaced keys in the segment under the mouse (wheel: number of cuts) |
-| **Ctrl+K** | knife, like the mesh Knife: keys are inserted where the line crosses the path. LMB: point (drag: draw), RMB: makes this cut now (its keys stay where they are when you turn the view) and starts a new one, Shift: snap to the middle of a segment, Ctrl: no snapping (it snaps to keys and frame dots), A: angle constraint (screen / relative), X / Y / Z: along an axis, S: frame numbers, Ctrl+Z: undo a point, Enter / Space / double-click: cut; the view can be turned while cutting |
+| **Ctrl+K** | knife, like the mesh Knife: keys are inserted where the line crosses the path. LMB: point (drag: draw), RMB: makes this cut now (its keys stay where they are when you turn the view) and starts a new one (Esc drops only the open cut; the cuts made stay), Shift: snap to the middle of a segment, Ctrl: no snapping (it snaps to keys and frame dots), A: angle constraint (screen / relative), X / Y / Z: along an axis, S: frame numbers, Ctrl+Z: undo a point, Enter / Space / double-click: cut; the view can be turned while cutting |
 | **Ctrl+B** | bevel: round a key into a Bezier arc. It goes through the keys around it (the path outside the arc keeps its shape and timing); when one side reaches the end of the path, the other goes on and the arc gets longer on that side. C: **Clamp** (stop at the next keys), A: width, S or wheel: segments, P: profile, 0.5 = circle |
 | **M** | merge at the last selected (active, white ring) key, the first, the center or the 3D cursor |
 | **X**, **Delete**, **Ctrl+X** | delete menu / delete / dissolve |
@@ -120,7 +120,7 @@ The tool uses the settings you know from modeling, in the header and with the us
 | **Shift+E** | ease (I / O / B while dragging: slow in, slow out, both) |
 | **Shift+T** | timing menu (see Timing and speed) |
 | Drag a **frame dot** | move that frame along the path: the frames around it follow, the keys and the shape stay (click a dot: go to that frame) |
-| **U** | display settings under the mouse |
+| **U** | display settings under the mouse (right click a setting > *Reset to Default (Motion Paths)*: Blender's own Reset doesn't reach panels opened with a key) |
 | **Ctrl+H** / **Ctrl+Shift+H** | hide / show the handles / the frame dots (timing) |
 | **P** | easing presets under the mouse |
 | **J** | modifiers of the active path under the mouse (the mouse wheel scrolls a long list) |
@@ -260,6 +260,11 @@ opposite effect (Slow Down becomes Speed Up, Pinch pushes away), **Shift**: Smoo
 not part of undo (Ctrl+Z undoes the strokes only). The edit tool's keys work here too: 1-4
 modes, U, J, P, Shift+T, Alt+C, Ctrl+H.
 
+**Selected keys are a mask**, like masking in sculpt mode: with keys selected (in the edit
+tool), the brushes change only the part of the path between the first and the last selected
+key (one selected key: the segments around it); other paths stay as they are. **Alt+A**
+clears the selection, so the whole path can be painted again (A selects all).
+
 ## Onion skinning
 
 The onion button in the tool header shows ghosts of the edited bones / objects on the frames
@@ -267,10 +272,12 @@ around the current one: on the keys, or every few frames (Display > Onion Skin: 
 step, opacity, colors). Modes: *Silhouette* (the meshes in one flat color per ghost),
 *Wire*, *Points* (the lightest; *Size* sets the dots and lines), *Bones* (sticks: the visible
 bones, or only the selected ones). The farther a ghost is from the current frame, the fainter.
-The ghosts are captured in the background while Blender is idle and drawn from the graphics
-card, so the viewport stays fast; after an edit they are captured again a moment later.
-*Detail* limits the triangles per ghost for heavy characters: the mesh is simplified like
-Decimate (no holes), and back faces are skipped. Ghosts show in X-ray too.
+The ghosts are captured in the background and drawn from the graphics card, so the viewport
+stays fast. They follow the edits live, the nearest ones first, also while a key is dragged
+(with a heavy character they catch up as soon as the mouse rests for a moment). *Detail*
+limits the triangles per ghost: the mesh is simplified like Decimate (no holes, back faces
+skipped), and *Wire* and *Points* use the same simplified mesh, so the wire stays connected.
+Ghosts show in X-ray too.
 
 ## Display
 

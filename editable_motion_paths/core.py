@@ -685,7 +685,14 @@ class PathCache:
                 self.size_ref = max(sum((h - l) ** 2 for h, l in zip(hi, lo)) ** 0.5, tg.length, 0.1)
                 if vs:
                     self.vbase = min(vs)
-                    self.vgain = self.size_ref * VALUE_HEIGHT / max(max(vs) - min(vs), 1e-6)
+                    rng = max(vs) - min(vs)
+                    big = max(abs(max(vs)), abs(min(vs)), 1.0)
+                    if rng < 1e-4 * big:
+                        # a value that doesn't change (both keys 1.0): no range to fit, so a
+                        # unit of the value's own size (a range of ~0 gave a scale of millions,
+                        # and dragging a key barely changed the value)
+                        rng = big
+                    self.vgain = self.size_ref * VALUE_HEIGHT / rng
                 else:
                     self.vgain = self.size_ref * VALUE_HEIGHT
         self.cyclic = any(fc is not None and any(m.type == 'CYCLES' for m in fc.modifiers)
