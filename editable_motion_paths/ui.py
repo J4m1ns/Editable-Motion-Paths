@@ -67,6 +67,9 @@ TOOL_KEYMAP = (
     _k("wm.call_menu", 'T', {"name": "EMP_MT_timing"}, shift=True),
     _k("wm.call_panel", 'U', {"name": "EMP_PT_display_popover", "keep_open": True}),
     _k("wm.call_panel", 'J', {"name": "EMP_PT_modifiers_popover", "keep_open": True}),
+    _k("wm.call_panel", 'P', {"name": "EMP_PT_easing_presets", "keep_open": True}),
+    _k("wm.context_toggle", 'H', {"data_path": "scene.emp.show_handles"}, ctrl=True),
+    _k("wm.context_toggle", 'H', {"data_path": "scene.emp.show_frames"}, ctrl=True, shift=True),
     # modes, proportional editing (Blender's own settings)
     _k("wm.context_set_enum", 'ONE', {"data_path": "scene.emp.edit_mode", "value": 'LOCATION'}),
     _k("wm.context_set_enum", 'TWO', {"data_path": "scene.emp.edit_mode", "value": 'ROTATION'}),
@@ -127,6 +130,8 @@ HELP = (
         ("Right-click", "path menu (Edit Value, Space, LoopTools...)"),
         ("U", "display settings under the mouse"),
         ("J", "modifiers of the active path under the mouse"),
+        ("P", "easing presets under the mouse"),
+        ("Ctrl+H / Ctrl+Shift+H", "show / hide the handles / the frame dots"),
     )),
 )
 
@@ -140,12 +145,14 @@ def _draw_tool_settings(context, layout, tool):
     if st.edit_mode == 'VALUE':
         _draw_value_picker(layout, context)
         layout.prop(st, "value_track", text="")
+        if st.value_track == 'PATH':
+            layout.prop(st, "value_side", text="")
     layout.separator()
     _draw_proportional(layout, st, compact=True)
     layout.separator()
     layout.operator("emp.path_add", text="Add Path", icon='ADD')
     layout.prop(st, "show_all_handles")
-    layout.prop(st, "show_onion", text="", icon='ONIONSKIN_ON' if st.show_onion else 'ONIONSKIN_OFF')
+    layout.prop(st, "show_onion", text="", icon='ONIONSKIN_ON')
     layout.popover("EMP_PT_display_popover", text="", icon='COLOR')
     layout.popover("EMP_PT_modifiers_popover", text="", icon='MODIFIER')
 
@@ -403,11 +410,11 @@ class EMP_UL_paths(bpy.types.UIList):
         if item.object is not None:
             cache = state.caches.get(state.entry_key(item))
             if cache is not None and cache.locked:
-                row.label(text="", icon='LOCKED')
+                row.operator("emp.lock_info", text="", icon='LOCKED', emboss=False).reason = cache.lock_reason
             # isolate this path's curves in the Graph Editor (pressed while they are isolated)
             from .ops_tools import graph_isolated
             on = graph_isolated(item)
-            row.operator("emp.graph_isolate", text="", emboss=on, depress=on,
+            row.operator("emp.graph_isolate", text="", emboss=False,
                          icon='LOOP_BACK' if on else 'LOOP_FORWARDS').index = index
 
 
@@ -561,6 +568,7 @@ def _draw_display(layout, st):
         layout.prop(st, "jitter_threshold", text="Threshold")
     col = layout.column(heading="Show")
     col.prop(st, "show_frames")
+    col.prop(st, "show_handles")
     col.prop(st, "show_frame_numbers")
     col.prop(st, "show_all_handles")
     col.prop(st, "show_ghost")
@@ -594,6 +602,10 @@ def _draw_display(layout, st):
         row = box.row(align=True)
         row.prop(st, "onion_color_before", text="")
         row.prop(st, "onion_color_after", text="")
+        if st.onion_mode == 'BONES':
+            box.prop(st, "onion_bones", text="")
+        if st.onion_mode in {'POINTS', 'BONES', 'WIRE'}:
+            box.prop(st, "onion_size")
         row = box.row(align=True)
         row.prop(st, "onion_max_tris")
         row.prop(st, "onion_in_front", text="", icon='XRAY')

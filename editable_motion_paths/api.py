@@ -364,10 +364,11 @@ def subdivide(obj, bone=None, frames=None, cuts=1, mode=None):
     return _run_op(bpy.ops.emp.subdivide, frames, obj, bone, mode, cuts=cuts)
 
 
-def bevel(obj, bone=None, frames=None, width=3.0, segments=2, profile=0.5, mode=None):
-    """Round the keys at `frames` into arcs `width` frames to each side."""
+def bevel(obj, bone=None, frames=None, width=3.0, segments=2, profile=0.5, clamp=False, mode=None):
+    """Round the keys at `frames` into arcs `width` frames to each side (through the keys
+    around them; clamp=True: stop at the next keys)."""
     return _run_op(bpy.ops.emp.bevel, frames, obj, bone, mode, width=width, segments=segments,
-                   profile=profile)
+                   profile=profile, clamp=clamp)
 
 
 def extrude(obj, bone=None, frame=None, frames_later=6, offset=(0.0, 0.0, 0.0), mode=None):

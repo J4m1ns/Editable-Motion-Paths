@@ -5,7 +5,7 @@ easing interpolation on the chosen channels, like in the Graph Editor."""
 import os
 
 import bpy
-from bpy.props import BoolProperty, BoolVectorProperty, EnumProperty, FloatProperty
+from bpy.props import BoolProperty, BoolVectorProperty, EnumProperty, FloatProperty, IntProperty
 
 from . import core, easing, pick, state
 
@@ -80,6 +80,11 @@ class EMP_OT_easing_preset(bpy.types.Operator):
                              description="Elastic: how big the swings are")
     period: FloatProperty(name="Period", default=0.3, min=0.05, soft_max=1.0,
                           description="Elastic: how long a swing is (share of the part)")
+    bounces: IntProperty(name="Bounces", default=3, min=1, max=10,
+                         description="Bounce: how many times it bounces (Keep the Path)")
+    bounciness: FloatProperty(name="Bounciness", default=0.5, min=0.05, max=0.9, subtype='FACTOR',
+                              description="Bounce: how much of each bounce is left for the next one "
+                                          "(Keep the Path)")
 
     @classmethod
     def description(cls, context, properties):
@@ -111,10 +116,16 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         if self.easing == 'ELASTIC':
             layout.prop(self, "amplitude")
             layout.prop(self, "period")
+        if self.easing == 'BOUNCE':
+            col = layout.column()
+            col.active = self.mode == 'TIMING'      # (Blender's own Bounce has no settings)
+            col.prop(self, "bounces")
+            col.prop(self, "bounciness")
 
     def _fn(self):
-        kind, d, back, amp, per = self.easing, self.direction, self.back, self.amplitude, self.period
-        return lambda u: easing.ease(kind, d, u, back, amp, per)
+        kind, d = self.easing, self.direction
+        p = (self.back, self.amplitude, self.period, self.bounces, self.bounciness)
+        return lambda u: easing.ease(kind, d, u, *p)
 
     def execute(self, context):
         done = 0
@@ -178,6 +189,9 @@ class EMP_OT_easing_preset(bpy.types.Operator):
     def _channels(self, cache, rng):
         tg = cache.target()
         ch = tg.channels(cache.ptype)
+        use = list(self.channels)
+        if not any(use[:ch.count]):
+            use = [True] * 4          # (at least one channel: like the modifier channels)
         sel = [k for k in cache.keys if k.sel]
         if len(sel) >= 2:
             starts = sel[:-1]
@@ -191,7 +205,7 @@ class EMP_OT_easing_preset(bpy.types.Operator):
             i = times.index(k.t)
             duration = times[i + 1] - k.t if i + 1 < len(times) else 10.0
             for c, fc in enumerate(ch.fcurves):
-                if fc is None or c >= 4 or not self.channels[c] or k.idx[c] < 0:
+                if fc is None or c >= 4 or not use[c] or k.idx[c] < 0:
                     continue
                 kp = fc.keyframe_points[k.idx[c]]
                 kp.interpolation = self.easing

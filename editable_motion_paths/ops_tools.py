@@ -198,6 +198,23 @@ class EMP_OT_graph_isolate(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class EMP_OT_lock_info(bpy.types.Operator):
+    """This path can't be edited in the current mode"""
+    bl_idname = "emp.lock_info"
+    bl_label = "Locked Path"
+    bl_options = {'INTERNAL'}
+
+    reason: bpy.props.StringProperty(options={'HIDDEN'})
+
+    @classmethod
+    def description(cls, context, properties):
+        return "Locked: %s" % (properties.reason or "this path can't be edited in the current mode")
+
+    def execute(self, context):
+        self.report({'INFO'}, "Locked: %s" % self.reason)
+        return {'FINISHED'}
+
+
 class EMP_OT_path_update(bpy.types.Operator):
     """Recalculate all motion paths (for changes they can't see by themselves, like """ \
         """constraints or drivers)"""
@@ -1497,7 +1514,8 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
             touched.add(fc)
 
 
-classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_path_update, EMP_OT_edit_tool,
+classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_path_update,
+           EMP_OT_edit_tool,
            EMP_OT_handle_type, EMP_OT_interpolation,
            EMP_OT_smooth, EMP_OT_exaggerate, EMP_OT_ease, EMP_OT_scale_handles,
            EMP_OT_scale_handle_values, EMP_OT_fix_loop, EMP_OT_cleanup)

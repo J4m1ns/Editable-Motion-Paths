@@ -3,14 +3,20 @@
 Timing brushes (Push, Slow Down, Speed Up, Even) move the frames along the path; the shape
 stays. While you paint, the new frame dots are previewed; when you let go, the keys are
 refitted to the new timing once. Shape brushes (Grab, Smooth, Pinch) move the keys.
-F: radius, Shift+F: strength, Ctrl: the opposite effect."""
+F: radius, Shift+F: strength, Ctrl: the opposite effect, Shift: Smooth, Ctrl+Shift: Even,
+right click: the brushes."""
 
 import bpy
 from bpy.props import BoolProperty
 from bpy_extras.view3d_utils import location_3d_to_region_2d, region_2d_to_location_3d
 from mathutils import Vector
 
-from . import compat, core, edit, pick, state
+from . import compat, core, edit, keys, pick, state
+
+
+def _bs():
+    """The brush settings (window manager: Ctrl+Z leaves them alone)."""
+    return bpy.context.window_manager.emp_brush
 
 BRUSHES = [
     ('PUSH', "Push", "Timing: push the frames under the brush along the path, the way you drag (the "
@@ -38,11 +44,133 @@ def brush_items(_self, _context):
     return _items
 
 
-def _falloff(st, d, radius):
+def _falloff(bs, d, radius):
     from .ops_transform import falloff
     if d >= radius:
         return 0.0
-    return falloff(st.sculpt_falloff, d / radius) * st.sculpt_strength
+    return falloff(bs.falloff, d / radius) * bs.strength
+
+
+# ---- the brush strip: the brushes as buttons right of the toolbar ------------------
+
+_textures = {}
+
+
+def _png_rgba(path):
+    """(width, height, [floats]) of one of the add-on's PNGs (8 bit RGBA, no filters)."""
+    import struct
+    import zlib
+    data = open(path, "rb").read()
+    pos, w, h, idat = 8, 0, 0, b""
+    while pos < len(data):
+        n = struct.unpack(">I", data[pos:pos + 4])[0]
+        tag = data[pos + 4:pos + 8]
+        body = data[pos + 8:pos + 8 + n]
+        if tag == b"IHDR":
+            w, h = struct.unpack(">II", body[:8])
+        elif tag == b"IDAT":
+            idat += body
+        pos += 12 + n
+    raw = zlib.decompress(idat)
+    stride = w * 4 + 1
+    px = []
+    for row in range(h - 1, -1, -1):              # (bottom row first for the texture)
+        line = raw[row * stride + 1:(row + 1) * stride]
+        px.extend(b / 255.0 for b in line)
+    return w, h, px
+
+
+def _texture(name):
+    import os
+    import gpu
+    tex = _textures.get(name)
+    if tex is None:
+        path = os.path.join(os.path.dirname(__file__), "icons", name + ".png")
+        if not os.path.exists(path):
+            return None
+        w, h, px = _png_rgba(path)
+        tex = _textures[name] = gpu.types.GPUTexture((w, h), format='RGBA8',
+                                                     data=gpu.types.Buffer('FLOAT', len(px), px))
+    return tex
+
+
+def strip_rects(area, region):
+    """[(brush, x, y, size)] of the brush buttons, in the region's pixels."""
+    us = compat.ui_scale()
+    size, gap = 38.0 * us, 4.0 * us
+    x = 8.0 * us
+    for r in area.regions:
+        # an overlapping toolbar covers the left of the view
+        if r.type == 'TOOLS' and r.width > 1 and r.x <= region.x + 2 and r.x + r.width > region.x:
+            x = r.x + r.width - region.x + 6.0 * us
+    y = region.height - 140.0 * us
+    out = []
+    for ident, _n, _d in BRUSHES:
+        out.append((ident, x, y - size, size))
+        y -= size + gap
+    return out
+
+
+def strip_hit(area, region, mx, my):
+    for ident, x, y, s in strip_rects(area, region):
+        if x <= mx <= x + s and y <= my <= y + s:
+            return ident
+    return None
+
+
+def draw_strip(ctx, us):
+    """The brush buttons (Sculpt Motion Path tool), the active one highlighted, the name of the
+    one under the mouse next to it."""
+    import blf
+    import gpu
+    from gpu_extras.batch import batch_for_shader
+    from . import draw
+    area, region = ctx.area, ctx.region
+    bs = _bs()
+    hover = state.sculpt_strip_hover if state.sculpt_strip_hover and \
+        state.sculpt_strip_hover[1] == area.as_pointer() else None
+    names = {i: n for i, n, _d in BRUSHES}
+    sh = gpu.shader.from_builtin('IMAGE')
+    gpu.state.blend_set('ALPHA')
+    for ident, x, y, s in strip_rects(area, region):
+        on = ident == bs.brush
+        over = hover is not None and hover[0] == ident
+        col = (0.28, 0.45, 0.78, 0.95) if on else ((0.32, 0.32, 0.32, 0.92) if over else (0.16, 0.16, 0.16, 0.85))
+        draw._rounded_rect(x, y, s, s, 5.0 * us, col)
+        tex = _texture("brush_" + ident)
+        if tex is not None:
+            p = 3.0 * us
+            quad = [(x + p, y + p), (x + s - p, y + p), (x + s - p, y + s - p), (x + p, y + s - p)]
+            batch = batch_for_shader(sh, 'TRI_FAN', {"pos": quad, "texCoord": [(0, 0), (1, 0), (1, 1), (0, 1)]})
+            sh.uniform_sampler("image", tex)
+            batch.draw(sh)
+        if over:
+            blf.size(0, 12 * us)
+            text = names[ident]
+            w, h = blf.dimensions(0, text)
+            tx, ty = x + s + 8 * us, y + s * 0.5 - h * 0.5
+            draw._rounded_rect(tx - 5 * us, ty - 5 * us, w + 10 * us, h + 10 * us, 4.0 * us, (0.08, 0.08, 0.08, 0.9))
+            blf.color(0, 1.0, 1.0, 1.0, 1.0)
+            blf.position(0, tx, ty, 0)
+            blf.draw(0, text)
+
+
+class EMP_OT_sculpt_set_brush(bpy.types.Operator):
+    """Use this brush"""
+    bl_idname = "emp.sculpt_set_brush"
+    bl_label = "Set Brush"
+    bl_options = {'INTERNAL'}
+
+    brush: bpy.props.StringProperty(options={'HIDDEN'})
+
+    @classmethod
+    def description(cls, context, properties):
+        return {i: d for i, _n, d in BRUSHES}.get(properties.brush, cls.__doc__)
+
+    def execute(self, context):
+        _bs().brush = self.brush
+        state.tag_redraw()
+        return {'FINISHED'}
 
 
 class _TimingJob:
@@ -92,17 +220,26 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
 
     invert: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    brush_override: bpy.props.StringProperty(options={'HIDDEN', 'SKIP_SAVE'},
+                                             description="Use this brush for the stroke (Shift: Smooth, "
+                                                         "Ctrl+Shift: Even)")
 
     def invoke(self, context, event):
         if context.region_data is None:
             return {'PASS_THROUGH'}
+        bs = _bs()
+        hit = strip_hit(context.area, context.region, event.mouse_region_x, event.mouse_region_y)
+        if hit is not None:
+            bs.brush = hit          # a click on the brush strip picks that brush
+            state.tag_redraw()
+            return {'CANCELLED'}
         st = state.settings(context.scene)
         caches = [c for c in state.editable_caches(context.scene) if len(c.keys) >= 2]
         if st is None or not caches:
             self.report({'WARNING'}, "Select a bone / object with a path to sculpt it")
             return {'CANCELLED'}
-        self.brush = st.sculpt_brush
-        self.radius = st.sculpt_radius * compat.ui_scale()
+        self.brush = self.brush_override or bs.brush
+        self.radius = bs.radius * compat.ui_scale()
         self.snaps = []
         for c in caches:
             tg = c.target()
@@ -132,7 +269,7 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                     s = location_3d_to_region_2d(region, rv3d, k.co)
                     if s is None or k.hidden:
                         continue
-                    wt = _falloff(st, (s - m).length, self.radius)
+                    wt = _falloff(bs, (s - m).length, self.radius)
                     if wt > 0.0:
                         self.grab.append((c, k.t, k.co.copy(), wt))
         state.modal_running += 1
@@ -181,8 +318,8 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
     # -- timing ------------------------------------------------------------------
 
     def _dab(self, context, event, m, delta):
-        st = state.settings(context.scene)
-        sign = -1.0 if (self.invert or event.ctrl) else 1.0
+        st = _bs()
+        sign = -1.0 if (self.invert or (event.ctrl and not self.brush_override)) else 1.0
         region, rv3d = context.region, context.region_data
         if self.brush in TIMING:
             pts = []
@@ -266,9 +403,33 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
             by_cache.setdefault(c, []).append((t, co0 + (b - a) * wt))
         self._write(context, by_cache)
 
+    def _add_keys_for_smooth(self, c, region, rv3d, m):
+        """Smooth over a part of the path with (almost) no keys: add keys there first, so it has
+        something to smooth (the motion doesn't change)."""
+        under = []
+        for t, p in zip(c.times, c.points):
+            s = location_3d_to_region_2d(region, rv3d, p)
+            if s is not None and (s - m).length < self.radius:
+                under.append(t)
+        if not under:
+            return
+        a, b = min(under), max(under)
+        inside = [k.t for k in c.keys if a - 1e-3 <= k.t <= b + 1e-3]
+        if len(inside) >= 3 or b - a < 3.0:
+            return
+        step = max(2, int(round((b - a) / 4.0)))
+        have = {round(k.t) for k in c.keys}
+        frames = [float(f) for f in range(int(a) + 1, int(b), step)
+                  if f not in have and c.fs < f < c.fe and all(abs(f - h) >= 2 for h in have)]
+        if frames:
+            keys.insert_path_keys(c, c.target(), frames)
+            c.refresh(force=True)
+
     def _shape_dab(self, context, st, region, rv3d, m, sign):
         by_cache = {}
         for c in self.caches:
+            if self.brush == 'SMOOTH':
+                self._add_keys_for_smooth(c, region, rv3d, m)
             ks = [k for k in c.keys if not k.hidden]
             for i, k in enumerate(ks):
                 s = location_3d_to_region_2d(region, rv3d, k.co)
@@ -309,28 +470,31 @@ class EMP_OT_sculpt_size(bpy.types.Operator):
     strength: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
 
     def invoke(self, context, event):
-        st = state.settings(context.scene)
-        if st is None or context.area is None:
+        if context.area is None:
             return {'CANCELLED'}
-        self.st = st
+        bs = self.bs = _bs()
+        us = compat.ui_scale()
         self.start = Vector((event.mouse_region_x, event.mouse_region_y))
-        self.r0, self.s0 = st.sculpt_radius, st.sculpt_strength
-        self.center = self.start - Vector((self.r0 * compat.ui_scale(), 0.0))
+        self.r0, self.s0 = bs.radius, bs.strength
+        # like Blender: the mouse sits on the circle (radius) or at the share of it (strength)
+        lean = bs.strength if self.strength else 1.0
+        self.center = self.start - Vector((self.r0 * us * lean, 0.0))
         context.window_manager.modal_handler_add(self)
         self._show(context, self.start)
         return {'RUNNING_MODAL'}
 
     def _show(self, context, m):
         us = compat.ui_scale()
+        bs = self.bs
+        d = (m - self.center).length
         if self.strength:
-            self.st.sculpt_strength = min(1.0, max(0.0, self.s0 + (m.x - self.start.x) / (200.0 * us)))
+            bs.strength = min(1.0, max(0.0, d / max(self.r0 * us, 1.0)))
         else:
-            self.st.sculpt_radius = int(max(5, (m - self.center).length / us))
-        state.sculpt_cursor = (self.center.x, self.center.y, self.st.sculpt_radius * us,
-                               context.area.as_pointer(), True)
-        context.area.header_text_set("Brush %s: %s   move the mouse   click / Enter: done   Esc: cancel" % (
-            "strength" if self.strength else "radius",
-            "%.2f" % self.st.sculpt_strength if self.strength else "%d px" % self.st.sculpt_radius))
+            bs.radius = int(max(5, d / us))
+        state.sculpt_radial = dict(x=self.center.x, y=self.center.y, r=bs.radius * us, mouse=(m.x, m.y),
+                                   strength=bs.strength if self.strength else None,
+                                   text="%d%%" % round(bs.strength * 100) if self.strength else "%d px" % bs.radius,
+                                   area=context.area.as_pointer())
         state.tag_redraw()
 
     def modal(self, context, event):
@@ -338,11 +502,13 @@ class EMP_OT_sculpt_size(bpy.types.Operator):
         if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             self._show(context, Vector((event.mouse_region_x, event.mouse_region_y)))
         elif (t in {'LEFTMOUSE', 'RET', 'NUMPAD_ENTER', 'SPACE'} and v == 'PRESS'):
-            context.area.header_text_set(None)
+            state.sculpt_radial = None
+            state.tag_redraw()
             return {'FINISHED'}
         elif t in {'ESC', 'RIGHTMOUSE'} and v == 'PRESS':
-            self.st.sculpt_radius, self.st.sculpt_strength = self.r0, self.s0
-            context.area.header_text_set(None)
+            self.bs.radius, self.bs.strength = self.r0, self.s0
+            state.sculpt_radial = None
+            state.tag_redraw()
             return {'CANCELLED'}
         return {'RUNNING_MODAL'}
 
@@ -354,10 +520,12 @@ class EMP_OT_sculpt_hover(bpy.types.Operator):
     bl_options = {'INTERNAL'}
 
     def invoke(self, context, event):
-        st = state.settings(context.scene)
-        if st is not None and context.area is not None:
-            state.sculpt_cursor = (event.mouse_region_x, event.mouse_region_y,
-                                   st.sculpt_radius * compat.ui_scale(), context.area.as_pointer(), False)
+        if context.area is not None and context.region is not None:
+            mx, my = event.mouse_region_x, event.mouse_region_y
+            hit = strip_hit(context.area, context.region, mx, my)
+            state.sculpt_strip_hover = (hit, context.area.as_pointer()) if hit else None
+            state.sculpt_cursor = (mx, my, _bs().radius * compat.ui_scale(), context.area.as_pointer(),
+                                   False) if hit is None else None
             context.area.tag_redraw()
         return {'PASS_THROUGH'}
 
@@ -371,25 +539,71 @@ def _k(op, key, props=None, **mods):
 SCULPT_KEYMAP = (
     _k("emp.sculpt_stroke", 'LEFTMOUSE'),
     _k("emp.sculpt_stroke", 'LEFTMOUSE', {"invert": True}, ctrl=True),
+    _k("emp.sculpt_stroke", 'LEFTMOUSE', {"brush_override": 'SMOOTH'}, shift=True),
+    _k("emp.sculpt_stroke", 'LEFTMOUSE', {"brush_override": 'EVEN'}, shift=True, ctrl=True),
     _k("emp.sculpt_size", 'F'),
     _k("emp.sculpt_size", 'F', {"strength": True}, shift=True),
     _k("emp.sculpt_hover", 'MOUSEMOVE', value='ANY', any=True),
+    _k("wm.call_panel", 'RIGHTMOUSE', {"name": "EMP_PT_sculpt_brushes", "keep_open": True}),
+    # the rest of the path tools' view and menu keys, so the tool doesn't feel apart
     _k("wm.context_set_enum", 'ONE', {"data_path": "scene.emp.edit_mode", "value": 'LOCATION'}),
     _k("wm.context_set_enum", 'TWO', {"data_path": "scene.emp.edit_mode", "value": 'ROTATION'}),
+    _k("wm.context_set_enum", 'THREE', {"data_path": "scene.emp.edit_mode", "value": 'SCALE'}),
+    _k("wm.context_set_enum", 'FOUR', {"data_path": "scene.emp.edit_mode", "value": 'VALUE'}),
+    _k("wm.call_panel", 'U', {"name": "EMP_PT_display_popover", "keep_open": True}),
+    _k("wm.call_panel", 'J', {"name": "EMP_PT_modifiers_popover", "keep_open": True}),
+    _k("wm.call_panel", 'P', {"name": "EMP_PT_easing_presets", "keep_open": True}),
+    _k("wm.call_menu", 'T', {"name": "EMP_MT_timing"}, shift=True),
+    _k("wm.call_menu", 'C', {"name": "EMP_MT_loop"}, alt=True),
+    _k("wm.context_toggle", 'H', {"data_path": "scene.emp.show_handles"}, ctrl=True),
+    _k("wm.context_toggle", 'H', {"data_path": "scene.emp.show_frames"}, ctrl=True, shift=True),
 )
 
 
 def _draw_settings(context, layout, tool):
     st = state.settings(context.scene)
+    bs = _bs()
     if st is None:
         return
-    layout.template_icon_view(st, "sculpt_brush", show_labels=True, scale=1.0, scale_popup=4.0)
-    name = {i: n for i, n, _d in BRUSHES}.get(st.sculpt_brush, "")
+    name = {i: n for i, n, _d in BRUSHES}.get(bs.brush, "")
     layout.label(text=name)
-    layout.prop(st, "sculpt_radius")
-    layout.prop(st, "sculpt_strength", slider=True)
-    layout.prop(st, "sculpt_falloff", text="")
+    layout.prop(bs, "radius")
+    layout.prop(bs, "strength", slider=True)
+    layout.prop(bs, "falloff", text="")
     layout.prop(st, "edit_mode", text="")
+
+
+def draw_brushes(layout, context):
+    """The brushes with their pictures, and the brush settings."""
+    from .ops_easing import icon_id
+    bs = _bs()
+    grid = layout.grid_flow(row_major=True, columns=4, even_columns=True, even_rows=True, align=False)
+    for ident, name, _d in BRUSHES:
+        col = grid.column(align=True)
+        ic = icon_id("brush_" + ident)
+        if ic:
+            col.template_icon(icon_value=ic, scale=3.0)
+        col.operator("emp.sculpt_set_brush", text=name, depress=bs.brush == ident).brush = ident
+    layout.separator()
+    col = layout.column(align=True)
+    col.prop(bs, "radius")
+    col.prop(bs, "strength", slider=True)
+    layout.prop(bs, "falloff")
+    col = layout.column(align=True)
+    col.label(text="F: radius   Shift+F: strength   Ctrl: the opposite effect")
+    col.label(text="Shift: Smooth   Ctrl+Shift: Even   right click: these settings")
+
+
+class EMP_PT_sculpt_brushes(bpy.types.Panel):
+    """Sculpt Motion Path brushes (right-click in the viewport)"""
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'HEADER'
+    bl_label = "Brushes"
+    bl_idname = "EMP_PT_sculpt_brushes"
+    bl_ui_units_x = 18
+
+    def draw(self, context):
+        draw_brushes(self.layout, context)
 
 
 class EMP_SculptPoseTool(bpy.types.WorkSpaceTool):
@@ -399,7 +613,7 @@ class EMP_SculptPoseTool(bpy.types.WorkSpaceTool):
     bl_label = "Sculpt Motion Path"
     bl_description = ("Paint on motion paths with brushes: the timing (Push, Slow Down, Speed Up, Even: "
                       "the shape stays) or the shape (Grab, Smooth, Pinch). F: radius, Shift+F: strength, "
-                      "Ctrl: the opposite effect")
+                      "Ctrl: the opposite effect, Shift: Smooth, Ctrl+Shift: Even, right click: the brushes")
     bl_icon = "brush.particle.comb"
     bl_widget = None
     bl_keymap = SCULPT_KEYMAP
@@ -418,7 +632,8 @@ class EMP_SculptObjectTool(bpy.types.WorkSpaceTool):
     draw_settings = _draw_settings
 
 
-classes = (EMP_OT_sculpt_stroke, EMP_OT_sculpt_size, EMP_OT_sculpt_hover)
+classes = (EMP_OT_sculpt_stroke, EMP_OT_sculpt_size, EMP_OT_sculpt_hover, EMP_OT_sculpt_set_brush,
+           EMP_PT_sculpt_brushes)
 
 
 def register_tools():

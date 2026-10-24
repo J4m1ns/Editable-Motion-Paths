@@ -103,7 +103,7 @@ def path_window(scene, st, cache):
 
 
 def handles_shown(st, cache, editable, k):
-    if not editable:
+    if not editable or not st.show_handles:
         return False
     return st.show_all_handles or k.any_sel
 
@@ -312,42 +312,8 @@ def _draw_ribbon(st, cache, rv3d, lo, hi, editable, us):
             ecol = [c + (ea,) for _l, _r, c in run]
             _lines([l for l, _r, _c in run], ecol, 1.2 * us, 'LINE_STRIP')
             _lines([r for _l, r, _c in run], ecol, 1.2 * us, 'LINE_STRIP')
-    if editable:
-        _draw_ribbon_ticks(cache, half, vis, us)
     if st.show_scale_box:
         _draw_scale_box(st, cache, us)
-
-
-def focus_segments(cache):
-    """(first, last) frame of the selected part of a path: the selected keys, or the segments
-    on both sides of a single selected key (one at the ends). None without a selection."""
-    ks = [k.t for k in cache.keys]
-    sel = [k.t for k in cache.keys if k.sel]
-    if len(sel) >= 2:
-        return min(sel), max(sel)
-    if len(sel) == 1 and len(ks) > 1:
-        i = ks.index(sel[0])
-        return ks[max(i - 1, 0)], ks[min(i + 1, len(ks) - 1)]
-    return None
-
-
-def _draw_ribbon_ticks(cache, half, vis, us):
-    """Scale ribbons: a thin line across both ribbons on every frame of the selected part, so
-    the spacing (the ease) of the scale change shows."""
-    win = focus_segments(cache)
-    if win is None:
-        return
-    lo, hi = win
-    lines = []
-    for i, t in enumerate(cache.times):
-        if not (lo + 1e-6 < t < hi - 1e-6) or abs(t - round(t)) > 1e-6 or not vis[i]:
-            continue
-        v = cache.sample_vals[i]
-        p = cache.points[i]
-        for axis in (0, 2):
-            d = cache.sample_axes[i][axis] * (half * abs(v[axis]))
-            lines += [p + d, p - d]
-    _lines(lines, [(1.0, 1.0, 1.0, 0.3)] * len(lines), 1.0 * us)
 
 
 def _draw_scale_box(st, cache, us):
@@ -487,24 +453,6 @@ def _draw_rot_ribbon(st, cache, lo, hi, editable, us):
         batch_for_shader(sh, 'TRIS', {"pos": tris, "color": cols}).draw(sh)
         ea = 0.7 if editable else 0.3
         _lines(e0 + e1, [COL_ROT_RIBBON + (ea,)] * (len(e0) + len(e1)), 1.0 * us)
-    if editable:
-        # the twist handles of the selected keys: a line across the ribbon and a dot on its edge
-        lines, dots = [], []
-        for k in cache.keys:
-            if not k.sel or not _in(k.t, lo, hi):
-                continue
-            h = rot_ribbon_handle(st, cache, k)
-            if h is not None:
-                lines += [k.co, h]
-                dots.append(h)
-        _lines(lines, [COL_ROT_RIBBON + (1.0,)] * len(lines), 2.0 * us)
-        if dots:
-            discs = Discs()
-            for p in dots:
-                s = location_3d_to_region_2d(bpy.context.region, bpy.context.region_data, p)
-                if s is not None:
-                    discs.add_outlined(s, 4.5 * us, COL_ROT_RIBBON + (1.0,))
-            discs.draw()
 
 
 def _draw_scale_gizmos(st, cache, keys, us):
@@ -1027,13 +975,14 @@ def _smooth(pts, cols, kind):
 def _draw_knife(ctx, us):
     """The knife's cut lines (kept in 3D, so they stay on the paths when the view turns), their
     points, the cursor and what it snapped to - like the mesh Knife."""
-    lines3d, _area, cur, snap = state.knife
+    lines3d, _area, cur, snap = state.knife[:4]
+    open_cut = state.knife[4] if len(state.knife) > 4 else True
     region, rv3d = ctx.region, ctx.region_data
     lines = []
     for ln in lines3d:
         pts = [s for s in (location_3d_to_region_2d(region, rv3d, p) for p in ln) if s is not None]
         lines.append(pts)
-    if cur is not None and lines3d:
+    if cur is not None and lines3d and open_cut:
         lines[-1] = lines[-1] + [cur]
     gpu.state.blend_set('ALPHA')
     gpu.state.line_width_set(2.0)
@@ -1044,7 +993,7 @@ def _draw_knife(ctx, us):
     sq = 3.0 * us
     quads = []
     for pts in lines:
-        for p in pts[:-1] if cur is not None and pts is lines[-1] else pts:
+        for p in pts[:-1] if cur is not None and open_cut and pts is lines[-1] else pts:
             quads += [(p.x - sq, p.y - sq), (p.x + sq, p.y - sq), (p.x + sq, p.y + sq),
                       (p.x - sq, p.y - sq), (p.x + sq, p.y + sq), (p.x - sq, p.y + sq)]
     if quads:
@@ -1068,17 +1017,51 @@ def _draw_sculpt(ctx, us):
             discs.add(location_3d_to_region_2d(ctx.region, ctx.region_data, p), 2.4 * us, (1.0, 0.7, 0.25, 1.0))
         gpu.state.blend_set('ALPHA')
         discs.draw()
-    cur = state.sculpt_cursor
-    if cur is None or cur[3] != ctx.area.as_pointer():
-        return
     tool = ctx.workspace.tools.from_space_view3d_mode(ctx.mode, create=False)
     if tool is None or tool.idname not in {"emp.sculpt_path_pose", "emp.sculpt_path_object"}:
+        return
+    from . import ops_sculpt
+    ops_sculpt.draw_strip(ctx, us)
+    rad = state.sculpt_radial
+    if rad is not None and rad["area"] == ctx.area.as_pointer():
+        _draw_radial(rad, us)
+        return
+    cur = state.sculpt_cursor
+    if cur is None or cur[3] != ctx.area.as_pointer():
         return
     x, y, r, _a, painting = cur
     ring = [(x + math.cos(a * math.pi / 32) * r, y + math.sin(a * math.pi / 32) * r) for a in range(65)]
     gpu.state.line_width_set(1.5)
     _flat(ring, (1.0, 0.7, 0.25, 0.95) if painting else (1.0, 1.0, 1.0, 0.7), 'LINE_STRIP')
     gpu.state.line_width_set(1.0)
+
+
+def _draw_radial(rad, us):
+    """F / Shift+F like Blender's radial control: the brush circle, the strength as a filled
+    disc inside it, a line to the mouse and the value in the middle."""
+    x, y, r = rad["x"], rad["y"], rad["r"]
+
+    def ring(rr):
+        return [(x + math.cos(a * math.pi / 32) * rr, y + math.sin(a * math.pi / 32) * rr) for a in range(65)]
+    gpu.state.blend_set('ALPHA')
+    if rad["strength"] is not None:
+        inner = r * rad["strength"]
+        _flat([(x, y)] + ring(inner), (1.0, 0.7, 0.25, 0.28), 'TRI_FAN')
+        _flat(ring(inner), (1.0, 0.7, 0.25, 0.9), 'LINE_STRIP')
+    else:
+        _flat([(x, y)] + ring(r), (1.0, 1.0, 1.0, 0.07), 'TRI_FAN')
+    gpu.state.line_width_set(2.0)
+    _flat(ring(r), (1.0, 1.0, 1.0, 0.9), 'LINE_STRIP')
+    gpu.state.line_width_set(1.0)
+    _flat([(x, y), rad["mouse"]], (1.0, 1.0, 1.0, 0.5))
+    blf.size(0, 16 * us)
+    w, h = blf.dimensions(0, rad["text"])
+    blf.color(0, 1.0, 1.0, 1.0, 1.0)
+    blf.enable(0, blf.SHADOW)
+    blf.shadow(0, 3, 0.0, 0.0, 0.0, 0.9)
+    blf.position(0, x - w * 0.5, y - h * 0.5, 0)
+    blf.draw(0, rad["text"])
+    blf.disable(0, blf.SHADOW)
 
 
 def _draw_snap_point(ctx, us):
@@ -1187,9 +1170,10 @@ def _draw_pixel():
 
     state.chart = None if state.chart is None or ctx.area is None or \
         state.chart["area"] != ctx.area.as_pointer() else state.chart
+    if not state.overlays_hidden():
+        _draw_sculpt(ctx, us)       # the brush strip and circle show even before there's a path
     if st is not None and st.paths and not state.overlays_hidden():
         _draw_points(ctx, st, us)
-        _draw_sculpt(ctx, us)
         _draw_chart(ctx, st, us)
         _draw_speed_graph(ctx, st, us)
         _draw_prop_circle(ctx, us)

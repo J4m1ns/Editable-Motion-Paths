@@ -322,7 +322,8 @@ def _seg_cross(p, q, a, b):
 
 class EMP_OT_knife(bpy.types.Operator):
     """Cut the paths like the mesh Knife: keys are inserted where the line crosses them, the """ \
-        """motion stays (Ctrl+K). LMB: add a point or drag to draw, RMB: new cut, Shift: snap to """ \
+        """motion stays (Ctrl+K). LMB: add a point or drag to draw, RMB: make this cut and start """ \
+        """a new one, Shift: snap to """ \
         """the middle of a segment, Ctrl: no snapping, A: angle constraint, X / Y / Z: axis, """ \
         """S: frame numbers, Ctrl+Z: undo a point, Enter / Space / double-click: cut, Esc: cancel"""
     bl_idname = "emp.knife"
@@ -339,7 +340,8 @@ class EMP_OT_knife(bpy.types.Operator):
     def invoke(self, context, event):
         if context.region_data is None or not state.editable_caches(context.scene):
             return {'PASS_THROUGH'}
-        self.cuts = [[]]            # separate cut lines (RMB starts a new one), world points
+        self.cuts = [[]]            # cut lines still open, as world points
+        self.committed = 0          # keys of the cuts already made (RMB)
         # the cut lies at the depth of the paths, so it stays on them when the view turns
         pts = [p for c in state.editable_caches(context.scene) for p in c.points]
         self.depth = sum(pts, Vector()) / len(pts) if pts else context.region_data.view_location.copy()
@@ -459,10 +461,11 @@ class EMP_OT_knife(bpy.types.Operator):
             lines[-1] = lines[-1] + [self.cur]
         return [ln for ln in lines if len(ln) >= 2]
 
-    def _crossings(self, context):
+    def _crossings(self, context, lines=None):
         from bpy_extras.view3d_utils import location_3d_to_region_2d
         region, rv3d = context.region, context.region_data
-        lines = self._lines(context)
+        if lines is None:
+            lines = self._lines(context)
         out = []
         for c in state.editable_caches(context.scene):
             proj = [location_3d_to_region_2d(region, rv3d, p) for p in c.points]
@@ -478,7 +481,7 @@ class EMP_OT_knife(bpy.types.Operator):
                             t = c.times[i] + (c.times[i + 1] - c.times[i]) * hit[0]
                             frames.add(round(t) if self.whole_frames else round(t, 2))
             # a point snapped right onto a frame dot cuts there too
-            for line in self._lines(context):
+            for line in lines:
                 for pt in line:
                     for i, s in enumerate(proj):
                         if s is not None and (s - pt).length < 0.5 and abs(c.times[i] - round(c.times[i])) < 1e-6:
@@ -496,10 +499,11 @@ class EMP_OT_knife(bpy.types.Operator):
             for f in fs:
                 marks.append(c.point(tg, f))
                 labels.append("%g" % f if self.show_frames else "")
+        # (the line runs on to the cursor only from a cut that is still open)
         state.knife = ([list(c) for c in self.cuts if c], context.area.as_pointer(),
-                       None if self.drawing else self.cur.copy(), self.snap)
+                       None if self.drawing else self.cur.copy(), self.snap, bool(self.cuts[-1]))
         state.markers = (marks, context.area.as_pointer(), labels)
-        n = len(marks)
+        n = len(marks) + self.committed
         cons = ""
         if self.axis is not None:
             cons = "   along %s" % "XYZ"[self.axis]
@@ -508,7 +512,7 @@ class EMP_OT_knife(bpy.types.Operator):
                                               "screen" if self.angle_mode == 'SCREEN' else "relative")
         snap = ("   snapped: %s" % self.snap[1]) if self.snap else ""
         context.area.header_text_set(
-            "Knife: %d new key%s%s%s   LMB: point / drag   RMB: new cut   Shift: middle of a segment   "
+            "Knife: %d new key%s%s%s   LMB: point / drag   RMB: cut it, next cut   Shift: middle of a segment   "
             "Ctrl: no snapping   A: angle   X Y Z: axis   S: frame numbers   Ctrl+Z: undo point   "
             "Enter / Space / double-click: cut   Esc: cancel" % (n, "" if n == 1 else "s", cons, snap))
         state.tag_redraw()
@@ -542,9 +546,11 @@ class EMP_OT_knife(bpy.types.Operator):
             self._update_cursor(context)
             self._show(context)
         elif t == 'RIGHTMOUSE' and v == 'PRESS':
+            # let go of this cut: its keys are made now (turning the view won't change them)
             if self.cuts[-1]:
-                self.cuts.append([])        # a new, separate cut line
-                self._show(context)
+                self._commit(context)
+            self._update_cursor(context)
+            self._show(context)
         elif t == 'Z' and v == 'PRESS' and event.ctrl:
             if not self.cuts[-1] and len(self.cuts) > 1:
                 self.cuts.pop()
@@ -573,6 +579,21 @@ class EMP_OT_knife(bpy.types.Operator):
             return {'PASS_THROUGH'}     # the view can be turned while cutting, like in modeling
         return {'RUNNING_MODAL'}
 
+    def _commit(self, context):
+        pts = [q for q in (self._scr(context, p) for p in self.cuts[-1]) if q is not None]
+        self.cuts = [c for c in self.cuts[:-1] if c] + [[]]
+        if len(pts) < 2:
+            return
+        cross = self._crossings(context, [pts])
+        if not any(fs for _c, fs in cross):
+            return
+        if not self.committed:
+            pick.deselect_all(state.editable_caches(context.scene))
+        for c, fs in cross:
+            c.refresh(force=True)
+            self.committed += _insert_and_select(c, fs)
+        pick.tag_anim_editors()
+
     def _end(self, context, confirm):
         self.drawing = False
         cross = self._crossings(context) if confirm else []
@@ -581,8 +602,8 @@ class EMP_OT_knife(bpy.types.Operator):
         context.window.cursor_modal_restore()
         context.area.header_text_set(None)
         state.tag_redraw()
-        n = 0
-        if any(fs for _c, fs in cross):
+        n = self.committed
+        if any(fs for _c, fs in cross) and not self.committed:
             pick.deselect_all(state.editable_caches(context.scene))
         for c, fs in cross:
             c.refresh(force=True)

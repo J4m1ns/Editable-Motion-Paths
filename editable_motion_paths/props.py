@@ -26,9 +26,41 @@ def _refresh(self, context):
     state.tag_redraw()
 
 
+_last_channels = [True, True, True, True]
+
+
+def _keep_one_channel(self, context):
+    """Easing channels: like the modifier channels, at least one stays on."""
+    global _last_channels
+    from .ops_easing import channel_labels
+    n = len(channel_labels(context)) or 4
+    cur = list(self.easing_channels)
+    if not any(cur[:n]):
+        if cur != _last_channels:
+            self.easing_channels = _last_channels
+        return
+    _last_channels = cur
+
+
 def _brush_items(self, context):
     from .ops_sculpt import brush_items
     return brush_items(self, context)
+
+
+class EMP_BrushSettings(bpy.types.PropertyGroup):
+    """Sculpt Motion Path brush settings (on the window manager: undo doesn't change them)."""
+    brush: EnumProperty(name="Brush", items=_brush_items,
+                        description="Sculpt Motion Path: what the brush does")
+    radius: IntProperty(name="Radius", default=50, min=5, soft_max=400, subtype='PIXEL',
+                        description="Brush radius on the screen (F)")
+    strength: FloatProperty(name="Strength", default=0.5, min=0.0, max=1.0, subtype='FACTOR',
+                            description="How strong the brush is (Shift+F)")
+    falloff: EnumProperty(
+        name="Falloff",
+        items=[('SMOOTH', "Smooth", "", 'SMOOTHCURVE', 0), ('SPHERE', "Sphere", "", 'SPHERECURVE', 1),
+               ('ROOT', "Root", "", 'ROOTCURVE', 2), ('SHARP', "Sharp", "", 'SHARPCURVE', 3),
+               ('LINEAR', "Linear", "", 'LINCURVE', 4), ('CONSTANT', "Constant", "", 'NOCURVE', 5)],
+        default='SMOOTH', description="How the brush fades out toward its edge")
 
 
 class EMP_PathEntry(bpy.types.PropertyGroup):
@@ -112,9 +144,12 @@ class EMP_Settings(bpy.types.PropertyGroup):
     color: FloatVectorProperty(name="Path Color", subtype='COLOR', size=3,
                                default=(0.35, 0.75, 1.0), min=0.0, max=1.0, update=_redraw)
     show_frames: BoolProperty(name="Frame Dots", default=True,
-                              description="Show a dot on every frame (spacing)", update=_redraw)
+                              description="Show a dot on every frame: the timing between the keys "
+                                          "(Ctrl+Shift+H)", update=_redraw)
     show_frame_numbers: BoolProperty(name="Key Numbers", default=False,
                                      description="Show frame numbers next to keys", update=_redraw)
+    show_handles: BoolProperty(name="Handles", default=True, update=_redraw,
+                               description="Show the handles of the selected keys (Ctrl+H)")
     show_all_handles: BoolProperty(name="All Handles", default=False,
                                    description="Show handles of all keys, not only selected ones",
                                    update=_redraw)
@@ -131,18 +166,6 @@ class EMP_Settings(bpy.types.PropertyGroup):
                                              "keys. Drag a ring to turn around that axis (Y: twist), "
                                              "drag the key to turn freely",
                                  update=_redraw)
-    sculpt_brush: EnumProperty(name="Brush", items=_brush_items,
-                               description="Sculpt Motion Path: what the brush does")
-    sculpt_radius: IntProperty(name="Radius", default=50, min=5, soft_max=400, subtype='PIXEL',
-                               description="Brush radius on the screen (F)")
-    sculpt_strength: FloatProperty(name="Strength", default=0.5, min=0.0, max=1.0, subtype='FACTOR',
-                                   description="How strong the brush is (Shift+F)")
-    sculpt_falloff: EnumProperty(
-        name="Falloff",
-        items=[('SMOOTH', "Smooth", "", 'SMOOTHCURVE', 0), ('SPHERE', "Sphere", "", 'SPHERECURVE', 1),
-               ('ROOT', "Root", "", 'ROOTCURVE', 2), ('SHARP', "Sharp", "", 'SHARPCURVE', 3),
-               ('LINEAR', "Linear", "", 'LINCURVE', 4), ('CONSTANT', "Constant", "", 'NOCURVE', 5)],
-        default='SMOOTH', description="How the brush fades out toward its edge")
     show_onion: BoolProperty(name="Onion Skin", default=False, update=_redraw,
                              description="Ghosts of the edited bones / objects on the frames around the "
                                          "current one (captured in the background, so the viewport stays "
@@ -168,12 +191,20 @@ class EMP_Settings(bpy.types.PropertyGroup):
                                            default=(0.3, 0.75, 1.0), update=_redraw)
     onion_max_tris: IntProperty(name="Detail", default=20000, min=500, soft_max=200000, update=_redraw,
                                 description="Most triangles / edges / points per ghost (fewer: faster)")
+    onion_bones: EnumProperty(
+        name="Onion Bones", update=_redraw,
+        items=[('SELECTED', "Selected Bones", "Only the selected bones"),
+               ('VISIBLE', "Visible Bones", "The bones you can see (hidden bones and hidden bone "
+                                           "collections are left out)")],
+        default='VISIBLE')
+    onion_size: FloatProperty(name="Size", default=3.0, min=1.0, soft_max=12.0, update=_redraw,
+                              description="Points / lines of the ghosts: how thick they are")
     onion_in_front: BoolProperty(name="In Front", default=False, update=_redraw,
                                  description="Draw the ghosts over everything (X-ray)")
     show_rot_ribbon: BoolProperty(name="Rotation Ribbon", default=True, update=_redraw,
                                   description="Rotation paths: a ribbon along the path of the tip, "
                                               "turned like the bone's X axis, so the twist (around "
-                                              "Y) shows. Drag the handle on its edge to twist")
+                                              "Y) shows")
     rot_ribbon_width: FloatProperty(name="Ribbon Width", default=1.0, min=0.05, soft_max=4.0,
                                     update=_redraw, description="Rotation ribbon: how wide it is")
     rot_ribbon_side: EnumProperty(
@@ -202,8 +233,9 @@ class EMP_Settings(bpy.types.PropertyGroup):
                ('EASE_IN_OUT', "In & Out", "Slow start and end")],
         default='EASE_IN_OUT')
     easing_channels: BoolVectorProperty(name="Easing Channels", size=4, default=(True, True, True, True),
+                                        update=_keep_one_channel,
                                         description="Which channels get the easing (drag across to "
-                                                    "switch several)")
+                                                    "switch several; one always stays on)")
     easing_strength: FloatProperty(name="Strength", default=1.0, min=0.0, max=1.0, subtype='FACTOR',
                                    description="How much of the easing (0: the timing as it was)")
     show_speed_graph: BoolProperty(name="Speed Graph", default=False, update=_redraw,
@@ -293,16 +325,18 @@ class EMP_Settings(bpy.types.PropertyGroup):
         default=True)
 
 
-classes = (EMP_PathEntry, EMP_Settings)
+classes = (EMP_BrushSettings, EMP_PathEntry, EMP_Settings)
 
 
 def register():
     for c in classes:
         bpy.utils.register_class(c)
     bpy.types.Scene.emp = PointerProperty(type=EMP_Settings)
+    bpy.types.WindowManager.emp_brush = PointerProperty(type=EMP_BrushSettings)
 
 
 def unregister():
+    del bpy.types.WindowManager.emp_brush
     del bpy.types.Scene.emp
     for c in reversed(classes):
         bpy.utils.unregister_class(c)

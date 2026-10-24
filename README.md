@@ -30,8 +30,8 @@ to Blender's normal bone / object behaviour.
 | Mode | What is drawn | What editing changes |
 |---|---|---|
 | **1 Location** | Trajectory of the bone head / object origin | Location keys |
-| **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. A selected key shows the bone's **X, Y and Z rings**, like Blender's rotate gizmo: drag a ring to turn around that axis only (it follows the mouse steadily even when the ring is seen edge-on); the green Y ring around the bone twists it around its own axis (like Ctrl+T). Dragging the key itself turns the tip freely, like a **trackball**. The faint circle shows how far the tip can reach; drag it to turn around the view axis (like R). A purple **ribbon** along the path, turned like the bone's X axis, shows the twist; drag the handle on its edge to twist (Display: width and side). **Ctrl+T** twists the bone around its own axis |
-| **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale; their color shows the Y scale (blue below 1, red above). A box at the current frame shows the current scale | Scale keys: a selected key shows a **scale gizmo** whose X and Z handles sit on the ribbon edges (drag an edge to make that ribbon wider; Y along the bone; the white one scales all). **Click** a gizmo handle to show that channel's handles as **whiskers** along the ribbon (time along the path, value across it) and pick both of them; drag a whisker to edit it. **V** and **T** (handle type, interpolation) work on the selected keys of that channel only, like on one curve in the Graph Editor. Clicking a whisker picks that handle (Shift: add another; undo brings the picking back). **Alt+S** makes the picked handles longer or shorter, **Alt+Shift+S** moves them up or down (both handles of a smooth key tilt together; one handle: the other one follows in line); with none picked, the channel's handles of the selected keys; I / O / B: before the key, after it, both. So the handles can be shaped from the keyboard alone. **S** scales all axes (X / Y / Z: one). On the selected part, thin frame lines across the ribbons show the spacing of the scale change |
+| **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. A selected key shows the bone's **X, Y and Z rings**, like Blender's rotate gizmo: drag a ring to turn around that axis only (it follows the mouse steadily even when the ring is seen edge-on); the green Y ring around the bone twists it around its own axis (like Ctrl+T). Dragging the key itself turns the tip freely, like a **trackball**. The faint circle shows how far the tip can reach; drag it to turn around the view axis (like R). A purple **ribbon** along the path, turned like the bone's X axis, shows the twist (only shown: the rings edit it; Display: width and side). **Ctrl+T** twists the bone around its own axis |
+| **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale; their color shows the Y scale (blue below 1, red above). A box at the current frame shows the current scale | Scale keys: a selected key shows a **scale gizmo** whose X and Z handles sit on the ribbon edges (drag an edge to make that ribbon wider; Y along the bone; the white one scales all). **Click** a gizmo handle to show that channel's handles as **whiskers** along the ribbon (time along the path, value across it) and pick both of them; drag a whisker to edit it. **V** and **T** (handle type, interpolation) work on the selected keys of that channel only, like on one curve in the Graph Editor. Clicking a whisker picks that handle (Shift: add another; undo brings the picking back). **Alt+S** makes the picked handles longer or shorter, **Alt+Shift+S** moves them up or down (both handles of a smooth key tilt together; one handle: the other one follows in line); with none picked, the channel's handles of the selected keys; I / O / B: before the key, after it, both. So the handles can be shaped from the keyboard alone. **S** scales all axes (X / Y / Z: one) |
 | **4 Value** | A **track** for one animated value (IK/FK switch, custom property, constraint influence…), *above the path* or *beside the path* (follows its shape in the plane of the motion, *outside* or *inside* its curves, and stays put when the view turns) | That value: move its keys away from / toward the path. Pick the value in the sidebar or tool header |
 
 Scale and Value paths of something that stays in place are drawn around a **circle** like a
@@ -45,7 +45,8 @@ isolated, and a second click shows them all again.
 
 The mode follows the bone you pick: a bone with only rotation keys (FK) switches to Rotation,
 one with only location keys to Location. Paths that can't be edited in the current mode (a
-connected bone in Location, locked channels) are gray, and the hint at the bottom says why.
+connected bone in Location, locked channels) are gray, and the hint at the bottom says why;
+in the path list such a path has a lock icon whose tooltip says the same.
 
 ## Blender's own settings
 
@@ -103,8 +104,8 @@ The tool uses the settings you know from modeling, in the header and with the us
 | **Shift+D** | duplicate: copies go halfway to the next key and follow the mouse; the **wheel** moves them through the motion a frame at a time (jumping over other keys). *Duplicate in Time* (menu) places copies with left / right instead |
 | **Ctrl+C / Ctrl+V** | copy the pose of the active key / paste it on the current frame: the channels of the current mode (*Whole Pose* in the redo panel: all of them) |
 | **Ctrl+R** | loop cut: evenly spaced keys in the segment under the mouse (wheel: number of cuts) |
-| **Ctrl+K** | knife, like the mesh Knife: keys are inserted where the line crosses the path. LMB: point (drag: draw), RMB: new cut, Shift: snap to the middle of a segment, Ctrl: no snapping (it snaps to keys and frame dots), A: angle constraint (screen / relative), X / Y / Z: along an axis, S: frame numbers, Ctrl+Z: undo a point, Enter / Space / double-click: cut; the view can be turned while cutting |
-| **Ctrl+B** | bevel: round a key into a Bezier arc (A: width, S or wheel: segments, P: profile, 0.5 = circle) |
+| **Ctrl+K** | knife, like the mesh Knife: keys are inserted where the line crosses the path. LMB: point (drag: draw), RMB: makes this cut now (its keys stay where they are when you turn the view) and starts a new one, Shift: snap to the middle of a segment, Ctrl: no snapping (it snaps to keys and frame dots), A: angle constraint (screen / relative), X / Y / Z: along an axis, S: frame numbers, Ctrl+Z: undo a point, Enter / Space / double-click: cut; the view can be turned while cutting |
+| **Ctrl+B** | bevel: round a key into a Bezier arc. It goes through the keys around it (the path outside the arc keeps its shape and timing); when one side reaches the end of the path, the other goes on and the arc gets longer on that side. C: **Clamp** (stop at the next keys), A: width, S or wheel: segments, P: profile, 0.5 = circle |
 | **M** | merge at the last selected (active, white ring) key, the first, the center or the 3D cursor |
 | **X**, **Delete**, **Ctrl+X** | delete menu / delete / dissolve |
 | **V**, **T** | handle type / interpolation |
@@ -120,6 +121,8 @@ The tool uses the settings you know from modeling, in the header and with the us
 | **Shift+T** | timing menu (see Timing and speed) |
 | Drag a **frame dot** | move that frame along the path: the frames around it follow, the keys and the shape stay (click a dot: go to that frame) |
 | **U** | display settings under the mouse |
+| **Ctrl+H** / **Ctrl+Shift+H** | hide / show the handles / the frame dots (timing) |
+| **P** | easing presets under the mouse |
 | **J** | modifiers of the active path under the mouse (the mouse wheel scrolls a long list) |
 | Right-click | path menu: **Edit Value…** (type exact values for the active key), Subdivide, Spin, Space, LoopTools, Snap, Curves, … |
 
@@ -181,13 +184,14 @@ That is Blender's own behaviour; set the smoothing to *None* if you want edits t
   changes the timing: the frames bunch up at the key along the same path (keys are added where
   needed). *Handles* (T while dragging) flattens the key's handles and makes them longer in
   time, the old way. *In* slows the bone down into the key, *Out* lets it leave the key slowly.
-* **Easing Presets** (Timing menu, or the Timing & Speed panel): a library of easing curves
+* **Easing Presets** (**P**, the Timing menu, or the Timing & Speed panel): a library of easing curves
   with pictures - Sine, Quadratic, Cubic, Quartic, Quintic, Exponential, Circular, Back,
   Bounce, Elastic, each In, Out or In & Out - for the selected part of the path (the selected
   keys; one key: the segments around it). *Keep the Path* retimes along the path (Back and
   Elastic overshoot along the direction of the motion); *Channels* sets Blender's easing
-  interpolation on the channels you pick (drag across them to switch several), like in the
-  Graph Editor.
+  interpolation on the channels you pick (drag across them to switch several; one always stays
+  on), like in the Graph Editor. *Bounce* has *Bounces* and *Bounciness*, *Elastic* its
+  amplitude and period.
 
 ## Shape tools
 
@@ -239,27 +243,34 @@ path follows every change of a modifier's settings right away.
 ## Sculpt Motion Path
 
 A second tool in the toolbar (under Edit Motion Path) paints on the paths with brushes, like
-sculpt mode. Pick a brush in the tool header (each has a picture):
+sculpt mode. Pick a brush in the strip of pictures next to the toolbar (the name shows under
+the mouse), in the tool header, or with a **right click** (brushes, radius, strength, falloff):
 
 * timing brushes - the shape of the path stays, only where the bone is on each frame changes:
   **Push** (drag the frames along the path), **Slow Down** (the frames gather under the brush),
   **Speed Up** (they spread out), **Even** (even spacing). While you paint, the new frame dots
   are shown; when you let go, the keys follow;
 * shape brushes: **Grab** (pull the path with the mouse), **Smooth**, **Pinch** (draw the path
-  toward the brush).
+  toward the brush). Smooth over a part with few keys adds keys there so it has something to
+  smooth.
 
-**F**: radius, **Shift+F**: strength, **Ctrl**: the opposite effect (Slow Down becomes Speed
-Up, Pinch pushes away). Falloff as in sculpt mode.
+**F**: radius, **Shift+F**: strength (shown like Blender's radial control), **Ctrl**: the
+opposite effect (Slow Down becomes Speed Up, Pinch pushes away), **Shift**: Smooth,
+**Ctrl+Shift**: Even, whatever the brush. Falloff as in sculpt mode. The brush settings are
+not part of undo (Ctrl+Z undoes the strokes only). The edit tool's keys work here too: 1-4
+modes, U, J, P, Shift+T, Alt+C, Ctrl+H.
 
 ## Onion skinning
 
 The onion button in the tool header shows ghosts of the edited bones / objects on the frames
 around the current one: on the keys, or every few frames (Display > Onion Skin: before / after,
 step, opacity, colors). Modes: *Silhouette* (the meshes in one flat color per ghost),
-*Wire*, *Points* (the lightest), *Bones* (sticks). The ghosts are captured in the background
-while Blender is idle and drawn from the graphics card, so the viewport stays fast; after an
-edit they are captured again a moment later. *Detail* limits the triangles per ghost for
-heavy characters.
+*Wire*, *Points* (the lightest; *Size* sets the dots and lines), *Bones* (sticks: the visible
+bones, or only the selected ones). The farther a ghost is from the current frame, the fainter.
+The ghosts are captured in the background while Blender is idle and drawn from the graphics
+card, so the viewport stays fast; after an edit they are captured again a moment later.
+*Detail* limits the triangles per ghost for heavy characters: the mesh is simplified like
+Decimate (no holes), and back faces are skipped. Ghosts show in X-ray too.
 
 ## Display
 

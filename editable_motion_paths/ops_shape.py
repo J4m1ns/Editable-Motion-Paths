@@ -259,21 +259,27 @@ def _insert_plain(cache, tg, frames):
     core.ensure_keys(tg, cache.ptype, frames)
 
 
-def bevel_key(cache, t, width, segments, profile, whole=True):
-    """Replace the key at frame t by segments+1 keys rounding the corner. Returns new frames."""
+def bevel_key(cache, t, width, segments, profile, whole=True, clamp=False):
+    """Replace the key at frame t by segments+1 keys rounding the corner. Returns new frames.
+
+    Each side goes as far as it can on its own: when one side stops (at the next key with
+    `clamp`, else at the end of the path, going through the keys between), the other one
+    goes on and the arc gets longer on that side."""
     cache.refresh(force=True)
     ks = cache.keys
     i = next((j for j, k in enumerate(ks) if abs(k.t - t) < 1e-3), None)
     if i is None or i == 0 or i == len(ks) - 1:
         return []
     k = ks[i]
-    room = min(k.t - ks[i - 1].t, ks[i + 1].t - k.t)
-    w = min(width, room - (1.0 if whole else 0.05))
+    lo, hi = (ks[i - 1].t, ks[i + 1].t) if clamp else (ks[0].t, ks[-1].t)
+    gap = 1.0 if whole else 0.05
+    wa = min(width, k.t - lo - gap)
+    wb = min(width, hi - k.t - gap)
     if whole:
-        w = float(int(w))
-    if w < (1.0 if whole else 0.05):
+        wa, wb = float(int(wa)), float(int(wb))
+    if min(wa, wb) < gap:
         return []
-    ta, tb = k.t - w, k.t + w
+    ta, tb = k.t - wa, k.t + wb
     times = [ta + (tb - ta) * j / segments for j in range(segments + 1)]
     if whole:
         times = sorted({float(round(x)) for x in times})
@@ -335,8 +341,9 @@ def bevel_key(cache, t, width, segments, profile, whole=True):
 
 
 class EMP_OT_bevel(bpy.types.Operator):
-    """Round the selected keys: each one becomes a smooth arc of new keys (Ctrl+B). """ \
-        """A: width, S or wheel: segments, P: profile"""
+    """Round the selected keys: each one becomes a smooth arc of new keys (Ctrl+B). It goes """ \
+        """through the keys around it (the path outside the arc keeps its shape and timing); """ \
+        """C: Clamp at the next keys. A: width, S or wheel: segments, P: profile"""
     bl_idname = "emp.bevel"
     bl_label = "Bevel Path Keys"
     bl_options = {'REGISTER', 'UNDO'}
@@ -348,6 +355,9 @@ class EMP_OT_bevel(bpy.types.Operator):
                            description="0.5 is a circular arc, lower is flatter / concave, higher "
                                        "keeps more of the corner")
     whole_frames: BoolProperty(name="Whole Frames", default=True)
+    clamp: BoolProperty(name="Clamp", default=False,
+                        description="Stop at the keys next to the beveled one (off: go through them; "
+                                    "the path outside the arc keeps its shape and timing)")
 
     def _apply(self, context):
         made = []
@@ -355,7 +365,7 @@ class EMP_OT_bevel(bpy.types.Operator):
             ts = sorted((k.t for k in c.keys[1:-1] if k.sel), reverse=True)
             new = []
             for t in ts:
-                new += bevel_key(c, t, self.width, self.segments, self.profile, self.whole_frames)
+                new += bevel_key(c, t, self.width, self.segments, self.profile, self.whole_frames, self.clamp)
             if new:
                 pick.deselect_all([c])
                 c.refresh(force=True)
@@ -420,9 +430,10 @@ class EMP_OT_bevel(bpy.types.Operator):
             self._apply(context)
         context.area.header_text_set(
             "Bevel: width %.1f frames, %d segment%s, profile %.2f%s   mouse: %s   "
-            "A: width   S / wheel: segments   P: profile   click: confirm   Esc: cancel" % (
+            "A: width   S / wheel: segments   P: profile   C: clamp %s   click: confirm   Esc: cancel" % (
                 self.width, self.segments, "" if self.segments == 1 else "s", self.profile,
-                " (circle)" if abs(self.profile - 0.5) < 0.01 else "", self.adjust.lower()))
+                " (circle)" if abs(self.profile - 0.5) < 0.01 else "", self.adjust.lower(),
+                "ON (stops at the next keys)" if self.clamp else "off (through the keys)"))
         pick.tag_anim_editors()
 
     def modal(self, context, event):
@@ -434,6 +445,9 @@ class EMP_OT_bevel(bpy.types.Operator):
             self._update(context, event)
         elif t in {'WHEELDOWNMOUSE', 'PAGE_DOWN', 'NUMPAD_MINUS'} and v == 'PRESS':
             self.segments = max(1, self.segments - 1)
+            self._update(context, event)
+        elif t == 'C' and v == 'PRESS':
+            self.clamp = not self.clamp
             self._update(context, event)
         elif t in {'A', 'S', 'P'} and v == 'PRESS':
             # like mesh Bevel: A width, S segments, P profile (pressed again: back to width)

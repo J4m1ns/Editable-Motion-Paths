@@ -27,8 +27,32 @@ def busy():
 
 
 def _signature(scene, st):
-    """What the captured ghosts belong to: the edited paths and the detail setting."""
-    return (tuple(c.key[:2] for c in state.editable_caches(scene)), st.onion_max_tris)
+    """What the captured ghosts belong to: the edited paths and the detail / bone settings."""
+    return (tuple(c.key[:2] for c in state.editable_caches(scene)), st.onion_max_tris, st.onion_bones,
+            _bone_state(scene, st))
+
+
+def _bone_state(scene, st):
+    """Which bones the Bones mode shows (it changes with the selection / visibility)."""
+    if st.onion_mode != 'BONES':
+        return None
+    out = []
+    for c in state.editable_caches(scene):
+        obj = bpy.data.objects.get(c.obj_name)
+        if obj is not None and obj.type == 'ARMATURE':
+            out.append(tuple(pb.name for pb in obj.pose.bones if _bone_shown(pb, st)))
+    return tuple(out)
+
+
+def _bone_shown(pb, st):
+    from . import compat
+    b = pb.bone
+    if st.onion_bones == 'SELECTED':
+        return compat.bone_selected(pb)
+    if b.hide:
+        return False
+    cols = list(getattr(b, "collections", ()))
+    return not cols or any(getattr(col, "is_visible_effectively", getattr(col, "is_visible", True)) for col in cols)
 
 
 def clear():
@@ -83,6 +107,34 @@ def frames_to_show(scene, st):
     return [(f, -(i + 1)) for i, f in enumerate(before)] + [(f, i + 1) for i, f in enumerate(after)]
 
 
+def _decimate(co, tri, limit):
+    """Fewer triangles without holes, like Decimate: vertices that fall into the same cell of a
+    grid melt into one, triangles that collapse go away; the grid gets coarser until the mesh
+    fits the limit."""
+    import numpy as np
+    lo, hi = co.min(axis=0), co.max(axis=0)
+    diag = float(np.linalg.norm(hi - lo)) or 1.0
+    cells = max(8.0, (limit * 0.5) ** 0.5 * 2.0)
+    best = (co, tri)
+    for _i in range(12):
+        q = np.floor((co - lo) / (diag / cells)).astype(np.int64)
+        uniq, inv = np.unique(q, axis=0, return_inverse=True)
+        inv = inv.reshape(-1)
+        sums = np.zeros((len(uniq), 3), dtype=np.float64)
+        np.add.at(sums, inv, co)
+        newco = (sums / np.bincount(inv)[:, None]).astype(np.float32)
+        t2 = inv[tri]
+        keep = (t2[:, 0] != t2[:, 1]) & (t2[:, 1] != t2[:, 2]) & (t2[:, 0] != t2[:, 2])
+        t2 = t2[keep]
+        _u, first = np.unique(np.sort(t2, axis=1), axis=0, return_index=True)
+        t2 = t2[np.sort(first)]     # the same triangle twice: once (its winding kept for culling)
+        best = (newco, t2)
+        if len(t2) <= limit or cells <= 8.0:
+            break
+        cells *= 0.75
+    return best
+
+
 def _capture(scene, frames, meshes, arms, st):
     import numpy as np
     dg = bpy.context.evaluated_depsgraph_get()
@@ -109,9 +161,10 @@ def _capture(scene, frames, meshes, arms, st):
                 tri = np.empty(nt * 3, dtype=np.int32)
                 me.loop_triangles.foreach_get("vertices", tri)
                 tri = tri.reshape(-1, 3)
+                vco = co
                 if nt > limit:
-                    tri = tri[::int(np.ceil(nt / limit))]
-                data["tris"].append(co[tri.ravel()])
+                    vco, tri = _decimate(co, tri, limit)
+                data["tris"].append(vco[tri.ravel()])
             ne = len(me.edges)
             if ne:
                 ed = np.empty(ne * 2, dtype=np.int32)
@@ -125,7 +178,7 @@ def _capture(scene, frames, meshes, arms, st):
         for arm in arms:
             M = arm.matrix_world
             for pb in arm.pose.bones:
-                if pb.bone.hide:
+                if not _bone_shown(pb, st):
                     continue
                 data["bones"] += [tuple(M @ pb.head), tuple(M @ pb.tail)]
         _frames[f] = {k: (np.concatenate(v) if v and k != "bones" else (np.array(v, dtype=np.float32) if v else None))
@@ -219,19 +272,26 @@ def draw(scene, st, us):
     sh = gpu.shader.from_builtin('UNIFORM_COLOR')
     kind = {'SILHOUETTE': "tris", 'WIRE': "edges", 'POINTS': "points", 'BONES': "bones"}[st.onion_mode]
     prev_test = gpu.state.depth_test_get()
+    # (in front: the depth still has to be written for the one-layer silhouette, and with the
+    # depth test off nothing is written - so "always" passes instead)
+    test = 'ALWAYS' if st.onion_in_front else 'LESS_EQUAL'
     gpu.state.blend_set('ALPHA')
-    gpu.state.depth_test_set('NONE' if st.onion_in_front else 'LESS_EQUAL')
+    gpu.state.depth_test_set(test)
     n_b = max(1, st.onion_before)
     n_a = max(1, st.onion_after)
     for f, i in sorted(shows, key=lambda x: -abs(x[1])):     # the farthest first
         b = _batch(f, kind, sh)
         if b is None:
             continue
-        fade = 1.0 - (abs(i) - 1) / ((n_b if i < 0 else n_a) + 0.5)
+        # the farther from the current frame, the fainter
+        n = n_b if i < 0 else n_a
+        fade = (n - abs(i) + 1) / float(n)
         col = tuple(st.onion_color_before if i < 0 else st.onion_color_after)
-        a = st.onion_opacity * max(0.15, fade)
+        a = st.onion_opacity * max(0.08, fade ** 1.5)
         if kind == "tris":
             # one flat layer per ghost: depth first, then the color only where it is in front
+            # (back faces are skipped: half the work, and nothing changes in a silhouette)
+            gpu.state.face_culling_set('BACK')
             gpu.state.depth_mask_set(True)
             gpu.state.color_mask_set(False, False, False, False)
             sh.uniform_float("color", (0, 0, 0, 0))
@@ -240,13 +300,14 @@ def draw(scene, st, us):
             gpu.state.depth_test_set('EQUAL')
             sh.uniform_float("color", col + (a,))
             b.draw(sh)
-            gpu.state.depth_test_set('NONE' if st.onion_in_front else 'LESS_EQUAL')
+            gpu.state.depth_test_set(test)
             gpu.state.depth_mask_set(False)
+            gpu.state.face_culling_set('NONE')
         else:
-            if kind == "bones":
-                gpu.state.line_width_set(3.0 * us)
+            if kind in {"bones", "edges"}:
+                gpu.state.line_width_set(st.onion_size * us * (1.0 if kind == "bones" else 0.4))
             elif kind == "points":
-                gpu.state.point_size_set(2.0 * us)
+                gpu.state.point_size_set(st.onion_size * us)
             sh.uniform_float("color", col + (min(1.0, a * 1.6),))
             b.draw(sh)
             gpu.state.line_width_set(1.0)

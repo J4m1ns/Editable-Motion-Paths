@@ -208,10 +208,14 @@ class _Job:
                     kp.handle_right = (hrx + d, kp.handle_right[1])
                 touched.add(fc)
             if extrapolate:
-                # Continue: the pose follows the (extrapolated) trajectory to the new frame
+                # Follow: the pose follows the (extrapolated) trajectory to the new frame
                 for k in self.keys:
                     t = k.t + delta
                     core.write_key(ch, k, self._vals(tg, k, t, t), True, touched)
+            # keys slid past the ends of the path: the path reaches them right away
+            for k in self.keys:
+                if not cache.fs <= k.t + delta <= cache.fe:
+                    cache.extend_to(k.t + delta)
         else:
             gap = 1.0 if snap else 0.05
             from .ops_timing import pchip, refit, warp_target

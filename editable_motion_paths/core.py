@@ -603,7 +603,8 @@ class PathCache:
             return list(ref_vals)
         if self.ptype == VALUE:
             base = self.head(tg, t)
-            return [(W - base).dot(self.value_dir(tg, t)) / self.vgain + self.vbase]
+            v = (W - base).dot(self.value_dir(tg, t)) / self.vgain + self.vbase
+            return [v] if math.isfinite(v) and abs(v) < 1e12 else list(ref_vals)
         if self.ptype == LOCATION:
             v = self.B_at(t).inverted_safe() @ W
             locks = tg.loc_locks()
@@ -668,7 +669,10 @@ class PathCache:
             # never make the track jump; only values far outside it set it again
             vs = [ch.values(float(t))[0] for t in range(fs, fe + 1)] if self.ptype == VALUE else []
             renew = self.vgain_id is None
-            if vs and not renew:
+            # never while a key is being dragged: a new scale in the middle of a drag makes the
+            # same mouse move mean a bigger value, which makes a new scale... (the value runs off
+            # to huge numbers). It's set again once the edit is over.
+            if vs and not renew and not state.modal_running:
                 span = self.size_ref * VALUE_HEIGHT / self.vgain
                 renew = min(vs) < self.vbase - span or max(vs) > self.vbase + 2.0 * span
             if renew:
