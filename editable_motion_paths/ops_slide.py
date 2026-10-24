@@ -244,7 +244,9 @@ class _Job:
 class EMP_OT_slide(bpy.types.Operator):
     """Slide the selected keys along the path (G G). Timing: keys keep their pose and move """ \
         """in time, like in the timeline. Spacing: keys keep their frame and slide along the """ \
-        """trajectory. Continue (C): the motion goes on past the first / last key"""
+        """trajectory. Follow (C): the key keeps its handles and follows the path itself (Timing: """ \
+        """to where the motion was at the new frame; Spacing: without retiming the frames around """ \
+        """it); past the first / last key the motion goes on"""
     bl_idname = "emp.slide"
     bl_label = "Slide Keys Along Path"
     bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
@@ -256,9 +258,11 @@ class EMP_OT_slide(bpy.types.Operator):
                              "timeline). The frame dots around them spread out or bunch up"),
     ], default='TIMING')
     extrapolate: BoolProperty(
-        name="Continue Motion", default=False,
-        description="The pose follows the trajectory and keeps going past the first / last key, "
-                    "extrapolating the motion (C while sliding)")
+        name="Follow the Path", default=False,
+        description="C while sliding. The key keeps its handles and follows the path itself. "
+                    "Timing: it moves in time and onto the path where the motion was at the new "
+                    "frame. Spacing: it slides along the path without retiming the frames around "
+                    "it. Past the first / last key the motion goes on")
     offset: FloatProperty(name="Frames", default=0.0, description="Time offset along the path")
     all_channels: BoolProperty(
         name="Whole Pose", default=True,
@@ -414,15 +418,23 @@ class EMP_OT_slide(bpy.types.Operator):
         p = _interp(self.track_times, self.track_points, t_new)
         name = "Timing" if self.slide_mode == 'TIMING' else "Spacing"
         if self.extrapolate:
-            name += " + Continue"
+            name += " + Follow"
         frame = ("%d" % round(t_new)) if abs(t_new - round(t_new)) < 1e-3 else ("%.2f" % t_new)
         txt = "%s: frame %s (%s)" % (name, frame, self.numinput.text(0, delta, "%+.2f"))
         state.slide_marker = (p, "%s  %+g" % (frame, round(delta, 2)))
         state.hud = (txt, (event.mouse_x - self.region.x, event.mouse_y - self.region.y))
+        # what C does depends on the mode (see _Job.apply)
+        if self.slide_mode == 'TIMING':
+            c_hint = ("C: Follow %s (the key moves in time and onto the path where the motion was "
+                      "then, keeping its handles; past the ends the motion goes on)")
+        else:
+            c_hint = ("C: Follow %s (the key slides along the path keeping its handles, the "
+                      "frames around it are not retimed; past the ends the motion goes on)")
+        c_hint = c_hint % ("ON" if self.extrapolate else "off")
         self.area.header_text_set(
-            txt + "   move left / right   T: Timing / Spacing   C: continue past the ends   "
-                  "Ctrl: subframes   Shift: precise   "
-                  "type a frame offset   LMB/Enter: confirm   RMB/Esc: cancel")
+            txt + "   move left / right   T: Timing / Spacing   " + c_hint +
+            "   Ctrl: subframes   Shift: precise   type a frame offset   LMB/Enter: confirm   "
+            "RMB/Esc: cancel")
         state.tag_redraw()
 
     def _finish(self, context):

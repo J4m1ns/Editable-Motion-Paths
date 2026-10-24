@@ -113,7 +113,12 @@ class EMP_OT_edit_value(bpy.types.Operator):
             prop = {'BOOL': "bools", 'INT': "ints"}.get(kind, "floats")
             col = layout.column(align=True)
             for i in range(max(1, self.count)):
-                col.prop(self, prop, index=i, text="" if self.count == 1 else "XYZW"[i])
+                if kind == 'BOOL':
+                    # a lone checkbox says nothing: it switches the value on
+                    text = "Active" if self.count <= 1 else "Active %s" % "XYZW"[i]
+                else:
+                    text = "" if self.count == 1 else "XYZW"[i]
+                col.prop(self, prop, index=i, text=text)
         layout.prop(self, "all_selected")
 
     def _values(self):

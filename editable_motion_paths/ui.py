@@ -402,6 +402,11 @@ class EMP_UL_paths(bpy.types.UIList):
             cache = state.caches.get(state.entry_key(item))
             if cache is not None and cache.locked:
                 row.label(text="", icon='LOCKED')
+            # isolate this path's curves in the Graph Editor (pressed while they are isolated)
+            from .ops_tools import graph_isolated
+            on = graph_isolated(item)
+            row.operator("emp.graph_isolate", text="", emboss=on, depress=on,
+                         icon='LOOP_BACK' if on else 'LOOP_FORWARDS').index = index
 
 
 class _Panel:
@@ -432,6 +437,8 @@ class EMP_PT_main(_Panel, bpy.types.Panel):
             row = layout.row(align=True)
             _draw_value_picker(row, context)
             row.prop(st, "value_track", text="")
+            if st.value_track == 'PATH':
+                layout.row().prop(st, "value_side", expand=True)
 
         row = layout.row()
         row.template_list("EMP_UL_paths", "", st, "paths", st, "active_index", rows=3)
@@ -578,6 +585,8 @@ def _draw_display(layout, st):
     sub.active = st.show_scale_box
     sub.prop(st, "scale_box_size", text="Size")
     layout.prop(st, "value_track")
+    if st.value_track == 'PATH':
+        layout.prop(st, "value_side")
     layout.prop(st, "layout", text="Scale / Value Layout")
     if st.layout != 'PATH':
         col = layout.column(align=True)

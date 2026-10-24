@@ -592,7 +592,8 @@ def _copy_source(caches):
 
 
 class EMP_OT_copy_keys(bpy.types.Operator):
-    """Copy the pose of the active key (Ctrl+C). Ctrl+V pastes it on the current frame"""
+    """Copy the pose of the active key (Ctrl+C). Ctrl+V pastes the channels of the current """ \
+        """mode on the current frame (Whole Pose in its redo panel: all of them)"""
     bl_idname = "emp.copy_keys"
     bl_label = "Copy Key Pose"
 
@@ -626,10 +627,15 @@ class EMP_OT_copy_keys(bpy.types.Operator):
 
 
 class EMP_OT_paste_keys(bpy.types.Operator):
-    """Paste the copied key pose on the current frame (Ctrl+V)"""
+    """Paste the copied key on the current frame (Ctrl+V): the channels of the current mode """ \
+        """(Location, Rotation, Scale or the Value), or the whole pose"""
     bl_idname = "emp.paste_keys"
     bl_label = "Paste Key Pose"
     bl_options = {'REGISTER', 'UNDO'}
+
+    whole_pose: BoolProperty(name="Whole Pose", default=False,
+                             description="Paste every copied channel of the bone / object, not "
+                                         "only the ones of the current mode")
 
     def invoke(self, context, event):
         if _clipboard is None or not state.editable_caches(context.scene):
@@ -648,6 +654,8 @@ class EMP_OT_paste_keys(bpy.types.Operator):
             own = {(ch.path, fc.array_index if fc is not None else i) for i, fc in enumerate(ch.fcurves)}
             for suffix, index, entry, value in _clipboard["items"]:
                 path = tg.prefix + suffix if tg.prefix else suffix
+                if not self.whole_pose and (path, index) not in own:
+                    continue        # only the channels of the current mode
                 fc = tg.coll.find(path, index=index) if tg.coll is not None else None
                 if fc is None:
                     if (path, index) not in own:
@@ -664,7 +672,9 @@ class EMP_OT_paste_keys(bpy.types.Operator):
             state.set_active(c.key, frame)
         state.schedule_rebake(0.3)
         pick.tag_anim_editors()
-        self.report({'INFO'}, "Pasted the pose of frame %g on frame %g" % (_clipboard["frame"], frame))
+        self.report({'INFO'}, "Pasted %s of frame %g on frame %g" % (
+            "the whole pose" if self.whole_pose else "the %s keys" % state.edit_mode(context.scene).lower(),
+            _clipboard["frame"], frame))
         return {'FINISHED'}
 
 
@@ -1068,7 +1078,13 @@ class EMP_OT_toggle_cycles(bpy.types.Operator):
 
     all_channels: BoolProperty(name="Whole Pose", default=True,
                                description="Loop every channel of the bone / object, not only the "
-                                           "edited ones")
+                                           "ones of the current mode")
+
+    @classmethod
+    def description(cls, context, properties):
+        if properties.all_channels:
+            return "Make the whole pose of the bone / object loop (Cycles), or stop looping"
+        return "Make only the channels of the current mode loop (Cycles), or stop looping"
 
     def execute(self, context):
         caches = state.editable_caches(context.scene)
@@ -1101,7 +1117,10 @@ class EMP_MT_loop(bpy.types.Menu):
 
     def draw(self, context):
         layout = self.layout
-        layout.operator("emp.toggle_cycles", icon='FILE_REFRESH')
+        layout.operator("emp.toggle_cycles", text="Toggle Cycles (Whole Pose)", icon='FILE_REFRESH').all_channels = True
+        mode = state.edit_mode(context.scene).title()
+        layout.operator("emp.toggle_cycles", text="Toggle Cycles (%s Only)" % mode,
+                        icon='FILE_REFRESH').all_channels = False
         layout.operator("emp.fix_loop", text="Fix Loop Seam", icon='LOOP_BACK')
 
 

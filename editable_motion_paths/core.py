@@ -409,7 +409,9 @@ class PathCache:
         self.vgain_id = None
         self.size_ref = 1.0     # path size the value / scale drawing was set up for
         self.vdir = Vector((0.0, 0.0, 1.0))   # value track: up on the screen (follows the view)
-        self.vview = Vector((0.0, 1.0, 0.0))  # value track: view direction (track beside the path)
+        self.vview = Vector((0.0, 1.0, 0.0))  # value track: view direction
+        self.vplane_n = Vector((0.0, 0.0, 1.0))  # value track beside the path: the path's plane normal
+        self.value_side = 'OUTSIDE'
         self.circle = None      # scale / value paths drawn around a circle (see _circle_layout)
         self.track_mode = 'UP'
         self.base_points = []   # scale / value paths: the location path they are drawn on
@@ -516,17 +518,38 @@ class PathCache:
         return out
 
     def value_dir(self, tg, t):
-        """Value track offset: up on the screen, or beside the path (left of the motion on the
-        screen), so it follows the shape of the path."""
+        """Value track offset: up on the screen, or beside the path in the plane of the motion
+        (inside or outside, see _track_plane), so it follows the shape of the path and stays put
+        when the view turns."""
         if self.circle is not None:
             return self._circle_axes(t)[0]     # on the circle a bigger value is farther out
         if self.track_mode != 'PATH':
             return self.vdir
         tang = self.head(tg, t + 0.5) - self.head(tg, t - 0.5)
-        n = tang.cross(self.vview)
+        n = self.vplane_n.cross(tang)
         if n.length < 1e-9:
-            return self.vdir
+            n = Vector((0.0, 0.0, 1.0)).cross(tang)
+            if n.length < 1e-9:
+                return self.vdir
         return n.normalized()
+
+    def _track_plane(self, tg):
+        """Value track beside the path: the normal of the plane the motion lies in, turned so
+        that (normal x direction of motion) points to the chosen side (inside: toward the middle
+        of the motion) on the whole."""
+        from .geom import best_plane
+        heads = [self.world_head(tg, float(t)) for t in range(self.fs, self.fe + 1)]
+        if len(heads) < 3:
+            return
+        center, n = best_plane(heads)
+        if n.length < 1e-9:
+            n = Vector((0.0, 0.0, 1.0))
+        score = 0.0
+        for a, b in zip(heads, heads[1:]):
+            score += n.cross(b - a).dot(center - (a + b) * 0.5)
+        if (score < 0.0) == (self.value_side == 'INSIDE'):
+            n = -n
+        self.vplane_n = n
 
     def point(self, tg, t, vals=None):
         """World position of the path at time t; `vals` overrides the edited channels."""
@@ -620,9 +643,10 @@ class PathCache:
         used = {LOCATION: (tg.loc,), SCALE: (tg.loc, tg.scale), VALUE: (tg.loc, tg.value)}.get(
             self.ptype, (tg.loc, tg.rot, tg.scale))
         self.track_mode = settings.value_track if settings else 'UP'
+        self.value_side = settings.value_side if settings else 'OUTSIDE'
         lay = (settings.layout, settings.circle_radius, settings.circle_use_range, settings.circle_start,
                settings.circle_end) if settings and self.ptype in (SCALE, VALUE) else None
-        sig = (self.bake_id, self.rot_len, tg.rot_mode, self.track_mode, lay,
+        sig = (self.bake_id, self.rot_len, tg.rot_mode, self.track_mode, self.value_side, lay,
                tuple(tuple(_fc_signature(fc) for fc in ch.fcurves) for ch in used),
                tuple(tuple(ch.static) for ch in used))
         if not force and not self.dirty and sig == self.sig and self.valid:
@@ -637,6 +661,8 @@ class PathCache:
         ch = tg.channels(self.ptype)
         fs, fe = self.fs, self.fe
         self.circle = self._circle_layout(tg) if self.ptype in (SCALE, VALUE) else None
+        if self.ptype == VALUE and self.circle is None and self.track_mode == 'PATH':
+            self._track_plane(tg)
         if self.ptype in (SCALE, VALUE):
             # the scale of the drawing is set once (per value), so edits and recalculations
             # never make the track jump; only values far outside it set it again

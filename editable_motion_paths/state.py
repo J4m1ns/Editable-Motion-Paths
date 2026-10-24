@@ -484,6 +484,25 @@ def flash_message(text, seconds=3.0):
     tag_redraw()
 
 
+_isolated_last = None
+
+
+def _watch_isolated(st):
+    """The path list's Graph Editor buttons show whether curves are isolated: redraw the
+    sidebar when that changes elsewhere (e.g. curves shown again in the Graph Editor)."""
+    global _isolated_last
+    from .ops_tools import graph_isolated
+    now = tuple(graph_isolated(e) for e in st.paths)
+    if now != _isolated_last:
+        _isolated_last = now
+        for w in bpy.context.window_manager.windows:
+            for a in w.screen.areas:
+                if a.type == 'VIEW_3D':
+                    for r in a.regions:
+                        if r.type == 'UI':
+                            r.tag_redraw()
+
+
 def _watch_active():
     """Auto edit mode: when the active bone/object has a path but nothing to edit in the
     current mode (e.g. only location is animated while editing Rotation), switch modes."""
@@ -492,6 +511,10 @@ def _watch_active():
         st = settings()
         if st is None or not st.paths or modal_running:
             return 0.25
+        try:
+            _watch_isolated(st)
+        except Exception:
+            pass
         vl = bpy.context.view_layer
         obj = vl.objects.active if vl is not None else None
         if obj is None:

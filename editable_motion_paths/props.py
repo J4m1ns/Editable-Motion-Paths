@@ -154,9 +154,17 @@ class EMP_Settings(bpy.types.PropertyGroup):
         name="Value Track",
         description="Where Value mode (4) draws the value",
         items=[('UP', "Above the Path", "Higher on the screen = bigger value"),
-               ('PATH', "Beside the Path", "Follows the shape of the path: farther to the left of "
-                                           "the motion = bigger value (works however the path turns)")],
+               ('PATH', "Beside the Path", "Follows the shape of the path: farther from it = "
+                                           "bigger value, on the side set below (stays put when "
+                                           "the view turns)")],
         default='UP', update=_refresh)
+    value_side: EnumProperty(
+        name="Side",
+        description="Value track beside the path: on which side of the path it is drawn",
+        items=[('OUTSIDE', "Outside", "Away from the middle of the motion (around the outside of "
+                                      "its curves)"),
+               ('INSIDE', "Inside", "Toward the middle of the motion")],
+        default='OUTSIDE', update=_refresh)
     ribbon_width: FloatProperty(name="Ribbon Width", default=1.0, min=0.05, soft_max=5.0,
                                 description="Scale paths: how wide the ribbons are drawn", update=_redraw)
     scale_channel: EnumProperty(

@@ -31,13 +31,17 @@ to Blender's normal bone / object behaviour.
 |---|---|---|
 | **1 Location** | Trajectory of the bone head / object origin | Location keys |
 | **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. A selected key shows the bone's **X, Y and Z rings**, like Blender's rotate gizmo: drag a ring to turn around that axis only (it follows the mouse steadily even when the ring is seen edge-on); the green Y ring around the bone twists it around its own axis (like Ctrl+T). Dragging the key itself turns the tip freely, like a **trackball**. The faint circle shows how far the tip can reach; drag it to turn around the view axis (like R). **Ctrl+T** twists the bone around its own axis |
-| **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale; their color shows the Y scale (blue below 1, red above). A box at the current frame shows the current scale | Scale keys: a selected key shows a **scale gizmo** whose X and Z handles sit on the ribbon edges (drag an edge to make that ribbon wider; Y along the bone; the white one scales all). **Click** a gizmo handle to show that channel's handles as **whiskers** along the ribbon (time along the path, value across it) and pick both of them; drag a whisker to edit it. **V** and **T** (handle type, interpolation) work on the selected keys of that channel only, like on one curve in the Graph Editor. Clicking a whisker picks that handle (Shift: add another; undo brings the picking back). **Alt+S** makes the picked handles longer or shorter, **Alt+Shift+S** moves them up or down (both handles of a smooth key tilt together; one handle: the other one follows in line); with none picked, the channel's handles of the selected keys; I / O / B: before the key, after it, both. So the handles can be shaped from the keyboard alone. **S** scales all axes (X / Y / Z: one) |
-| **4 Value** | A **track** for one animated value (IK/FK switch, custom property, constraint influence…), *above the path* or *beside the path* (follows its shape, so it works however the path turns) | That value: move its keys away from / toward the path. Pick the value in the sidebar or tool header |
+| **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale; their color shows the Y scale (blue below 1, red above). A box at the current frame shows the current scale | Scale keys: a selected key shows a **scale gizmo** whose X and Z handles sit on the ribbon edges (drag an edge to make that ribbon wider; Y along the bone; the white one scales all). **Click** a gizmo handle to show that channel's handles as **whiskers** along the ribbon (time along the path, value across it) and pick both of them; drag a whisker to edit it. **V** and **T** (handle type, interpolation) work on the selected keys of that channel only, like on one curve in the Graph Editor. Clicking a whisker picks that handle (Shift: add another; undo brings the picking back). **Alt+S** makes the picked handles longer or shorter, **Alt+Shift+S** moves them up or down (both handles of a smooth key tilt together; one handle: the other one follows in line); with none picked, the channel's handles of the selected keys; I / O / B: before the key, after it, both. So the handles can be shaped from the keyboard alone. **S** scales all axes (X / Y / Z: one). On the selected part, thin frame lines across the ribbons show the spacing of the scale change |
+| **4 Value** | A **track** for one animated value (IK/FK switch, custom property, constraint influence…), *above the path* or *beside the path* (follows its shape in the plane of the motion, *outside* or *inside* its curves, and stays put when the view turns) | That value: move its keys away from / toward the path. Pick the value in the sidebar or tool header |
 
 Scale and Value paths of something that stays in place are drawn around a **circle** like a
 clock face, lying flat around the world Z axis (it stays put when the view turns): the frame
 range goes once around it and the current frame runs around (Display > Layout: Auto / Along the
 Path / Circle, with radius and frame range).
+
+In the path list, the arrow button next to a path isolates its curves of the current mode in
+the **Graph Editor** (the bone's other curves are hidden); it stays pressed while they are
+isolated, and a second click shows them all again.
 
 The mode follows the bone you pick: a bone with only rotation keys (FK) switches to Rotation,
 one with only location keys to Location. Paths that can't be edited in the current mode (a
@@ -97,14 +101,14 @@ The tool uses the settings you know from modeling, in the header and with the us
 | Ctrl+Click on the path | insert a key; the motion doesn't change |
 | **E** | extrude from the first or last key: a new key that continues the motion, with the handle type of the key it grows from; the mouse places it, the wheel sets how many frames later (inside the path, use Shift+D) |
 | **Shift+D** | duplicate: copies go halfway to the next key and follow the mouse; the **wheel** moves them through the motion a frame at a time (jumping over other keys). *Duplicate in Time* (menu) places copies with left / right instead |
-| **Ctrl+C / Ctrl+V** | copy the pose of the active key / paste it on the current frame |
+| **Ctrl+C / Ctrl+V** | copy the pose of the active key / paste it on the current frame: the channels of the current mode (*Whole Pose* in the redo panel: all of them) |
 | **Ctrl+R** | loop cut: evenly spaced keys in the segment under the mouse (wheel: number of cuts) |
 | **K** | knife: draw a line, keys are inserted where it crosses the path |
 | **Ctrl+B** | bevel: round a key into a Bezier arc (A: width, S or wheel: segments, P: profile, 0.5 = circle) |
 | **M** | merge at the last selected (active, white ring) key, the first, the center or the 3D cursor |
 | **X**, **Delete**, **Ctrl+X** | delete menu / delete / dissolve |
 | **V**, **T** | handle type / interpolation |
-| **Alt+C** | loop menu: toggle Cycles, fix the loop seam |
+| **Alt+C** | loop menu: toggle Cycles (whole pose, or only the current mode), fix the loop seam |
 
 **Shape and timing**
 
@@ -146,7 +150,8 @@ That is Blender's own behaviour; set the smoothing to *None* if you want edits t
   keys, like an animator's chart; drag its ticks the same way. An optional **speed graph** sits
   right above it, as wide as the chart: for the selected keys, the segments on both sides of a
   single selected key, or the keys around the current frame (*Segment*), a set frame range
-  (*Range*) or the scene's frame range (*Timeline*).
+  (*Range*) or the scene's frame range (*Timeline*). Keys are marked on it with their frame
+  numbers (the selected ones orange), the current frame in green.
 * **Timing menu (Shift+T**, also in the right-click menu and the Timing & Speed panel), all
   dragged left / right:
   * *Breakdown*: blend the selected keys between the poses of their neighbors, favoring one
@@ -162,8 +167,10 @@ That is Blender's own behaviour; set the smoothing to *None* if you want edits t
 * **Slide (G G)**: *Timing* (default) keeps the poses and moves keys in time; the frame dots
   spread out or bunch up. *Spacing* (T) keeps the frames and slides the poses along the path,
   and the path keeps its shape.
-  **C** continues the motion past the first / last key. With *Whole Pose*, the bone's other
-  keys on those frames move too.
+  **C** (*Follow*): the key keeps its handles and follows the path itself. In *Timing* it moves
+  in time and onto the path where the motion was at the new frame; in *Spacing* it slides along
+  the path without retiming the frames around it. Past the first / last key the motion goes
+  on. With *Whole Pose*, the bone's other keys on those frames move too.
 * **Space** (Timing & Speed panel, right-click menu): changes the spacing between the selected
   keys (or of the whole path) while the path keeps its shape. *Even* gives constant speed, and
   *Slow In* (start slowly), *Slow Out* (end slowly) and *Slow In & Out* give clean eases
@@ -218,8 +225,9 @@ The color button in the tool header opens the display settings (colors, dots, ri
 track) without going to the sidebar.
 
 * **Color**: *Speed* (blue slow, red fast), **Jitter**, *Before / After* and *Solid*. Jitter
-  is a heat map of roughness. Smooth motion stays gray; hitches, pops and noisy wobbles glow
-  yellow to red. Select the red part and smooth it. *Threshold* sets the sensitivity.
+  is a heat map of roughness. Smooth motion stays gray (fast smooth motion too: roughness is
+  measured against the local speed); hitches, pops and noisy wobbles glow yellow to red. Select
+  the red part and smooth it. *Threshold* sets the sensitivity.
 * Baked keys (a key every frame or two) are drawn as small dots, so dense motion stays
   readable.
 * Turning off **Show Overlays** hides the paths, and viewport hotkeys then work as in plain

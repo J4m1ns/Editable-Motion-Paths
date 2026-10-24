@@ -542,6 +542,9 @@ def render_view(filepath, overlays=True):
         raise RuntimeError("No 3D viewport")
     space = area.spaces.active
     rv3d = space.region_3d
+    # the view matrices follow view changes (setup_view, frame_path) only at the next redraw:
+    # bring them up to date, or the shot shows the view as it was before
+    rv3d.update()
     W, H = region.width, region.height
     off = gpu.types.GPUOffScreen(W, H)
     ctx = bpy.context
@@ -603,4 +606,5 @@ def frame_path(obj, bone=None, mode=None, margin=1.4):
     r3 = area.spaces.active.region_3d
     r3.view_location = center
     r3.view_distance = max(radius * 2.0 * margin, 0.1)
+    r3.update()         # (render_view right after this sees the new view)
     area.tag_redraw()

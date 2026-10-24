@@ -67,8 +67,14 @@ The preview objects show:
 * a green octahedron for the current frame.
 
 Call `emp.preview_objects()` again after every edit. If you can read local files, use
-`emp.render_view(r"C:\path\shot.png")` instead. It renders the real overlay, handles
-included.
+`emp.render_view(r"C:\path\shot.png")` instead. It renders the real overlay, handles and
+frame numbers included, from the view `setup_view` / `frame_path` just set (also in the same
+script call):
+
+```python
+emp.setup_view("Zombie_Rig", "CTRL_Foot_L", angle=(1.3, 0, 1.2))
+emp.render_view(r"C:\path\shot.png")     # framed on the path, close up
+```
 
 ## Edit
 

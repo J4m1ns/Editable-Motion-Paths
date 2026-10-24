@@ -120,6 +120,84 @@ class EMP_OT_path_remove(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def graph_channels(entry):
+    """(all F-Curves of the path's bone / object, {(data_path, index)} of the path's channels in
+    the current mode) or None."""
+    cache = state.caches.get(state.entry_key(entry)) if entry.object is not None else None
+    tg = cache.target() if cache is not None else None
+    if tg is None:
+        return None
+    fcs = compat.get_fcurves(entry.object)
+    if fcs is None:
+        return None
+    if tg.prefix:
+        fcs = [fc for fc in fcs if fc.data_path.startswith(tg.prefix)]
+    want = {(fc.data_path, fc.array_index) for fc in tg.channels(cache.ptype).fcurves if fc is not None}
+    return list(fcs), want
+
+
+def graph_isolated(entry):
+    """Does the Graph Editor show only this path's channels (the others hidden)?"""
+    got = graph_channels(entry)
+    if got is None:
+        return False
+    fcs, want = got
+    if not want or len(fcs) <= len(want):
+        return False
+    return all(fc.hide == ((fc.data_path, fc.array_index) not in want) for fc in fcs)
+
+
+class EMP_OT_graph_isolate(bpy.types.Operator):
+    """Graph Editor: show only this path's curves of the current mode (Location, Rotation, """ \
+        """Scale or the Value) and hide the bone's / object's other curves. Click again to show """ \
+        """them all"""
+    bl_idname = "emp.graph_isolate"
+    bl_label = "Isolate in Graph Editor"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    index: bpy.props.IntProperty(options={'HIDDEN'})
+
+    def execute(self, context):
+        st = state.settings(context.scene)
+        if not 0 <= self.index < len(st.paths):
+            return {'CANCELLED'}
+        entry = st.paths[self.index]
+        got = graph_channels(entry)
+        if got is None:
+            self.report({'WARNING'}, "This path has no animation curves")
+            return {'CANCELLED'}
+        fcs, want = got
+        name = entry.bone_name or entry.object.name
+        mode = state.edit_mode(context.scene).title()
+        if graph_isolated(entry):
+            for fc in fcs:
+                fc.hide = False
+            msg = "Graph Editor: all curves of %s shown again" % name
+        else:
+            for fc in fcs:
+                mine = (fc.data_path, fc.array_index) in want
+                fc.hide = not mine
+                fc.select = mine
+            msg = "Graph Editor: only the %s curves of %s" % (mode, name)
+        graphs = [(w, a) for w in context.window_manager.windows for a in w.screen.areas
+                  if a.type == 'GRAPH_EDITOR']
+        for w, a in graphs:
+            region = next((r for r in a.regions if r.type == 'WINDOW'), None)
+            if region is not None:
+                try:
+                    with context.temp_override(window=w, area=a, region=region):
+                        bpy.ops.graph.view_all()
+                except RuntimeError:
+                    pass
+            a.tag_redraw()
+        if not graphs:
+            msg += " (open a Graph Editor to see them)"
+        self.report({'INFO'}, msg)
+        state.flash_message(msg)
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+
 class EMP_OT_path_update(bpy.types.Operator):
     """Recalculate all motion paths (for changes they can't see by themselves, like """ \
         """constraints or drivers)"""
@@ -1220,7 +1298,7 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
             touched.add(fc)
 
 
-classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_path_update, EMP_OT_edit_tool,
+classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_path_update, EMP_OT_edit_tool,
            EMP_OT_handle_type, EMP_OT_interpolation,
            EMP_OT_smooth, EMP_OT_exaggerate, EMP_OT_ease, EMP_OT_scale_handles,
            EMP_OT_scale_handle_values, EMP_OT_fix_loop, EMP_OT_cleanup)

@@ -63,7 +63,9 @@ def _jitter_color(x):
 
 def jitter_values(cache):
     """Roughness at every sample of the path: |4th difference| of the per-frame positions
-    (zero for any smooth cubic motion) relative to the average speed."""
+    (zero for any smooth cubic motion) relative to the LOCAL speed, so fast but smooth parts
+    (big spacing) stay calm. Near holds the speed used never drops below a tenth of the
+    average, so tiny wobbles there don't light up."""
     cached = getattr(cache, "_jitter", None)
     if cached is not None and cached[0] is cache.sig:
         return cached[1]
@@ -73,9 +75,14 @@ def jitter_values(cache):
     d4 = [0.0] * n
     for i in range(2, n - 2):
         d4[i] = (P[i - 2] - 4.0 * P[i - 1] + 6.0 * P[i] - 4.0 * P[i + 1] + P[i + 2]).length
-    speed = sum((b - a).length for a, b in zip(P, P[1:])) / max(1, n - 1)
-    ref = max(speed, 1e-9)
-    rough = [max(d4[max(0, i - 1):i + 2]) / ref for i in range(n)]
+    steps = [(b - a).length for a, b in zip(P, P[1:])]
+    speed = sum(steps) / max(1, n - 1)
+    floor = max(speed * 0.1, 1e-9)
+
+    def local(i):
+        s = steps[max(0, i - 2):i + 2]
+        return max(sum(s) / len(s), floor) if s else floor
+    rough = [max(d4[max(0, i - 1):i + 2]) / local(i) for i in range(n)]
     at = {round(t): r for (t, _p), r in zip(frames, rough)}
     out = [at.get(round(t), 0.0) for t in cache.times]
     cache._jitter = (cache.sig, out)
@@ -305,8 +312,42 @@ def _draw_ribbon(st, cache, rv3d, lo, hi, editable, us):
             ecol = [c + (ea,) for _l, _r, c in run]
             _lines([l for l, _r, _c in run], ecol, 1.2 * us, 'LINE_STRIP')
             _lines([r for _l, r, _c in run], ecol, 1.2 * us, 'LINE_STRIP')
+    if editable:
+        _draw_ribbon_ticks(cache, half, vis, us)
     if st.show_scale_box:
         _draw_scale_box(st, cache, us)
+
+
+def focus_segments(cache):
+    """(first, last) frame of the selected part of a path: the selected keys, or the segments
+    on both sides of a single selected key (one at the ends). None without a selection."""
+    ks = [k.t for k in cache.keys]
+    sel = [k.t for k in cache.keys if k.sel]
+    if len(sel) >= 2:
+        return min(sel), max(sel)
+    if len(sel) == 1 and len(ks) > 1:
+        i = ks.index(sel[0])
+        return ks[max(i - 1, 0)], ks[min(i + 1, len(ks) - 1)]
+    return None
+
+
+def _draw_ribbon_ticks(cache, half, vis, us):
+    """Scale ribbons: a thin line across both ribbons on every frame of the selected part, so
+    the spacing (the ease) of the scale change shows."""
+    win = focus_segments(cache)
+    if win is None:
+        return
+    lo, hi = win
+    lines = []
+    for i, t in enumerate(cache.times):
+        if not (lo + 1e-6 < t < hi - 1e-6) or abs(t - round(t)) > 1e-6 or not vis[i]:
+            continue
+        v = cache.sample_vals[i]
+        p = cache.points[i]
+        for axis in (0, 2):
+            d = cache.sample_axes[i][axis] * (half * abs(v[axis]))
+            lines += [p + d, p - d]
+    _lines(lines, [(1.0, 1.0, 1.0, 0.3)] * len(lines), 1.0 * us)
 
 
 def _draw_scale_box(st, cache, us):
@@ -473,7 +514,8 @@ def _draw_view():
     up = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
     look = rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))
     for cache in caches:
-        if cache.ptype == core.VALUE and cache.circle is None and not state.modal_running and \
+        if cache.ptype == core.VALUE and cache.circle is None and cache.track_mode != 'PATH' and \
+                not state.modal_running and \
                 (cache.vdir.angle(up, 0.0) > 0.01 or cache.vview.angle(look, 0.0) > 0.01):
             # the value track is placed relative to the screen; it turns with the view as it
             # turns (not while editing). The circle layout stays put.
@@ -817,23 +859,92 @@ def _draw_speed_graph(ctx, st, us):
     w, h = x1 - x0, 60.0 * us
     t0, t1 = data[0][0], data[-1][0]
 
+    pad = 8.0 * us                      # room for the key frame numbers at the bottom
+    gy0, gh = y0 + 14.0 * us, h - 18.0 * us
+
     def X(t):
-        return x0 + w * (t - t0) / max(t1 - t0, 1e-6)
-    _flat([(x0, y0), (x0 + w, y0), (x0 + w, y0 + h), (x0, y0 + h)], (0.0, 0.0, 0.0, 0.35), 'TRI_FAN')
-    _flat([(X(t), y0 + h * s / vmax) for t, s in data], (0.4, 0.9, 1.0, 1.0), 'LINE_STRIP')
-    keys = []
+        return x0 + pad + (w - 2 * pad) * (t - t0) / max(t1 - t0, 1e-6)
+
+    def Y(s):
+        return gy0 + gh * s / (vmax * 1.2)       # some room above the fastest part
+    # speed of a step, drawn in the middle of it
+    pts = [((t + tn) * 0.5, s) for (t, s), (tn, _s) in zip(data, data[1:])]
+    _rounded_rect(x0, y0, w, h, 7.0 * us, (0.08, 0.08, 0.1, 0.62))
+    # soft fill under the curve, fading out at the bottom
+    tris, cols = [], []
+    top, bottom = (0.45, 0.8, 1.0, 0.32), (0.45, 0.8, 1.0, 0.03)
+    for (ta, sa), (tb, sb) in zip(pts, pts[1:]):
+        a0, a1, b0, b1 = (X(ta), gy0), (X(ta), Y(sa)), (X(tb), gy0), (X(tb), Y(sb))
+        tris += [a0, a1, b1, a0, b1, b0]
+        cols += [bottom, top, top, bottom, top, bottom]
+    _smooth(tris, cols, 'TRIS')
+    # keys: a faint line through the graph, a diamond on the curve, the frame below
+    lines, diamonds, sel_diamonds = [], [], []
+    font = 0
+    blf.size(font, 9 * us)
     for k in cache.keys:
-        if t0 <= k.t <= t1:
-            keys += [(X(k.t), y0), (X(k.t), y0 + 6 * us)]
-    _flat(keys, (1.0, 0.6, 0.15, 1.0))
+        if not t0 - 1e-6 <= k.t <= t1 + 1e-6:
+            continue
+        x = X(k.t)
+        lines += [(x, gy0), (x, gy0 + gh)]
+        s = _speed_at(pts, k.t)
+        d = 4.0 * us
+        y = Y(s)
+        quad = [(x, y - d), (x + d, y), (x, y + d), (x - d, y)]
+        (sel_diamonds if k.sel else diamonds).append(quad)
+        blf.color(font, *((1.0, 0.75, 0.4, 0.9) if k.sel else (0.85, 0.85, 0.85, 0.7)))
+        label = "%d" % round(k.t)
+        tw = blf.dimensions(font, label)[0]
+        blf.position(font, x - tw * 0.5, y0 + 3.0 * us, 0)
+        blf.draw(font, label)
+    _flat(lines, (1.0, 1.0, 1.0, 0.12))
+    _flat([(X(t), Y(s)) for t, s in pts], (0.55, 0.85, 1.0, 1.0), 'LINE_STRIP')
+    for quads, col in ((diamonds, (0.92, 0.92, 0.92, 1.0)), (sel_diamonds, (1.0, 0.62, 0.2, 1.0))):
+        if quads:
+            _flat([p for q in quads for p in (q[0], q[1], q[2], q[0], q[2], q[3])], col, 'TRIS')
     cur = ctx.scene.frame_current
     if t0 <= cur <= t1:
-        _flat([(X(cur), y0), (X(cur), y0 + h)], (0.3, 1.0, 0.45, 0.9))
-    font = 0
+        x = X(cur)
+        _flat([(x, gy0), (x, gy0 + gh)], (0.35, 1.0, 0.5, 0.8))
+        y = Y(_speed_at(pts, cur))
+        r = 3.0 * us
+        _flat([(x + math.cos(a * math.pi / 6) * r, y + math.sin(a * math.pi / 6) * r) for a in range(12)],
+              (0.35, 1.0, 0.5, 1.0), 'TRI_FAN')
     blf.size(font, 10 * us)
-    blf.color(font, 1.0, 1.0, 1.0, 0.8)
-    blf.position(font, x0 + 4 * us, y0 + h - 12 * us, 0)
-    blf.draw(font, "speed  %s  (%d - %d)" % (cache.label, round(t0), round(t1)))
+    blf.color(font, 1.0, 1.0, 1.0, 0.75)
+    blf.position(font, x0 + 4 * us, y0 + h + 5 * us, 0)       # above the graph
+    blf.draw(font, "Speed  \u00b7  %s" % cache.label)
+
+
+def _speed_at(pts, t):
+    """Speed at frame t from the step speeds (linear between them)."""
+    if not pts:
+        return 0.0
+    if t <= pts[0][0]:
+        return pts[0][1]
+    for (ta, sa), (tb, sb) in zip(pts, pts[1:]):
+        if ta <= t <= tb:
+            return sa + (sb - sa) * ((t - ta) / (tb - ta) if tb > ta else 0.0)
+    return pts[-1][1]
+
+
+def _rounded_rect(x, y, w, h, r, col):
+    r = min(r, w * 0.5, h * 0.5)
+    pts = [(x + w * 0.5, y + h * 0.5)]
+    for cx, cy, a0 in ((x + w - r, y + r, -90), (x + w - r, y + h - r, 0), (x + r, y + h - r, 90),
+                       (x + r, y + r, 180)):
+        for i in range(7):
+            a = math.radians(a0 + 15 * i)
+            pts.append((cx + math.cos(a) * r, cy + math.sin(a) * r))
+    pts.append(pts[1])
+    _flat(pts, col, 'TRI_FAN')
+
+
+def _smooth(pts, cols, kind):
+    if not pts:
+        return
+    sh = gpu.shader.from_builtin('SMOOTH_COLOR')
+    batch_for_shader(sh, kind, {"pos": pts, "color": cols}).draw(sh)
 
 
 def _draw_snap_point(ctx, us):
