@@ -67,7 +67,7 @@ TOOL_KEYMAP = (
     _k("wm.call_menu", 'T', {"name": "EMP_MT_timing"}, shift=True),
     _k("wm.call_panel", 'U', {"name": "EMP_PT_display_popover", "keep_open": True}),
     _k("wm.call_panel", 'J', {"name": "EMP_PT_modifiers_popover", "keep_open": True}),
-    _k("wm.call_panel", 'P', {"name": "EMP_PT_easing_presets", "keep_open": True}),
+    _k("emp.easing_preset", 'P', {"gallery": True}),
     _k("wm.context_toggle", 'H', {"data_path": "scene.emp.show_handles"}, ctrl=True),
     _k("wm.context_toggle", 'H', {"data_path": "scene.emp.show_frames"}, ctrl=True, shift=True),
     # modes, proportional editing (Blender's own settings)
@@ -218,6 +218,86 @@ class EMP_ObjectTool(bpy.types.WorkSpaceTool):
     bl_widget = None
     bl_keymap = TOOL_KEYMAP
     draw_settings = _draw_tool_settings
+
+
+# ---- Hotkey Priority (preferences): give way to other add-ons' keys -------------------
+
+_MOUSE = {'LEFTMOUSE', 'RIGHTMOUSE', 'MIDDLEMOUSE', 'MOUSEMOVE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}
+
+
+def _mods(d):
+    """(ctrl, shift, alt, oskey) of a key: True / False, or None for 'any'."""
+    if d.get("any"):
+        return (None, None, None, None)
+    return tuple(bool(d.get(m, False)) for m in ("ctrl", "shift", "alt", "oskey"))
+
+
+def other_addon_keys():
+    """The keys other add-ons use in the 3D view: {(type, (ctrl, shift, alt, oskey))}."""
+    kc = bpy.context.window_manager.keyconfigs.addon
+    out = set()
+    if kc is None:
+        return out
+    for km in kc.keymaps:
+        if km.space_type not in {'VIEW_3D', 'EMPTY'}:
+            continue
+        for kmi in km.keymap_items:
+            if not kmi.active or kmi.idname.startswith("emp.") or \
+                    (kmi.idname == "wm.tool_set_by_id" and getattr(kmi.properties, "name", "").startswith("emp.")):
+                continue
+            if kmi.any:
+                out.add((kmi.type, (None, None, None, None)))
+            else:
+                out.add((kmi.type, (kmi.ctrl == 1, kmi.shift == 1, kmi.alt == 1, kmi.oskey == 1)))
+    return out
+
+
+def tool_keymap(keymap):
+    """The tool's keys; with Hotkey Priority off, without the ones another add-on uses (the mouse
+    buttons stay: the tool needs them)."""
+    from .props import prefs
+    p = prefs()
+    if p is None or p.hotkey_priority:
+        return keymap
+    taken = other_addon_keys()
+
+    def clash(ev):
+        if ev["type"] in _MOUSE:
+            return False
+        mine = _mods(ev)
+        for t, theirs in taken:
+            if t != ev["type"]:
+                continue
+            if None in mine or None in theirs or mine == theirs:
+                return True
+        return False
+    return tuple(item for item in keymap if not clash(item[1]))
+
+
+def refresh_tool_keymaps():
+    """Build the tools again with the keys the Hotkey Priority setting allows."""
+    from . import ops_sculpt
+    EMP_PoseTool.bl_keymap = EMP_ObjectTool.bl_keymap = tool_keymap(TOOL_KEYMAP)
+    ops_sculpt.EMP_SculptPoseTool.bl_keymap = ops_sculpt.EMP_SculptObjectTool.bl_keymap = \
+        tool_keymap(ops_sculpt.SCULPT_KEYMAP)
+    try:
+        ops_sculpt.unregister_tools()
+        bpy.utils.unregister_tool(EMP_ObjectTool)
+        bpy.utils.unregister_tool(EMP_PoseTool)
+    except Exception:
+        pass
+    bpy.utils.register_tool(EMP_PoseTool, separator=True)
+    bpy.utils.register_tool(EMP_ObjectTool, separator=True)
+    ops_sculpt.register_tools()
+
+
+def _late_hotkeys():
+    """Other add-ons may load after this one: look at their keys once they all have."""
+    from .props import prefs
+    p = prefs()
+    if p is not None and not p.hotkey_priority:
+        refresh_tool_keymaps()
+    return None
 
 
 # ----------------------------------------------------------------------------
@@ -562,25 +642,16 @@ def _draw_display(layout, st):
     layout.use_property_split = True
     layout.use_property_decorate = False
     layout.prop(st, "color_mode")
-    if st.color_mode in {'TIME', 'SOLID'}:
-        layout.prop(st, "color")
-    elif st.color_mode == 'JITTER':
-        layout.prop(st, "jitter_threshold", text="Threshold")
     col = layout.column(heading="Show")
     col.prop(st, "show_frames")
     col.prop(st, "show_handles")
     col.prop(st, "show_frame_numbers")
     col.prop(st, "show_all_handles")
-    col.prop(st, "show_ghost")
-    col.prop(st, "show_repeats")
-    col.prop(st, "show_spokes")
     col.prop(st, "show_rot_rings")
     col.prop(st, "show_reach")
     col.prop(st, "show_rot_ribbon")
     if st.show_rot_ribbon:
-        sub = col.row(align=True)
-        sub.prop(st, "rot_ribbon_width", text="Width")
-        sub.prop(st, "rot_ribbon_side", text="")
+        col.prop(st, "rot_ribbon_side", text="Side")
     col.prop(st, "show_timing_chart")
     col.prop(st, "show_speed_graph")
     if st.show_speed_graph:
@@ -589,7 +660,6 @@ def _draw_display(layout, st):
             sub = col.column(align=True)
             sub.prop(st, "speed_start")
             sub.prop(st, "speed_end")
-    col.prop(st, "on_top")
     col.prop(st, "show_onion")
     if st.show_onion:
         box = col.box()
@@ -599,9 +669,6 @@ def _draw_display(layout, st):
         row.prop(st, "onion_after")
         box.prop(st, "onion_step", text="Step (0: on keys)")
         box.prop(st, "onion_opacity", slider=True)
-        row = box.row(align=True)
-        row.prop(st, "onion_color_before", text="")
-        row.prop(st, "onion_color_after", text="")
         if st.onion_mode == 'BONES':
             box.prop(st, "onion_bones", text="")
         if st.onion_mode in {'POINTS', 'BONES', 'WIRE'}:
@@ -609,28 +676,16 @@ def _draw_display(layout, st):
         row = box.row(align=True)
         row.prop(st, "onion_max_tris")
         row.prop(st, "onion_in_front", text="", icon='XRAY')
-    layout.prop(st, "line_width")
-    layout.prop(st, "key_size")
-    layout.prop(st, "rot_length")
-    layout.prop(st, "ribbon_width")
-    row = layout.row(heading="Scale Box")
-    row.prop(st, "show_scale_box", text="")
-    sub = row.row()
-    sub.active = st.show_scale_box
-    sub.prop(st, "scale_box_size", text="Size")
+    layout.prop(st, "show_scale_box")
     layout.prop(st, "value_track")
     if st.value_track == 'PATH':
         layout.prop(st, "value_side")
     layout.prop(st, "layout", text="Scale / Value Layout")
-    if st.layout != 'PATH':
-        col = layout.column(align=True)
-        col.prop(st, "circle_radius", text="Radius")
-        col.prop(st, "circle_use_range")
-        sub = col.column(align=True)
-        sub.active = st.circle_use_range
-        sub.prop(st, "circle_start")
-        sub.prop(st, "circle_end")
     layout.prop(st, "pin_partial")
+    layout.operator("emp.smoothing_none", icon='IPO_EASE_IN_OUT')
+    # colors, sizes and the like are set once: in the add-on's preferences
+    op = layout.operator("preferences.addon_show", text="Colors, Sizes, Keys...", icon='PREFERENCES')
+    op.module = __package__
 
 
 class EMP_PT_display_popover(bpy.types.Panel):
@@ -690,6 +745,7 @@ def register():
         bpy.utils.register_class(c)
     bpy.utils.register_tool(EMP_PoseTool, separator=True)
     bpy.utils.register_tool(EMP_ObjectTool, separator=True)
+    bpy.app.timers.register(_late_hotkeys, first_interval=1.0)
     bpy.types.VIEW3D_MT_pose_context_menu.append(_context_menu_entry)
     bpy.types.VIEW3D_MT_object_context_menu.append(_context_menu_entry)
     # right click on a setting in the U / J / P panels: a Reset to Default that works there
@@ -707,6 +763,8 @@ def register():
 
 
 def unregister():
+    if bpy.app.timers.is_registered(_late_hotkeys):
+        bpy.app.timers.unregister(_late_hotkeys)
     for km, kmi in _addon_keymaps:
         try:
             km.keymap_items.remove(kmi)

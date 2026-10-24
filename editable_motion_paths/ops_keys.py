@@ -322,11 +322,11 @@ def _seg_cross(p, q, a, b):
 
 class EMP_OT_knife(bpy.types.Operator):
     """Cut the paths like the mesh Knife: keys are inserted where the line crosses them, the """ \
-        """motion stays (Ctrl+K). LMB: add a point or drag to draw, RMB: make this cut and start """ \
+        """motion stays (Ctrl+K). LMB: add a point or drag to draw, RMB: fix this cut and start """ \
         """a new one, Shift: snap to """ \
         """the middle of a segment, Ctrl: no snapping, A: angle constraint, X / Y / Z: axis, """ \
-        """S: frame numbers, Ctrl+Z: undo a point, Enter / Space / double-click: cut, Esc: drop """ \
-        """the open cut (the cuts made with RMB stay)"""
+        """S: frame numbers, Ctrl+Z: undo a point, Enter / Space / double-click: cut, Esc: cancel """ \
+        """all the cuts (like the mesh Knife)"""
     bl_idname = "emp.knife"
     bl_label = "Knife Path"
     bl_options = {'REGISTER', 'UNDO'}
@@ -373,7 +373,7 @@ class EMP_OT_knife(bpy.types.Operator):
         if context.region_data is None or not state.editable_caches(context.scene):
             return {'PASS_THROUGH'}
         self.cuts = [[]]            # cut lines still open, as world points
-        self.committed = 0          # keys of the cuts already made (RMB)
+        self.pending = {}           # cuts fixed with RMB: cache key -> frames (made on Enter)
         self._made = {}
         # the cut lies at the depth of the paths, so it stays on them when the view turns
         pts = [p for c in state.editable_caches(context.scene) for p in c.points]
@@ -525,7 +525,7 @@ class EMP_OT_knife(bpy.types.Operator):
         return out
 
     def _show(self, context):
-        cross = self._crossings(context)
+        cross = self._all_cuts(context)
         marks, labels = [], []
         for c, fs in cross:
             tg = c.target()
@@ -536,7 +536,7 @@ class EMP_OT_knife(bpy.types.Operator):
         state.knife = ([list(c) for c in self.cuts if c], context.area.as_pointer(),
                        None if self.drawing else self.cur.copy(), self.snap, bool(self.cuts[-1]))
         state.markers = (marks, context.area.as_pointer(), labels)
-        n = len(marks) + self.committed
+        n = len(marks)
         cons = ""
         if self.axis is not None:
             cons = "   along %s" % "XYZ"[self.axis]
@@ -545,9 +545,9 @@ class EMP_OT_knife(bpy.types.Operator):
                                               "screen" if self.angle_mode == 'SCREEN' else "relative")
         snap = ("   snapped: %s" % self.snap[1]) if self.snap else ""
         context.area.header_text_set(
-            "Knife: %d new key%s%s%s   LMB: point / drag   RMB: cut it, next cut   Shift: middle of a segment   "
+            "Knife: %d new key%s%s%s   LMB: point / drag   RMB: fix this cut, next cut   Shift: middle of a segment   "
             "Ctrl: no snapping   A: angle   X Y Z: axis   S: frame numbers   Ctrl+Z: undo point   "
-            "Enter / Space / double-click: cut   Esc: drop the open cut (RMB cuts stay)" % (n, "" if n == 1 else "s", cons, snap))
+            "Enter / Space / double-click: cut   Esc: cancel all" % (n, "" if n == 1 else "s", cons, snap))
         state.tag_redraw()
 
     # -- events -------------------------------------------------------------------
@@ -579,7 +579,7 @@ class EMP_OT_knife(bpy.types.Operator):
             self._update_cursor(context)
             self._show(context)
         elif t == 'RIGHTMOUSE' and v == 'PRESS':
-            # let go of this cut: its keys are made now (turning the view won't change them)
+            # this cut is fixed (turning the view won't change it); Enter makes all the cuts
             if self.cuts[-1]:
                 self._commit(context)
             self._update_cursor(context)
@@ -613,36 +613,45 @@ class EMP_OT_knife(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def _commit(self, context):
+        """RMB, like the mesh Knife: this cut is fixed (its frames are worked out now, so turning
+        the view won't change them; the line goes, the marks stay), nothing is inserted yet:
+        Enter makes all the cuts, Esc drops them all."""
         pts = [q for q in (self._scr(context, p) for p in self.cuts[-1]) if q is not None]
         self.cuts = [c for c in self.cuts[:-1] if c] + [[]]
         if len(pts) < 2:
             return
-        cross = self._crossings(context, [pts])
-        if not any(fs for _c, fs in cross):
-            return
-        if not self.committed:
-            pick.deselect_all(state.editable_caches(context.scene))
-        self._record(cross)
-        for c, fs in cross:
-            c.refresh(force=True)
-            self.committed += _insert_and_select(c, fs)
-        pick.tag_anim_editors()
+        for c, fs in self._crossings(context, [pts]):
+            if fs:
+                self.pending.setdefault(c.key, set()).update(fs)
+
+    def _all_cuts(self, context, with_open=True):
+        """[(cache, frames)]: the fixed cuts and (with_open) the ones still being drawn."""
+        out = {}
+        for key, fs in self.pending.items():
+            c = state.caches.get(key)
+            if c is not None:
+                out[key] = (c, set(fs))
+        if with_open:
+            for c, fs in self._crossings(context):
+                out.setdefault(c.key, (c, set()))[1].update(fs)
+        return [(c, sorted(fs)) for c, fs in out.values()]
 
     def _end(self, context, confirm):
         self.drawing = False
-        cross = self._crossings(context) if confirm else []
+        cross = self._all_cuts(context) if confirm else []
         state.knife = None
         state.markers = None
         context.window.cursor_modal_restore()
         context.area.header_text_set(None)
         state.tag_redraw()
-        n = self.committed
-        if any(fs for _c, fs in cross) and not self.committed:
+        n = 0
+        if any(fs for _c, fs in cross):
             pick.deselect_all(state.editable_caches(context.scene))
         self._record(cross)
         for c, fs in cross:
             c.refresh(force=True)
-            n += _insert_and_select(c, fs)
+            have = {round(k.t, 3) for k in c.keys}
+            n += _insert_and_select(c, [f for f in fs if round(f, 3) not in have])
         if not n:
             return {'CANCELLED'}
         pick.tag_anim_editors()

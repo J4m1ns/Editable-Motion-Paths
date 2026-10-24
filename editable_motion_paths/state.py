@@ -24,6 +24,7 @@ sculpt_preview = None  # ([world points], area pointer) frame dots while a timin
 sculpt_hide = set()    # paths whose own frame dots are hidden meanwhile
 sculpt_strip_hover = None   # (brush, area pointer) under the mouse on the brush strip
 sculpt_radial = None   # F / Shift+F: what the radial control shows
+gallery = None        # the easing gallery under the mouse (P): its place, what the mouse is over
 knife = None         # ([cut lines of world points], area pointer, cursor or None, snap) knife
 markers = None       # ([world points], area pointer[, labels]) previews of keys about to be added
 constraint = None    # (pivot, axis, color) axis line shown while transforming

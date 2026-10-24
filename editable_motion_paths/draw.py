@@ -1236,6 +1236,9 @@ def _draw_pixel():
         blf.color(font, 1.0, 1.0, 1.0, 1.0)
         blf.position(font, x, y, 0)
         blf.draw(font, text)
+    if state.gallery is not None and ctx.area is not None and ctx.area.as_pointer() == state.gallery['area']:
+        from . import ops_easing
+        ops_easing.draw_gallery(ctx, us)        # (on top of everything)
     gpu.state.blend_set('NONE')
 
 

@@ -268,6 +268,35 @@ def button_context_entry(self, context):
     self.layout.operator(EMP_OT_reset_button.bl_idname, text="Reset to Default (Motion Paths)", icon='LOOP_BACK')
 
 
+class EMP_OT_smoothing_none(bpy.types.Operator):
+    """Turn off Blender's Continuous Acceleration smoothing on every curve of the selected bones """ \
+        """/ objects (Auto Handle Smoothing: None): editing a key then changes only its own """ \
+        """segments, not the auto handles a few keys away"""
+    bl_idname = "emp.smoothing_none"
+    bl_label = "Smoothing: None"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        n = 0
+        seen = set()
+        for cache in state.editable_caches(context.scene):
+            tg = cache.target()
+            if tg is None:
+                continue
+            for ptype in (core.LOCATION, core.ROTATION, core.SCALE):
+                for fc in tg.channels(ptype).fcurves:
+                    if fc is None or fc.as_pointer() in seen:
+                        continue
+                    seen.add(fc.as_pointer())
+                    if fc.auto_smoothing != 'NONE':
+                        fc.auto_smoothing = 'NONE'
+                        fc.update()
+                        n += 1
+        self.report({'INFO'}, "Auto Handle Smoothing set to None on %d curve%s" % (n, "" if n == 1 else "s"))
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+
 class EMP_OT_path_update(bpy.types.Operator):
     """Recalculate all motion paths (for changes they can't see by themselves, like """ \
         """constraints or drivers)"""
@@ -1186,15 +1215,21 @@ class _EaseTimingJob:
 
 def ease_target(job, tg, slow_start, slow_end, e):
     """Target motion of one segment: the same path, travelled with a slow start and / or end
-    (e > 0: up to the bone coming to rest at the key) or evenly (e < 0)."""
+    (e > 0: up to the bone coming to rest at the key) or the other way (e < 0: faster at the
+    key, the frames spread out there and gather in between)."""
     cache = job.cache
     total = job.arc[-1]
     r0, r1 = job.r0, job.r1
     p = 2.0 + e
+    k = 0.9         # e < 0: at full strength, 1.9x the even speed at the key, 0.1x away from it
 
     def prof(u):
         if e < 0.0:
-            return u
+            if slow_start and slow_end:
+                return u + k * math.sin(2.0 * math.pi * u) / (2.0 * math.pi)
+            if slow_end:
+                return u - k * math.sin(math.pi * u) / math.pi
+            return u + k * math.sin(math.pi * u) / math.pi
         if slow_start and slow_end:
             a, b = u ** p, (1.0 - u) ** p
             return a / (a + b) if a + b > 0.0 else u
@@ -1214,7 +1249,7 @@ def ease_target(job, tg, slow_start, slow_end, e):
 
 class EMP_OT_ease(_AdjustOp, bpy.types.Operator):
     """Ease (slow in / slow out) at the selected keys: drag right for a stronger ease (the """ \
-        """frame dots bunch up at the key), left to move through the key more evenly. Keep the """ \
+        """frame dots bunch up at the key), left for the opposite: faster through the key. Keep the """ \
         """Path (default): only the timing changes, the path keeps its shape; Handles: the key's """ \
         """handles change (T while dragging). I / O / B: ease in, out or both"""
     bl_idname = "emp.ease"
@@ -1225,7 +1260,8 @@ class EMP_OT_ease(_AdjustOp, bpy.types.Operator):
 
     factor: FloatProperty(name="Factor", default=0.0, soft_min=-1.0, soft_max=1.0, min=-1.0, max=1.0,
                           description="1: full ease (the bone comes to rest at the key), "
-                                      "-1: constant speed through the key")
+                                      "-1: the opposite, faster through the key (Keep the Path: the frames spread out at "
+                                      "the key; Handles: longer handles, a wider path around it)")
     side: EnumProperty(name="Side", items=[
         ('BOTH', "In & Out", "Slow in and slow out"),
         ('IN', "In", "Slow in: arrive gently (the part before the key)"),
@@ -1340,15 +1376,14 @@ class EMP_OT_ease(_AdjustOp, bpy.types.Operator):
             return h
         interval = abs(nb[0] - x)
         s0 = (h[1] - y) / (h[0] - x)
-        if e >= 0.0:
-            cap = max(interval - max(nb[2], 0.0), interval / 3.0) * 0.98
-            dt = dt0 + e * (max(cap, dt0) - dt0)
-            s = s0 * (1.0 - e)
-        else:
-            a = min(-e, 1.0)
-            secant = (nb[1] - y) / (nb[0] - x)
-            s = s0 + a * (secant - s0)
-            dt = dt0 + a * (interval / 3.0 - dt0)
+        cap = max(interval - max(nb[2], 0.0), interval / 3.0) * 0.98
+        a = min(abs(e), 1.0)
+        dt = dt0 + a * (max(cap, dt0) - dt0)
+        # ease: flatter and longer (the bone comes to rest at the key); the other way: just
+        # longer in the same direction, so the motion carries on through the key and the path
+        # around it gets wider (a slope pulled toward the neighbor per channel turned the
+        # handle sideways in 3D)
+        s = s0 * (1.0 - a) if e >= 0.0 else s0
         return (x + sign * dt, y + s * sign * dt)
 
     def _apply_job(self, job, tg, touched):
@@ -1568,7 +1603,7 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
 
 
 classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
-           EMP_OT_path_update,
+           EMP_OT_smoothing_none, EMP_OT_path_update,
            EMP_OT_edit_tool,
            EMP_OT_handle_type, EMP_OT_interpolation,
            EMP_OT_smooth, EMP_OT_exaggerate, EMP_OT_ease, EMP_OT_scale_handles,

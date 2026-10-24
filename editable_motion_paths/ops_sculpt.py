@@ -590,7 +590,7 @@ SCULPT_KEYMAP = (
     _k("wm.context_set_enum", 'FOUR', {"data_path": "scene.emp.edit_mode", "value": 'VALUE'}),
     _k("wm.call_panel", 'U', {"name": "EMP_PT_display_popover", "keep_open": True}),
     _k("wm.call_panel", 'J', {"name": "EMP_PT_modifiers_popover", "keep_open": True}),
-    _k("wm.call_panel", 'P', {"name": "EMP_PT_easing_presets", "keep_open": True}),
+    _k("emp.easing_preset", 'P', {"gallery": True}),
     _k("wm.call_menu", 'T', {"name": "EMP_MT_timing"}, shift=True),
     _k("wm.call_menu", 'C', {"name": "EMP_MT_loop"}, alt=True),
     _k("wm.context_toggle", 'H', {"data_path": "scene.emp.show_handles"}, ctrl=True),

@@ -104,7 +104,7 @@ The tool uses the settings you know from modeling, in the header and with the us
 | **Shift+D** | duplicate: copies go halfway to the next key and follow the mouse; the **wheel** moves them through the motion a frame at a time (jumping over other keys). *Duplicate in Time* (menu) places copies with left / right instead |
 | **Ctrl+C / Ctrl+V** | copy the pose of the active key / paste it on the current frame: the channels of the current mode (*Whole Pose* in the redo panel: all of them) |
 | **Ctrl+R** | loop cut: evenly spaced keys in the segment under the mouse (wheel: number of cuts) |
-| **Ctrl+K** | knife, like the mesh Knife: keys are inserted where the line crosses the path. LMB: point (drag: draw), RMB: makes this cut now (its keys stay where they are when you turn the view) and starts a new one (Esc drops only the open cut; the cuts made stay), Shift: snap to the middle of a segment, Ctrl: no snapping (it snaps to keys and frame dots), A: angle constraint (screen / relative), X / Y / Z: along an axis, S: frame numbers, Ctrl+Z: undo a point, Enter / Space / double-click: cut; the view can be turned while cutting |
+| **Ctrl+K** | knife, like the mesh Knife: keys are inserted where the line crosses the path. LMB: point (drag: draw), RMB: fixes this cut (its keys stay where they are when you turn the view) and starts a new one; nothing is cut until Enter, and Esc cancels all the cuts, like the mesh Knife, Shift: snap to the middle of a segment, Ctrl: no snapping (it snaps to keys and frame dots), A: angle constraint (screen / relative), X / Y / Z: along an axis, S: frame numbers, Ctrl+Z: undo a point, Enter / Space / double-click: cut; the view can be turned while cutting |
 | **Ctrl+B** | bevel: round a key into a Bezier arc. It goes through the keys around it (the path outside the arc keeps its shape and timing); when one side reaches the end of the path, the other goes on and the arc gets longer on that side. C: **Clamp** (stop at the next keys), A: width, S or wheel: segments, P: profile, 0.5 = circle |
 | **M** | merge at the last selected (active, white ring) key, the first, the center or the 3D cursor |
 | **X**, **Delete**, **Ctrl+X** | delete menu / delete / dissolve |
@@ -117,12 +117,12 @@ The tool uses the settings you know from modeling, in the header and with the us
 |---|---|
 | **Alt+S** | smooth (T: Shape / Time; in Scale mode: the handles of the picked channel) |
 | **Alt+E** | exaggerate |
-| **Shift+E** | ease (I / O / B while dragging: slow in, slow out, both) |
+| **Shift+E** | ease (I / O / B while dragging: slow in, slow out, both; drag left for the opposite: faster through the key) |
 | **Shift+T** | timing menu (see Timing and speed) |
 | Drag a **frame dot** | move that frame along the path: the frames around it follow, the keys and the shape stay (click a dot: go to that frame) |
 | **U** | display settings under the mouse (right click a setting > *Reset to Default (Motion Paths)*: Blender's own Reset doesn't reach panels opened with a key) |
 | **Ctrl+H** / **Ctrl+Shift+H** | hide / show the handles / the frame dots (timing) |
-| **P** | easing presets under the mouse |
+| **P** | easing gallery under the mouse: click a picture to apply it |
 | **J** | modifiers of the active path under the mouse (the mouse wheel scrolls a long list) |
 | Right-click | path menu: **Edit Value…** (type exact values for the active key), Subdivide, Spin, Space, LoopTools, Snap, Curves, … |
 
@@ -144,7 +144,13 @@ leaves the curves exactly as they were.
 
 Blender 5's default F-Curve smoothing, *Continuous Acceleration*, re-solves all auto handles
 of a curve together. So with it, editing one key also nudges the auto handles a few keys away.
-That is Blender's own behaviour; set the smoothing to *None* if you want edits to stay local.
+That is Blender's own behaviour. To keep edits local, turn it off:
+
+1. For new animation: *Edit > Preferences > Animation > F-Curves > Default Smoothing*: **None**.
+2. For curves that already exist (it is a setting of each curve): the **Smoothing: None**
+   button in the sidebar (*Motion Paths > Display*) sets it on every curve of the selected
+   bones / objects. By hand: Graph Editor sidebar > *F-Curve* tab > *Auto Handle Smoothing*,
+   one curve at a time.
 
 ## Timing and speed
 
@@ -184,14 +190,20 @@ That is Blender's own behaviour; set the smoothing to *None* if you want edits t
   changes the timing: the frames bunch up at the key along the same path (keys are added where
   needed). *Handles* (T while dragging) flattens the key's handles and makes them longer in
   time, the old way. *In* slows the bone down into the key, *Out* lets it leave the key slowly.
+  Dragged the other way (negative) it does the opposite: with *Keep the Path* the bone moves
+  faster through the key (the frames spread out there and gather in between); with *Handles*
+  the key's handles get longer in the same direction, so the path around the key gets wider.
 * **Easing Presets** (**P**, the Timing menu, or the Timing & Speed panel): a library of easing curves
-  with pictures - Sine, Quadratic, Cubic, Quartic, Quintic, Exponential, Circular, Back,
-  Bounce, Elastic, each In, Out or In & Out - for the selected part of the path (the selected
+  with pictures - **Linear** (one button: it's the same every way), Sine, Quadratic, Cubic,
+  Quartic, Quintic, Exponential, Circular, Back, Bounce, Elastic, each In, Out or In & Out -
+  for the selected part of the path (the selected
   keys; one key: the segments around it). *Keep the Path* retimes along the path (Back and
   Elastic overshoot along the direction of the motion); *Channels* sets Blender's easing
   interpolation on the channels you pick (drag across them to switch several; one always stays
   on), like in the Graph Editor. *Bounce* has *Bounces* and *Bounciness*, *Elastic* its
-  amplitude and period.
+  amplitude and period. **P** opens them as a gallery under the mouse: big pictures to click,
+  with the mode, direction and strength (wheel) above them; after a click the redo panel has
+  all the settings.
 
 ## Shape tools
 
@@ -200,7 +212,8 @@ That is Blender's own behaviour; set the smoothing to *None* if you want edits t
   right; negative values sharpen or tone down.
 * **Bevel**, **Spin** (continue the motion on an arc around the 3D cursor: orbits, swings).
 * **LoopTools**: *Circle* (a perfect arc; *Angle* turns it around the line between its ends,
-  *Invert* bends it the other way, *Radius*, *Regular* spacing), *Arc* (one smooth arc that
+  *Invert* bends it the other way, *Rotate* slides the keys along the circle so the arc swings
+  to and fro, *Radius*, *Regular* spacing), *Arc* (one smooth arc that
   follows the shape and flows on into the path around it without kinks; *Bulge*, *Smooth
   Ends*), *Flatten* (one plane: best fit or facing the view), *Straighten* (a line),
   *Follow Stroke* (draw the motion with the Annotate tool, D + drag, and the selected part of the
@@ -281,8 +294,11 @@ Ghosts show in X-ray too.
 
 ## Display
 
-The color button in the tool header opens the display settings (colors, dots, ribbons, value
-track) without going to the sidebar.
+The color button in the tool header (or **U**) opens the display settings you change while
+animating. The ones you set once - colors, line width, key size, ribbon widths, the rotation
+path length, the Scale / Value circle, In Front, Ghost While Editing, Loop Repeats, Bone Lines -
+are in the add-on's preferences (*Colors, Sizes, Keys...* at the bottom of the display
+settings), the same in every file.
 
 * **Color**: *Speed* (blue slow, red fast), **Jitter**, *Before / After* and *Solid*. Jitter
   is a heat map of roughness. Smooth motion stays gray (fast smooth motion too: roughness is
@@ -297,10 +313,15 @@ track) without going to the sidebar.
 
 ## Hotkeys and other add-ons
 
-The tool's own hotkeys always come first while the Edit Motion Path tool is active. Keys the
-tool doesn't use go on to Blender and other add-ons as usual. If another add-on's hotkey gets in
-the way, change it in Preferences > Keymap (the add-on never switches other hotkeys off by
-itself).
+The tool's own hotkeys come first while the Edit Motion Path tool is active. Keys the tool
+doesn't use go on to Blender and other add-ons as usual. If you rely on another add-on's hotkey
+that the tool also uses, turn off **Hotkey Priority** in the add-on's preferences: then, where
+another add-on uses the same key in the 3D view, its key works and the path tool's doesn't (the
+mouse buttons always stay with the tool). The add-on never switches other hotkeys off itself.
+
+Files don't depend on the add-on: everything it changes is ordinary Blender animation (keys,
+handles, F-Curve modifiers), so a file opens without errors where the add-on isn't installed;
+only its own settings (stored with the scene) are then unused.
 
 ## Range and updates
 

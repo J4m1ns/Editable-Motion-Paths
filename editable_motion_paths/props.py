@@ -81,7 +81,6 @@ class EMP_PathEntry(bpy.types.PropertyGroup):
 class EMP_Settings(bpy.types.PropertyGroup):
     paths: CollectionProperty(type=EMP_PathEntry)
     active_index: IntProperty()
-
     edit_mode: EnumProperty(
         name="Edit",
         description="Which trajectory is shown and edited (1 / 2 with the Edit Motion Path tool)",
@@ -98,7 +97,6 @@ class EMP_Settings(bpy.types.PropertyGroup):
         ],
         default='LOCATION', update=_mode_changed,
     )
-
     proportional_size: FloatProperty(
         name="Proportional Size",
         description="Radius of proportional editing on paths (on/off, falloff and connected are "
@@ -122,7 +120,6 @@ class EMP_Settings(bpy.types.PropertyGroup):
         default=False, update=_redraw)
     window_before: IntProperty(name="Before", default=15, min=0, update=_redraw)
     window_after: IntProperty(name="After", default=15, min=0, update=_redraw)
-
     color_mode: EnumProperty(
         name="Color",
         items=[
@@ -135,14 +132,6 @@ class EMP_Settings(bpy.types.PropertyGroup):
         ],
         default='SPEED', update=_redraw,
     )
-    jitter_threshold: FloatProperty(
-        name="Jitter Threshold",
-        description="How rough the motion has to be to show full red (lower = more sensitive). "
-                    "Roughness is the frame-to-frame change of acceleration relative to the "
-                    "average speed",
-        default=0.4, min=0.01, soft_max=2.0, update=_redraw)
-    color: FloatVectorProperty(name="Path Color", subtype='COLOR', size=3,
-                               default=(0.35, 0.75, 1.0), min=0.0, max=1.0, update=_redraw)
     show_frames: BoolProperty(name="Frame Dots", default=True,
                               description="Show a dot on every frame: the timing between the keys "
                                           "(Ctrl+Shift+H)", update=_redraw)
@@ -153,14 +142,6 @@ class EMP_Settings(bpy.types.PropertyGroup):
     show_all_handles: BoolProperty(name="All Handles", default=False,
                                    description="Show handles of all keys, not only selected ones",
                                    update=_redraw)
-    show_ghost: BoolProperty(name="Ghost While Editing", default=True,
-                             description="Show the original path while dragging", update=_redraw)
-    show_spokes: BoolProperty(name="Bone Lines", default=True,
-                              description="Rotation paths: draw lines from the bone head to selected keys",
-                              update=_redraw)
-    show_repeats: BoolProperty(name="Loop Repeats", default=True,
-                               description="Looping motion: draw the path outside the loop's keys "
-                                           "(the repeats) faintly", update=_redraw)
     show_rot_rings: BoolProperty(name="Axis Rings", default=True,
                                  description="Rotation paths: the bone's X, Y and Z rings at selected "
                                              "keys. Drag a ring to turn around that axis (Y: twist), "
@@ -185,10 +166,6 @@ class EMP_Settings(bpy.types.PropertyGroup):
                             description="Frames between the ghosts (0: on the keys)")
     onion_opacity: FloatProperty(name="Opacity", default=0.3, min=0.02, max=1.0, subtype='FACTOR',
                                  update=_redraw)
-    onion_color_before: FloatVectorProperty(name="Before", subtype='COLOR', size=3, min=0.0, max=1.0,
-                                            default=(1.0, 0.35, 0.3), update=_redraw)
-    onion_color_after: FloatVectorProperty(name="After", subtype='COLOR', size=3, min=0.0, max=1.0,
-                                           default=(0.3, 0.75, 1.0), update=_redraw)
     onion_max_tris: IntProperty(name="Detail", default=20000, min=500, soft_max=200000, update=_redraw,
                                 description="Most triangles / edges / points per ghost (fewer: faster)")
     onion_bones: EnumProperty(
@@ -205,8 +182,6 @@ class EMP_Settings(bpy.types.PropertyGroup):
                                   description="Rotation paths: a ribbon along the path of the tip, "
                                               "turned like the bone's X axis, so the twist (around "
                                               "Y) shows")
-    rot_ribbon_width: FloatProperty(name="Ribbon Width", default=1.0, min=0.05, soft_max=4.0,
-                                    update=_redraw, description="Rotation ribbon: how wide it is")
     rot_ribbon_side: EnumProperty(
         name="Ribbon Side", update=_redraw,
         items=[('BOTH', "Both Sides", "Centered on the path of the tip"),
@@ -252,9 +227,6 @@ class EMP_Settings(bpy.types.PropertyGroup):
                              description="First frame of the speed graph")
     speed_end: IntProperty(name="End", default=100, update=_redraw,
                            description="Last frame of the speed graph")
-    on_top: BoolProperty(name="In Front", default=True,
-                         description="Draw paths in front of geometry", update=_redraw)
-    line_width: FloatProperty(name="Line Width", default=2.0, min=1.0, max=10.0, update=_redraw)
     value_track: EnumProperty(
         name="Value Track",
         description="Where Value mode (4) draws the value",
@@ -270,8 +242,6 @@ class EMP_Settings(bpy.types.PropertyGroup):
                                       "its curves)"),
                ('INSIDE', "Inside", "Toward the middle of the motion")],
         default='OUTSIDE', update=_refresh)
-    ribbon_width: FloatProperty(name="Ribbon Width", default=1.0, min=0.05, soft_max=5.0,
-                                description="Scale paths: how wide the ribbons are drawn", update=_redraw)
     scale_channel: EnumProperty(
         name="Scale Handles",
         description="Scale paths: whose handles (whiskers) are shown on the selected keys. Click a "
@@ -288,23 +258,9 @@ class EMP_Settings(bpy.types.PropertyGroup):
                ('CIRCLE', "Circle", "The frame range goes once around a circle; the current frame "
                                     "runs around it like on a clock")],
         default='AUTO', update=_refresh)
-    circle_radius: FloatProperty(name="Circle Radius", default=0.0, min=0.0, soft_max=10.0,
-                                 subtype='DISTANCE', unit='LENGTH', update=_refresh,
-                                 description="Size of the circle (0: automatic)")
-    circle_use_range: BoolProperty(name="Custom Range", default=False, update=_refresh,
-                                   description="Frames around the circle (off: the scene's frame range)")
-    circle_start: IntProperty(name="Start", default=1, update=_refresh)
-    circle_end: IntProperty(name="End", default=100, update=_refresh)
     show_scale_box: BoolProperty(name="Scale Box", default=True,
                                  description="Scale paths: a box at the current frame, as big as the "
                                              "current scale", update=_redraw)
-    scale_box_size: FloatProperty(name="Box Size", default=1.0, min=0.05, soft_max=5.0, update=_redraw)
-    key_size: FloatProperty(name="Key Size", default=9.0, min=3.0, max=30.0, update=_redraw)
-    rot_length: FloatProperty(
-        name="Rotation Path Length",
-        description="Rotation paths trace a point along the bone axis at this multiple of the bone "
-                    "length (object: in meters). Larger values make small rotations easier to see",
-        default=1.0, min=0.05, soft_max=5.0, update=_refresh)
     picked_handles: StringProperty(
         options={'HIDDEN'},
         description="Scale handles picked on their whiskers (JSON). Saved in the scene so undo "
@@ -325,7 +281,133 @@ class EMP_Settings(bpy.types.PropertyGroup):
         default=True)
 
 
-classes = (EMP_BrushSettings, EMP_PathEntry, EMP_Settings)
+def _hotkeys_changed(self, context):
+    from . import ui
+    ui.refresh_tool_keymaps()
+
+
+class EMP_Preferences(bpy.types.AddonPreferences):
+    """Settings you set once and forget (the same in every file); the ones you change while
+    animating stay in the tool header and the sidebar"""
+    bl_idname = __package__
+
+    color: FloatVectorProperty(name="Path Color", subtype='COLOR', size=3,
+                               default=(0.35, 0.75, 1.0), min=0.0, max=1.0, update=_redraw)
+    jitter_threshold: FloatProperty(
+        name="Jitter Threshold",
+        description="How rough the motion has to be to show full red (lower = more sensitive). "
+                    "Roughness is the frame-to-frame change of acceleration relative to the "
+                    "average speed",
+        default=0.4, min=0.01, soft_max=2.0, update=_redraw)
+    show_ghost: BoolProperty(name="Ghost While Editing", default=True,
+                             description="Show the original path while dragging", update=_redraw)
+    show_spokes: BoolProperty(name="Bone Lines", default=True,
+                              description="Rotation paths: draw lines from the bone head to selected keys",
+                              update=_redraw)
+    show_repeats: BoolProperty(name="Loop Repeats", default=True,
+                               description="Looping motion: draw the path outside the loop's keys "
+                                           "(the repeats) faintly", update=_redraw)
+    on_top: BoolProperty(name="In Front", default=True,
+                         description="Draw paths in front of geometry", update=_redraw)
+    line_width: FloatProperty(name="Line Width", default=2.0, min=1.0, max=10.0, update=_redraw)
+    key_size: FloatProperty(name="Key Size", default=9.0, min=3.0, max=30.0, update=_redraw)
+    rot_length: FloatProperty(
+        name="Rotation Path Length",
+        description="Rotation paths trace a point along the bone axis at this multiple of the bone "
+                    "length (object: in meters). Larger values make small rotations easier to see",
+        default=1.0, min=0.05, soft_max=5.0, update=_refresh)
+    ribbon_width: FloatProperty(name="Ribbon Width", default=1.0, min=0.05, soft_max=5.0,
+                                description="Scale paths: how wide the ribbons are drawn", update=_redraw)
+    rot_ribbon_width: FloatProperty(name="Ribbon Width", default=1.0, min=0.05, soft_max=4.0,
+                                    update=_redraw, description="Rotation ribbon: how wide it is")
+    scale_box_size: FloatProperty(name="Box Size", default=1.0, min=0.05, soft_max=5.0, update=_redraw)
+    circle_radius: FloatProperty(name="Circle Radius", default=0.0, min=0.0, soft_max=10.0,
+                                 subtype='DISTANCE', unit='LENGTH', update=_refresh,
+                                 description="Size of the circle (0: automatic)")
+    circle_use_range: BoolProperty(name="Custom Range", default=False, update=_refresh,
+                                   description="Frames around the circle (off: the scene's frame range)")
+    circle_start: IntProperty(name="Start", default=1, update=_refresh)
+    circle_end: IntProperty(name="End", default=100, update=_refresh)
+    onion_color_before: FloatVectorProperty(name="Before", subtype='COLOR', size=3, min=0.0, max=1.0,
+                                            default=(1.0, 0.35, 0.3), update=_redraw)
+    onion_color_after: FloatVectorProperty(name="After", subtype='COLOR', size=3, min=0.0, max=1.0,
+                                           default=(0.3, 0.75, 1.0), update=_redraw)
+    hotkey_priority: BoolProperty(
+        name="Hotkey Priority", default=True, update=_hotkeys_changed,
+        description="The path tools' keys win over other add-ons' keys in the 3D view. Off: where "
+                    "another add-on uses the same key, its key works and the path tool's doesn't")
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+        col = layout.column(heading="Keys")
+        col.prop(self, "hotkey_priority")
+        layout.separator()
+        col = layout.column()
+        col.label(text="Paths")
+        col.prop(self, "line_width")
+        col.prop(self, "key_size")
+        col.prop(self, "color", text="Path Color (Time / Solid)")
+        col.prop(self, "jitter_threshold", text="Jitter Threshold")
+        col.prop(self, "on_top")
+        sub = col.column(heading="Show")
+        sub.prop(self, "show_ghost")
+        sub.prop(self, "show_repeats")
+        sub.prop(self, "show_spokes")
+        layout.separator()
+        col = layout.column()
+        col.label(text="Rotation and Scale")
+        col.prop(self, "rot_length")
+        col.prop(self, "rot_ribbon_width", text="Rotation Ribbon Width")
+        col.prop(self, "ribbon_width", text="Scale Ribbon Width")
+        col.prop(self, "scale_box_size", text="Scale Box Size")
+        layout.separator()
+        col = layout.column()
+        col.label(text="Scale / Value Circle")
+        col.prop(self, "circle_radius", text="Radius")
+        col.prop(self, "circle_use_range")
+        sub = col.column(align=True)
+        sub.active = self.circle_use_range
+        sub.prop(self, "circle_start")
+        sub.prop(self, "circle_end")
+        layout.separator()
+        col = layout.column()
+        col.label(text="Onion Skin")
+        col.prop(self, "onion_color_before", text="Before")
+        col.prop(self, "onion_color_after", text="After")
+
+
+def prefs():
+    """The add-on's preferences (None while it isn't registered, e.g. in a background script)."""
+    try:
+        return bpy.context.preferences.addons[__package__].preferences
+    except (KeyError, AttributeError):
+        return None
+
+
+def _pref_property(name):
+    """A scene setting that lives in the preferences now: st.<name> still reads and writes it."""
+    default = EMP_Preferences.__annotations__[name].keywords.get("default")
+
+    def get(self):
+        p = prefs()
+        return getattr(p, name) if p is not None else default
+
+    def set(self, value):
+        p = prefs()
+        if p is not None:
+            setattr(p, name, value)
+    return property(get, set)
+
+
+PREF_NAMES = ("color", "jitter_threshold", "show_ghost", "show_spokes", "show_repeats", "on_top", "line_width",
+              "key_size", "rot_length", "ribbon_width", "rot_ribbon_width", "scale_box_size", "circle_radius",
+              "circle_use_range", "circle_start", "circle_end", "onion_color_before", "onion_color_after")
+for _n in PREF_NAMES:
+    setattr(EMP_Settings, _n, _pref_property(_n))
+
+classes = (EMP_BrushSettings, EMP_PathEntry, EMP_Settings, EMP_Preferences)
 
 
 def register():
