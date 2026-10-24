@@ -663,7 +663,10 @@ def _draw_display(layout, st):
     col.prop(st, "show_onion")
     if st.show_onion:
         box = col.box()
-        box.prop(st, "onion_mode", text="")
+        row = box.row(align=True)
+        row.prop(st, "onion_mode", text="")
+        if st.onion_mode != 'BONES':
+            row.prop(st, "onion_show", text="")
         row = box.row(align=True)
         row.prop(st, "onion_before")
         row.prop(st, "onion_after")

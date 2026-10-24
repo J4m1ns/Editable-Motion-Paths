@@ -1236,6 +1236,17 @@ def _draw_pixel():
         blf.color(font, 1.0, 1.0, 1.0, 1.0)
         blf.position(font, x, y, 0)
         blf.draw(font, text)
+    from . import onion
+    if onion.status and st is not None and st.show_onion:
+        # the ghosts' proxies are being built (once): say so, at the bottom
+        blf.size(font, 12 * us)
+        w = blf.dimensions(font, onion.status)[0]
+        blf.enable(font, blf.SHADOW)
+        blf.shadow(font, 3, 0.0, 0.0, 0.0, 0.9)
+        blf.color(font, 1.0, 0.85, 0.4, 1.0)
+        blf.position(font, (ctx.region.width - w) * 0.5, 64 * us, 0)
+        blf.draw(font, onion.status + "...")
+        blf.disable(font, blf.SHADOW)
     if state.gallery is not None and ctx.area is not None and ctx.area.as_pointer() == state.gallery['area']:
         from . import ops_easing
         ops_easing.draw_gallery(ctx, us)        # (on top of everything)

@@ -174,6 +174,14 @@ class EMP_Settings(bpy.types.PropertyGroup):
                ('VISIBLE', "Visible Bones", "The bones you can see (hidden bones and hidden bone "
                                            "collections are left out)")],
         default='VISIBLE')
+    onion_show: EnumProperty(
+        name="Show", update=_redraw,
+        items=[('WHOLE', "Whole", "The whole character (every mesh the armature moves, and what is on it)"),
+               ('WEIGHT', "By Weight", "Only the part of the mesh the edited bones move (their weights, and "
+                                       "of the bones that follow them: children, IK chains)"),
+               ('OBJECT', "By Object", "Only the objects the edited bones move: for characters made of "
+                                       "separate parts, a part with no weight from them isn't shown")],
+        default='WHOLE')
     onion_size: FloatProperty(name="Size", default=3.0, min=1.0, soft_max=12.0, update=_redraw,
                               description="Points / lines of the ghosts: how thick they are")
     onion_in_front: BoolProperty(name="In Front", default=False, update=_redraw,

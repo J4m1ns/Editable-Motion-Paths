@@ -421,7 +421,7 @@ def _on_undo(*_args):
 @persistent
 def _on_load(*_args):
     from . import onion
-    onion.clear()
+    onion.clear_all()
     caches.clear()
     ghosts.clear()
     _action_hashes.clear()

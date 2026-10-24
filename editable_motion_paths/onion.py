@@ -1,51 +1,120 @@
 """Onion skinning: ghosts of the edited bones / objects on the frames around the current one.
 
-Ghost frames are captured once (scene.frame_set + the evaluated meshes and bones) in small
-chunks while Blender is idle, kept as plain arrays, and drawn from GPU batches, so drawing
-them costs almost nothing and the viewport stays fast. After an animation change they are
-captured again right away, the nearest first, also while a tool drags (live); the old ghost
-stays drawn until its new one is ready, so nothing blinks. Modes: Silhouette (one flat color
-per ghost), Wire, Points (the lightest), Bones (sticks); heavy meshes are melted down to the
-Detail limit once and all modes draw that same simplified mesh."""
+Heavy characters stay fast because their meshes are never evaluated for the ghosts:
+
+* once (with a "Preparing ghosts" note), every mesh the armature deforms is melted down to
+  the Detail limit (like Decimate, no holes) into a *proxy* that keeps the bone weights of the
+  vertices it was made of, and its rest shape (worked back from the pose it was built in);
+* for every ghost frame only the armature is evaluated (the deformed meshes are left out of
+  the scene evaluation meanwhile) and the proxy is bent by its weights here (linear blend
+  skinning, numpy);
+* parts that don't bend (objects on a bone, props, cameras, lights, empties) are one shape
+  drawn with a matrix per ghost: instanced.
+
+The ghosts follow edits live (the nearest first, also while a key is dragged); the old one
+stays drawn until its new one is ready, so nothing blinks. Show: the whole character, only
+the part the edited bones move (by weight), or only the objects they move (by object).
+Modes: Silhouette (one flat color per ghost), Wire, Points, Bones (sticks)."""
 
 import time
 
 import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
+from mathutils import Matrix
 
 from . import state
 
-_frames = {}            # frame -> {"tris": array, "edges": array, "points": array, "bones": array}
-_batches = {}           # (frame, kind) -> GPU batch
+_proxies = {}           # object name -> _Proxy
+_frames = {}            # frame -> {"parts": [(proxy name, positions or None, matrix or None)], "bones": array}
+_batches = {}           # (frame, kind, proxy name or "") -> GPU batch
 _stale = set()          # captured frames the animation has changed since (still drawn until renewed)
 _changed_at = 0.0       # time of the last animation change
 _cost = 0.0             # how long one ghost frame takes to capture (running average, seconds)
 _busy = False           # capturing right now (frame_set must not count as an edit)
 _timer_on = False
 _sig = None             # what the ghosts were captured for (objects, settings)
+status = ""             # "Preparing ghosts..." while proxies are being built (shown in the viewport)
 
 
 def busy():
     return _busy
 
 
-def _signature(scene, st):
-    """What the captured ghosts belong to: the edited paths and the detail / bone settings."""
-    return (tuple(c.key[:2] for c in state.editable_caches(scene)), st.onion_max_tris, st.onion_bones,
-            _bone_state(scene, st))
+# ---- what to ghost --------------------------------------------------------------------
 
-
-def _bone_state(scene, st):
-    """Which bones the Bones mode shows (it changes with the selection / visibility)."""
-    if st.onion_mode != 'BONES':
-        return None
-    out = []
+def _edited(scene):
+    """{armature name: {edited bone names}} and [edited objects that aren't armatures]."""
+    arms, objs = {}, []
     for c in state.editable_caches(scene):
         obj = bpy.data.objects.get(c.obj_name)
-        if obj is not None and obj.type == 'ARMATURE':
-            out.append(tuple(pb.name for pb in obj.pose.bones if _bone_shown(pb, st)))
-    return tuple(out)
+        if obj is None:
+            continue
+        if obj.type == 'ARMATURE':
+            arms.setdefault(obj.name, set())
+            if c.bone_name:
+                arms[obj.name].add(c.bone_name)
+        elif obj not in objs:
+            objs.append(obj)
+    return arms, objs
+
+
+def affected_bones(arm, edited):
+    """The bones the edited ones move: their children, and bones constrained to them (an IK
+    chain to its controller, Copy Transforms...) with their own children."""
+    bones = arm.data.bones
+    out = set()
+    for b in bones:
+        if b.name in edited or any(p.name in edited for p in b.parent_recursive):
+            out.add(b.name)
+    for _round in range(4):
+        grow = set()
+        for pb in arm.pose.bones:
+            if pb.name in out:
+                continue
+            for con in pb.constraints:
+                if getattr(con, "target", None) == arm and getattr(con, "subtarget", "") in out:
+                    chain = [pb.name]
+                    if con.type == 'IK':
+                        p, n = pb.parent, con.chain_count
+                        while p is not None and (n == 0 or len(chain) < n):
+                            chain.append(p.name)
+                            p = p.parent
+                    grow.update(chain)
+        if not grow:
+            break
+        for b in bones:
+            if b.name in grow or any(p.name in grow for p in b.parent_recursive):
+                out.add(b.name)
+    return out
+
+
+def _targets(scene):
+    """[(object, armature or None, how)]: the objects to ghost. how: 'DEFORM' (bent by the
+    armature), 'RIGID' (moves as one piece), 'LINES' (no mesh: camera, light, empty...)."""
+    arms, objs = _edited(scene)
+    out = []
+    seen = set()
+
+    def add(o, arm, how):
+        if o.name not in seen:
+            seen.add(o.name)
+            out.append((o, arm, how))
+    for name in arms:
+        arm = bpy.data.objects[name]
+        for o in scene.objects:
+            if o.type != 'MESH' or not o.visible_get():
+                continue
+            if any(m.type == 'ARMATURE' and m.object == arm and m.show_viewport for m in o.modifiers):
+                add(o, arm, 'DEFORM')
+            elif o.parent == arm:
+                add(o, arm, 'RIGID')
+    for obj in objs:
+        add(obj, None, 'RIGID' if obj.type in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'} else 'LINES')
+        for o in obj.children_recursive:
+            if o.visible_get():
+                add(o, None, 'RIGID' if o.type in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'} else 'LINES')
+    return out
 
 
 def _bone_shown(pb, st):
@@ -59,10 +128,300 @@ def _bone_shown(pb, st):
     return not cols or any(getattr(col, "is_visible_effectively", getattr(col, "is_visible", True)) for col in cols)
 
 
+def _bone_state(scene, st):
+    """Which bones the Bones mode shows (it changes with the selection / visibility)."""
+    if st.onion_mode != 'BONES':
+        return None
+    out = []
+    for name in _edited(scene)[0]:
+        obj = bpy.data.objects.get(name)
+        if obj is not None:
+            out.append(tuple(pb.name for pb in obj.pose.bones if _bone_shown(pb, st)))
+    return tuple(out)
+
+
+def _signature(scene, st):
+    """What the captured ghosts belong to: the edited paths and the settings that change them."""
+    arms, objs = _edited(scene)
+    return (tuple(sorted((k, tuple(sorted(v))) for k, v in arms.items())), tuple(o.name for o in objs),
+            st.onion_max_tris, st.onion_bones, st.onion_show, _bone_state(scene, st))
+
+
+# ---- proxies: a mesh melted down once, with its bone weights ------------------------------
+
+def _decimate(co, tri, limit, edges=None):
+    """Fewer triangles without holes, like Decimate: vertices that fall into the same cell of a
+    grid melt into one, triangles that collapse go away; the grid gets coarser until the mesh
+    fits the limit. Returns (positions, triangles[, edges], cluster of every vertex)."""
+    import numpy as np
+    lo, hi = co.min(axis=0), co.max(axis=0)
+    diag = float(np.linalg.norm(hi - lo)) or 1.0
+    cells = max(8.0, (limit * 0.5) ** 0.5 * 2.0)
+    best = (co, tri, np.arange(len(co)))
+    for _i in range(12):
+        q = np.floor((co - lo) / (diag / cells)).astype(np.int64)
+        # one number per cell (cheaper than unique rows)
+        q -= q.min(axis=0)
+        span = q.max(axis=0) + 1
+        key = (q[:, 0] * span[1] + q[:, 1]) * span[2] + q[:, 2]
+        _u, inv = np.unique(key, return_inverse=True)
+        inv = inv.reshape(-1)
+        cnt = np.bincount(inv)
+        newco = np.stack([np.bincount(inv, weights=co[:, i]) for i in range(3)], axis=1) / cnt[:, None]
+        newco = newco.astype(np.float32)
+        t2 = inv[tri]
+        keep = (t2[:, 0] != t2[:, 1]) & (t2[:, 1] != t2[:, 2]) & (t2[:, 0] != t2[:, 2])
+        t2 = t2[keep]
+        if len(t2):
+            _u2, first = np.unique(np.sort(t2, axis=1), axis=0, return_index=True)
+            t2 = t2[np.sort(first)]     # the same triangle twice: once (its winding kept for culling)
+        best = (newco, t2, inv)
+        if len(t2) <= limit or cells <= 8.0:
+            break
+        cells *= 0.75
+    newco, t2, inv = best
+    if edges is None:
+        return newco, t2, inv
+    e2 = inv[edges]
+    e2 = e2[e2[:, 0] != e2[:, 1]]
+    if len(e2):
+        e2 = np.unique(np.sort(e2, axis=1), axis=0)
+    return newco, t2, e2, inv
+
+
+class _Proxy:
+    """One object's ghost shape: positions (world, as built), triangles, edges; for a bent mesh
+    also the bone weights (K per vertex) and the rest shape they bend."""
+
+    def __init__(self, name, how):
+        self.name = name
+        self.how = how
+        self.sig = None
+        self.co = None          # (P, 3): world positions when built (RIGID / LINES: object space)
+        self.tri = None
+        self.edges = None
+        self.bones = []         # DEFORM: names of the bones used
+        self.idx = None         # (P, K) bone index
+        self.w = None           # (P, K) weights (rows sum to 1, or 0: follows the object)
+        self.rest = None        # (P, 4) rest positions
+        self.free = None        # (P,) no weight: follows the object
+        self.keep = None        # (P,) shown in "by weight"
+        self.arm = None
+        self.M0 = None          # object matrix when built
+
+
+def _mesh_sig(o):
+    mods = tuple((m.type, m.show_viewport, getattr(m, "levels", None)) for m in o.modifiers)
+    n = len(o.data.vertices) if getattr(o.data, "vertices", None) is not None else 0
+    return (o.type, n, mods)
+
+
+def _lines_shape(o):
+    """Object-space line pairs for things without a mesh: a camera's frame, a light, an empty."""
+    import math
+    import numpy as np
+    pts = []
+
+    def seg(a, b):
+        pts.extend((a, b))
+    if o.type == 'CAMERA':
+        try:
+            frame = [tuple(v) for v in o.data.view_frame(scene=bpy.context.scene)]
+        except Exception:
+            frame = [(0.5, 0.3, -1.0), (0.5, -0.3, -1.0), (-0.5, -0.3, -1.0), (-0.5, 0.3, -1.0)]
+        for i in range(4):
+            seg(frame[i], frame[(i + 1) % 4])
+            seg((0.0, 0.0, 0.0), frame[i])
+        top = (frame[0][0] * 0.0, frame[0][1] * 1.35, frame[0][2])
+        seg((frame[0][0] * 0.5, frame[0][1] * 1.1, frame[0][2]), top)
+        seg((frame[3][0] * 0.5, frame[3][1] * 1.1, frame[3][2]), top)
+    elif o.type == 'LIGHT':
+        r = 0.2
+        ring = [(math.cos(a * math.pi / 8) * r, math.sin(a * math.pi / 8) * r, 0.0) for a in range(16)]
+        for i in range(16):
+            seg(ring[i], ring[(i + 1) % 16])
+        kind = o.data.type
+        if kind == 'SUN':
+            seg((0.0, 0.0, 0.0), (0.0, 0.0, -1.0))
+        elif kind == 'SPOT':
+            ang = min(getattr(o.data, "spot_size", 0.8), 3.0) * 0.5
+            d = 1.0
+            rr = math.tan(ang) * d
+            cone = [(math.cos(a * math.pi / 4) * rr, math.sin(a * math.pi / 4) * rr, -d) for a in range(8)]
+            for i in range(8):
+                seg((0.0, 0.0, 0.0), cone[i])
+                seg(cone[i], cone[(i + 1) % 8])
+        elif kind == 'AREA':
+            s = getattr(o.data, "size", 1.0) * 0.5
+            sy = getattr(o.data, "size_y", o.data.size) * 0.5 if o.data.shape in {'RECTANGLE', 'ELLIPSE'} else s
+            c = [(-s, -sy, 0.0), (s, -sy, 0.0), (s, sy, 0.0), (-s, sy, 0.0)]
+            for i in range(4):
+                seg(c[i], c[(i + 1) % 4])
+            seg((0.0, 0.0, 0.0), (0.0, 0.0, -0.5))
+        else:
+            for a in range(8):
+                x, y = math.cos(a * math.pi / 4), math.sin(a * math.pi / 4)
+                seg((x * r * 1.4, y * r * 1.4, 0.0), (x * r * 2.2, y * r * 2.2, 0.0))
+    else:
+        s = getattr(o, "empty_display_size", 1.0) or 1.0
+        for i in range(3):
+            a = [0.0, 0.0, 0.0]
+            b = [0.0, 0.0, 0.0]
+            a[i], b[i] = -s, s
+            seg(tuple(a), tuple(b))
+    co = np.array(pts, dtype=np.float32).reshape(-1, 3)
+    return co, np.arange(len(co)).reshape(-1, 2)
+
+
+def _build(o, arm, how, st, dg):
+    """Make (or keep) the proxy of one object. Returns True when it was (re)built."""
+    import numpy as np
+    sig = (_mesh_sig(o), how, arm.name if arm else None, st.onion_max_tris)
+    p = _proxies.get(o.name)
+    if p is not None and p.sig == sig:
+        return False
+    p = _Proxy(o.name, how)
+    p.sig = sig
+    p.arm = arm.name if arm else None
+    if how == 'LINES':
+        p.co, p.edges = _lines_shape(o)
+        p.tri = np.zeros((0, 3), dtype=np.int64)
+        _proxies[o.name] = p
+        return True
+    ev = o.evaluated_get(dg)
+    try:
+        me = ev.to_mesh()
+    except RuntimeError:
+        me = None
+    if me is None:
+        p.co = np.zeros((0, 3), dtype=np.float32)
+        p.tri = np.zeros((0, 3), dtype=np.int64)
+        p.edges = np.zeros((0, 2), dtype=np.int64)
+        _proxies[o.name] = p
+        return True
+    n = len(me.vertices)
+    co = np.empty(n * 3, dtype=np.float32)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    M = np.array(ev.matrix_world, dtype=np.float64)
+    if how == 'DEFORM':
+        co = (co @ M[:3, :3].T + M[:3, 3]).astype(np.float32)       # world, as posed now
+    me.calc_loop_triangles()
+    tri = np.empty(len(me.loop_triangles) * 3, dtype=np.int64)
+    me.loop_triangles.foreach_get("vertices", tri)
+    tri = tri.reshape(-1, 3)
+    ed = np.empty(len(me.edges) * 2, dtype=np.int64)
+    me.edges.foreach_get("vertices", ed)
+    ed = ed.reshape(-1, 2)
+    limit = max(500, st.onion_max_tris)
+    inv = np.arange(n)
+    if n and (len(tri) > limit or len(ed) > limit * 1.5 or n > limit):
+        co, tri, ed, inv = _decimate(co, tri, limit, ed)
+    p.co, p.tri, p.edges = co, tri, ed
+    p.M0 = Matrix(ev.matrix_world)
+    if how == 'DEFORM':
+        _weights(p, o, arm, me, inv)
+    ev.to_mesh_clear()
+    _proxies[o.name] = p
+    return True
+
+
+def _weights(p, o, arm, me, inv, K=4):
+    """Bone weights of the proxy (a few vertices of each melted group, averaged) and its rest
+    shape: the built pose worked back through the bones."""
+    import numpy as np
+    P = len(p.co)
+    names = {g.index: g.name for g in o.vertex_groups}
+    bones = {b.name: i for i, b in enumerate(arm.data.bones) if b.use_deform}
+    # a few vertices per proxy vertex (the first ones met)
+    order = np.argsort(inv, kind='stable')
+    starts = np.searchsorted(inv[order], np.arange(P))
+    acc = [dict() for _ in range(P)]
+    verts = me.vertices
+    for pi in range(P):
+        s = starts[pi]
+        for j in range(s, min(s + 3, len(order))):
+            vi = int(order[j])
+            if inv[vi] != pi:
+                break
+            for g in verts[vi].groups:
+                b = bones.get(names.get(g.group, ""))
+                if b is not None and g.weight > 0.0:
+                    acc[pi][b] = acc[pi].get(b, 0.0) + g.weight
+    idx = np.zeros((P, K), dtype=np.int64)
+    w = np.zeros((P, K), dtype=np.float64)
+    for pi, d in enumerate(acc):
+        top = sorted(d.items(), key=lambda kv: -kv[1])[:K]
+        tot = sum(v for _b, v in top)
+        for k, (b, v) in enumerate(top):
+            idx[pi, k] = b
+            w[pi, k] = v / tot if tot > 0 else 0.0
+    p.bones = [b.name for b in arm.data.bones]
+    p.idx, p.w = idx, w
+    p.free = w.sum(axis=1) < 1e-6
+    # rest shape: r = (sum w S(f0))^-1 v(f0)
+    S = _skin_mats(arm, p)                                   # (B, 4, 4) world skinning now
+    A = np.einsum('pk,pkij->pij', w, S[idx])                 # (P, 4, 4)
+    A[p.free] = np.eye(4)
+    v = np.concatenate([p.co.astype(np.float64), np.ones((P, 1))], axis=1)
+    try:
+        p.rest = np.einsum('pij,pj->pi', np.linalg.inv(A), v)
+    except np.linalg.LinAlgError:
+        p.rest = v
+    p.M0 = arm.matrix_world.copy()
+
+
+def _skin_mats(arm, p):
+    """(B, 4, 4) world-space bending of every bone now: armature @ pose @ rest^-1 @ armature^-1."""
+    import numpy as np
+    Ma = np.array(arm.matrix_world, dtype=np.float64)
+    Mi = np.linalg.inv(Ma)
+    out = np.empty((len(p.bones), 4, 4))
+    for i, name in enumerate(p.bones):
+        pb = arm.pose.bones.get(name)
+        if pb is None:
+            out[i] = np.eye(4)
+            continue
+        B = np.array(pb.matrix, dtype=np.float64) @ np.linalg.inv(np.array(pb.bone.matrix_local, dtype=np.float64))
+        out[i] = Ma @ B @ Mi
+    return out
+
+
+def _pose(p):
+    """World positions of a bent proxy for the pose of now."""
+    import numpy as np
+    arm = bpy.data.objects.get(p.arm)
+    if arm is None or p.rest is None:
+        return p.co
+    S = _skin_mats(arm, p)
+    v = np.einsum('pk,pkij,pj->pi', p.w, S[p.idx], p.rest)
+    if p.free.any():
+        # no weights: it goes with the armature object
+        D = np.array(arm.matrix_world, dtype=np.float64) @ np.linalg.inv(np.array(p.M0, dtype=np.float64))
+        v[p.free] = p.rest[p.free] @ D.T
+    return v[:, :3].astype(np.float32)
+
+
+def _shown_by_weight(p, aff):
+    """By weight: the proxy vertices the affected bones move (half their weight or more)."""
+    import numpy as np
+    if p.idx is None:
+        return None
+    mask = np.array([b in aff for b in p.bones] + [False], dtype=bool)
+    return (p.w * mask[p.idx]).sum(axis=1) >= 0.5
+
+
+# ---- capture -----------------------------------------------------------------------------
+
 def clear():
     _frames.clear()
     _batches.clear()
     _stale.clear()
+
+
+def clear_all():
+    clear()
+    _proxies.clear()
 
 
 def changed():
@@ -73,32 +432,6 @@ def changed():
         _stale.update(_frames)
         _changed_at = time.time()
         _schedule(0.01)
-
-
-def _targets(scene):
-    """(meshes to ghost, armatures to ghost the bones of) for the editable paths."""
-    meshes, arms = [], []
-    seen = set()
-    for c in state.editable_caches(scene):
-        obj = bpy.data.objects.get(c.obj_name)
-        if obj is None or obj.name in seen:
-            continue
-        seen.add(obj.name)
-        if obj.type == 'ARMATURE':
-            arms.append(obj)
-            for o in scene.objects:
-                if o.type == 'MESH' and o.visible_get() and any(
-                        m.type == 'ARMATURE' and m.object == obj for m in o.modifiers):
-                    meshes.append(o)
-                elif o.parent == obj and o.type == 'MESH' and o.visible_get() and o not in meshes:
-                    meshes.append(o)
-        elif obj.type in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'}:
-            meshes.append(obj)
-        for o in scene.objects:
-            if o.parent == obj and o.type == 'MESH' and o.visible_get() and o not in meshes and \
-                    obj.type != 'ARMATURE':
-                meshes.append(o)
-    return meshes, arms
 
 
 def frames_to_show(scene, st):
@@ -114,91 +447,42 @@ def frames_to_show(scene, st):
     return [(f, -(i + 1)) for i, f in enumerate(before)] + [(f, i + 1) for i, f in enumerate(after)]
 
 
-def _decimate(co, tri, limit, edges=None):
-    """Fewer triangles without holes, like Decimate: vertices that fall into the same cell of a
-    grid melt into one, triangles that collapse go away; the grid gets coarser until the mesh
-    fits the limit. With `edges` (the mesh's own edges, no triangle diagonals) they are melted
-    the same way and returned too: a coarser wire that stays connected."""
+def _capture(scene, frames, targets, st):
+    """The ghosts on these frames. The bent meshes are left out of the evaluation (only their
+    armatures are evaluated); their proxies are bent here."""
     import numpy as np
-    lo, hi = co.min(axis=0), co.max(axis=0)
-    diag = float(np.linalg.norm(hi - lo)) or 1.0
-    cells = max(8.0, (limit * 0.5) ** 0.5 * 2.0)
-    best = (co, tri, np.arange(len(co)))
-    for _i in range(12):
-        q = np.floor((co - lo) / (diag / cells)).astype(np.int64)
-        uniq, inv = np.unique(q, axis=0, return_inverse=True)
-        inv = inv.reshape(-1)
-        sums = np.zeros((len(uniq), 3), dtype=np.float64)
-        np.add.at(sums, inv, co)
-        newco = (sums / np.bincount(inv)[:, None]).astype(np.float32)
-        t2 = inv[tri]
-        keep = (t2[:, 0] != t2[:, 1]) & (t2[:, 1] != t2[:, 2]) & (t2[:, 0] != t2[:, 2])
-        t2 = t2[keep]
-        _u, first = np.unique(np.sort(t2, axis=1), axis=0, return_index=True)
-        t2 = t2[np.sort(first)]     # the same triangle twice: once (its winding kept for culling)
-        best = (newco, t2, inv)
-        if len(t2) <= limit or cells <= 8.0:
-            break
-        cells *= 0.75
-    if edges is None:
-        return best[:2]
-    newco, t2, inv = best
-    e2 = inv[edges]
-    e2 = np.unique(np.sort(e2[e2[:, 0] != e2[:, 1]], axis=1), axis=0)
-    return newco, t2, e2
-
-
-def _capture(scene, frames, meshes, arms, st):
-    import numpy as np
-    dg = bpy.context.evaluated_depsgraph_get()
-    limit = max(500, st.onion_max_tris)
-    for f in frames:
-        scene.frame_set(int(f))
-        data = {"tris": [], "edges": [], "points": [], "bones": []}
-        for ob in meshes:
-            ev = ob.evaluated_get(dg)
-            try:
-                me = ev.to_mesh()
-            except RuntimeError:
-                continue
-            if me is None:
-                continue
-            M = np.array(ev.matrix_world, dtype=np.float32)
-            n = len(me.vertices)
-            co = np.empty(n * 3, dtype=np.float32)
-            me.vertices.foreach_get("co", co)
-            co = co.reshape(-1, 3) @ M[:3, :3].T + M[:3, 3]
-            me.calc_loop_triangles()
-            nt = len(me.loop_triangles)
-            tri = np.empty(nt * 3, dtype=np.int32)
-            me.loop_triangles.foreach_get("vertices", tri)
-            tri = tri.reshape(-1, 3)
-            ne = len(me.edges)
-            ed = np.empty(ne * 2, dtype=np.int32)
-            me.edges.foreach_get("vertices", ed)
-            ed = ed.reshape(-1, 2)
-            ev.to_mesh_clear()
-            vco = co
-            if n and (nt > limit or ne > limit * 1.5 or n > limit):
-                # the same melted mesh for every mode: the wire stays connected (no stride
-                # gaps), the points spread evenly
-                vco, tri, ed = _decimate(co, tri, limit, ed)
-            if len(tri):
-                data["tris"].append(vco[tri.ravel()])
-            if len(ed):
-                data["edges"].append(vco[ed.ravel()])
-            if len(vco):
-                data["points"].append(vco)
-        for arm in arms:
-            M = arm.matrix_world
-            for pb in arm.pose.bones:
-                if not _bone_shown(pb, st):
+    hidden = []
+    try:
+        for o, _arm, how in targets:
+            if how == 'DEFORM' and not o.hide_viewport:
+                o.hide_viewport = True
+                hidden.append(o)
+        arms = {a.name: a for _o, a, _h in targets if a is not None}
+        for name in _edited(scene)[0]:
+            arms.setdefault(name, bpy.data.objects[name])
+        for f in frames:
+            scene.frame_set(int(f))
+            parts = []
+            for o, _arm, how in targets:
+                p = _proxies.get(o.name)
+                if p is None:
                     continue
-                data["bones"] += [tuple(M @ pb.head), tuple(M @ pb.tail)]
-        _frames[f] = {k: (np.concatenate(v) if v and k != "bones" else (np.array(v, dtype=np.float32) if v else None))
-                      for k, v in data.items()}
-        for kind in ("tris", "edges", "points", "bones"):
-            _batches.pop((f, kind), None)
+                if how == 'DEFORM':
+                    parts.append((p.name, _pose(p), None))
+                else:
+                    parts.append((p.name, None, o.matrix_world.copy()))
+            bones = []
+            for arm in arms.values():
+                M = arm.matrix_world
+                for pb in arm.pose.bones:
+                    if _bone_shown(pb, st):
+                        bones += [tuple(M @ pb.head), tuple(M @ pb.tail)]
+            _frames[f] = {"parts": parts, "bones": np.array(bones, dtype=np.float32) if bones else None}
+            for key in [k for k in _batches if k[0] == f]:
+                del _batches[key]
+    finally:
+        for o in hidden:
+            o.hide_viewport = False
 
 
 def _schedule(delay=0.05):
@@ -209,15 +493,14 @@ def _schedule(delay=0.05):
 
 
 def _tick():
-    """Capture missing or changed ghost frames, the nearest first, about 40 ms per tick.
-
-    While a tool drags, a light scene is captured on every tick (the ghosts follow the edit
-    live); a heavy one waits until the mouse rests a moment, so the drag never stutters."""
-    global _timer_on, _busy, _sig, _cost
+    """Build missing proxies (one object per tick, with a note), then capture missing or
+    changed ghost frames, the nearest first, about 40 ms per tick."""
+    global _timer_on, _busy, _sig, _cost, status
     try:
         scene = bpy.context.scene
         st = state.settings(scene)
         if st is None or not st.show_onion:
+            status = ""
             _timer_on = False
             return None
         screen = bpy.context.screen
@@ -225,11 +508,25 @@ def _tick():
             return 0.3
         if state.modal_running and _cost > 0.03 and time.time() - _changed_at < 0.15:
             return 0.05
-        meshes, arms = _targets(scene)
         sig = _signature(scene, st)
         if sig != _sig:
             clear()
             _sig = sig
+        targets = _targets(scene)
+        # proxies first: one object per tick, so Blender stays responsive
+        todo = [t for t in targets if t[0].name not in _proxies or _proxies[t[0].name].sig !=
+                (_mesh_sig(t[0]), t[2], t[1].name if t[1] else None, st.onion_max_tris)]
+        if todo:
+            status = "Preparing ghosts: %d / %d" % (len(targets) - len(todo) + 1, len(targets))
+            state.tag_redraw()
+            _busy = True
+            try:
+                _build(todo[0][0], todo[0][1], todo[0][2], st, bpy.context.evaluated_depsgraph_get())
+            finally:
+                _busy = False
+            clear()
+            return 0.01
+        status = ""
         shows = sorted(frames_to_show(scene, st), key=lambda x: abs(x[1]))
         want = [f for f, _i in shows if f not in _frames] + [f for f, _i in shows if f in _stale]
         if not want:            # (stale frames not shown now are renewed when they show again)
@@ -240,39 +537,64 @@ def _tick():
         _busy = True
         try:
             done = []
+            batch = []
             for f in want:
-                t1 = time.time()
-                _stale.discard(f)
-                _capture(scene, [f], meshes, arms, st)
-                _cost = (time.time() - t1) if not _cost else _cost * 0.7 + (time.time() - t1) * 0.3
-                done.append(f)
-                if time.time() - t0 > 0.04:
+                batch.append(f)
+                if len(batch) >= 4:
                     break
+            t1 = time.time()
+            for f in batch:
+                _stale.discard(f)
+            _capture(scene, batch, targets, st)
+            done += batch
+            per = (time.time() - t1) / max(len(batch), 1)
+            _cost = per if not _cost else _cost * 0.7 + per * 0.3
         finally:
             scene.frame_set(cur, subframe=sub)
             _busy = False
         state.tag_redraw()
-        if len(done) < len(want):
+        if len(done) < len(want) or time.time() - t0 > 0.04:
             return 0.01
         _timer_on = False
         return None
     except Exception as ex:   # never let the timer die with a traceback storm
+        import traceback
+        traceback.print_exc()
         print("Editable Motion Paths: onion skin failed:", ex)
         _busy = False
         _timer_on = False
+        status = ""
         return None
 
 
-def _batch(f, kind, shader):
-    b = _batches.get((f, kind))
-    if b is None:
-        data = _frames.get(f, {}).get(kind)
-        if data is None or len(data) == 0:
-            return None
-        prim = {"tris": 'TRIS', "edges": 'LINES', "points": 'POINTS', "bones": 'LINES'}[kind]
-        b = _batches[(f, kind)] = batch_for_shader(shader, prim, {"pos": data})
-    return b
+def ghost(f, kind):
+    """World positions of a captured ghost (for scripts and tests): "tris" (3 per triangle),
+    "edges" (2 per line), "points" or "bones" (2 per bone). None if not captured."""
+    import numpy as np
+    data = _frames.get(f)
+    if data is None:
+        return None
+    if kind == "bones":
+        return data.get("bones")
+    out = []
+    for name, pos, M in data["parts"]:
+        p = _proxies.get(name)
+        if p is None:
+            continue
+        co = pos
+        if co is None:
+            m = np.array(M, dtype=np.float64)
+            co = (p.co @ m[:3, :3].T + m[:3, 3]).astype(np.float32) if len(p.co) else p.co
+        if kind == "tris" and len(p.tri):
+            out.append(co[p.tri.ravel()])
+        elif kind == "edges" and p.edges is not None and len(p.edges):
+            out.append(co[p.edges.ravel()])
+        elif kind == "points" and len(co):
+            out.append(co)
+    return np.concatenate(out) if out else None
 
+
+# ---- drawing -----------------------------------------------------------------------------
 
 def _point_shader():
     """Points need a shader that sets their size (the plain one ignores point_size_set on
@@ -281,6 +603,81 @@ def _point_shader():
         return gpu.shader.from_builtin('POINT_UNIFORM_COLOR')
     except (ValueError, TypeError):
         return gpu.shader.from_builtin('UNIFORM_COLOR')
+
+
+def _part_batch(f, kind, name, pos, shader, keep):
+    """A ghost part's batch: bent parts per frame, instanced ones once (key frame None)."""
+    import numpy as np
+    key = (f, kind, name)
+    b = _batches.get(key)
+    if b is not None:
+        return b
+    p = _proxies.get(name)
+    if p is None:
+        return None
+    co = pos if pos is not None else p.co
+    if co is None or not len(co):
+        return None
+    if kind == "tris":
+        tri = p.tri
+        if keep is not None and len(tri):
+            tri = tri[keep[tri].all(axis=1)]
+        if not len(tri):
+            return None
+        b = batch_for_shader(shader, 'TRIS', {"pos": co}, indices=tri.astype(np.int32))
+    elif kind == "edges":
+        ed = p.edges
+        if keep is not None and len(ed):
+            ed = ed[keep[ed].all(axis=1)]
+        if ed is None or not len(ed):
+            return None
+        b = batch_for_shader(shader, 'LINES', {"pos": co}, indices=ed.astype(np.int32))
+    else:
+        pts = co if keep is None else co[keep]
+        if not len(pts):
+            return None
+        b = batch_for_shader(shader, 'POINTS', {"pos": pts})
+    _batches[key] = b
+    return b
+
+
+_filter_cache = [None, None]
+
+
+def _filters(scene, st):
+    """{proxy name: kept vertices or None}, and the names left out (by object); worked out once
+    per selection / setting (the signature) and proxy set."""
+    if st.onion_show == 'WHOLE':
+        return {}, set()
+    key = (_sig, tuple(sorted((n, id(p)) for n, p in _proxies.items())))
+    if _filter_cache[0] == key:
+        return _filter_cache[1]
+    _filter_cache[1] = _filters_now(scene, st)
+    _filter_cache[0] = key
+    return _filter_cache[1]
+
+
+def _filters_now(scene, st):
+    arms, objs = _edited(scene)
+    aff = {}
+    for name, edited in arms.items():
+        arm = bpy.data.objects.get(name)
+        if arm is not None:
+            aff[name] = affected_bones(arm, edited)
+    keep, out = {}, set()
+    for p in _proxies.values():
+        if p.how == 'DEFORM' and p.arm in aff:
+            k = _shown_by_weight(p, aff[p.arm])
+            if st.onion_show == 'WEIGHT':
+                keep[p.name] = k
+            elif k is None or not k.any():
+                out.add(p.name)
+        elif p.how != 'DEFORM' and st.onion_show == 'OBJECT':
+            o = bpy.data.objects.get(p.name)
+            if o is not None and o.parent is not None and o.parent.type == 'ARMATURE' and \
+                    o.parent.name in aff and o.parent_type == 'BONE' and o.parent_bone not in aff[o.parent.name]:
+                out.add(p.name)
+    return keep, out
 
 
 def draw(scene, st, us):
@@ -294,10 +691,11 @@ def draw(scene, st, us):
         clear()
         _sig = sig
     shows = frames_to_show(scene, st)
-    if any(f not in _frames for f, _i in shows):
+    if any(f not in _frames for f, _i in shows) or status:
         _schedule()
     kind = {'SILHOUETTE': "tris", 'WIRE': "edges", 'POINTS': "points", 'BONES': "bones"}[st.onion_mode]
     sh = _point_shader() if kind == "points" else gpu.shader.from_builtin('UNIFORM_COLOR')
+    keep, left_out = _filters(scene, st) if kind != "bones" else ({}, set())
     prev_test = gpu.state.depth_test_get()
     # (in front: the depth still has to be written for the one-layer silhouette, and with the
     # depth test off nothing is written - so "always" passes instead)
@@ -307,14 +705,46 @@ def draw(scene, st, us):
     n_b = max(1, st.onion_before)
     n_a = max(1, st.onion_after)
     for f, i in sorted(shows, key=lambda x: -abs(x[1])):     # the farthest first
-        b = _batch(f, kind, sh)
-        if b is None:
+        data = _frames.get(f)
+        if data is None:
             continue
-        # the farther from the current frame, the fainter
         n = n_b if i < 0 else n_a
-        fade = (n - abs(i) + 1) / float(n)
+        fade = (n - abs(i) + 1) / float(n)                  # the farther, the fainter
         col = tuple(st.onion_color_before if i < 0 else st.onion_color_after)
         a = st.onion_opacity * max(0.08, fade ** 1.5)
+        if kind == "bones":
+            pts = data.get("bones")
+            if pts is None or not len(pts):
+                continue
+            b = _batches.get((f, "bones", ""))
+            if b is None:
+                b = _batches[(f, "bones", "")] = batch_for_shader(sh, 'LINES', {"pos": pts})
+            gpu.state.line_width_set(st.onion_size * us)
+            sh.uniform_float("color", col + (min(1.0, a * 1.6),))
+            b.draw(sh)
+            gpu.state.line_width_set(1.0)
+            continue
+        draws = []
+        for name, pos, M in data["parts"]:
+            if name in left_out:
+                continue
+            p = _proxies.get(name)
+            if p is None:
+                continue
+            pkind = "edges" if p.how == 'LINES' else kind
+            b = _part_batch(f if pos is not None else None, pkind, name, pos, sh if pkind == kind else
+                            gpu.shader.from_builtin('UNIFORM_COLOR'), keep.get(name))
+            if b is not None:
+                draws.append((b, M, pkind))
+
+        def each(fn):
+            for b, M, pkind in draws:
+                if M is not None:
+                    gpu.matrix.push()
+                    gpu.matrix.multiply_matrix(M)       # instanced: one shape, a matrix per ghost
+                fn(b, pkind)
+                if M is not None:
+                    gpu.matrix.pop()
         if kind == "tris":
             # one flat layer per ghost: depth first, then the color only where it is in front
             # (back faces are skipped: half the work, and nothing changes in a silhouette)
@@ -322,21 +752,28 @@ def draw(scene, st, us):
             gpu.state.depth_mask_set(True)
             gpu.state.color_mask_set(False, False, False, False)
             sh.uniform_float("color", (0, 0, 0, 0))
-            b.draw(sh)
+            each(lambda b, k: b.draw(sh) if k == "tris" else None)
             gpu.state.color_mask_set(True, True, True, True)
             gpu.state.depth_test_set('EQUAL')
             sh.uniform_float("color", col + (a,))
-            b.draw(sh)
+            each(lambda b, k: b.draw(sh) if k == "tris" else None)
             gpu.state.depth_test_set(test)
             gpu.state.depth_mask_set(False)
             gpu.state.face_culling_set('NONE')
+            lines = gpu.shader.from_builtin('UNIFORM_COLOR')
+            gpu.state.line_width_set(max(1.0, st.onion_size * us * 0.5))
+            lines.uniform_float("color", col + (min(1.0, a * 1.6),))
+            each(lambda b, k: b.draw(lines) if k == "edges" else None)
+            gpu.state.line_width_set(1.0)
         else:
-            if kind in {"bones", "edges"}:
-                gpu.state.line_width_set(st.onion_size * us * (1.0 if kind == "bones" else 0.4))
-            elif kind == "points":
+            if kind == "edges":
+                gpu.state.line_width_set(st.onion_size * us * 0.4)
+            else:
                 gpu.state.point_size_set(st.onion_size * us)
             sh.uniform_float("color", col + (min(1.0, a * 1.6),))
-            b.draw(sh)
+            lines = gpu.shader.from_builtin('UNIFORM_COLOR')
+            lines.uniform_float("color", col + (min(1.0, a * 1.6),))
+            each(lambda b, k: b.draw(sh if k == kind else lines))
             gpu.state.line_width_set(1.0)
             gpu.state.point_size_set(1.0)
     gpu.state.depth_mask_set(False)

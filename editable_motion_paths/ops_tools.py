@@ -299,11 +299,13 @@ class EMP_OT_smoothing_none(bpy.types.Operator):
 
 class EMP_OT_path_update(bpy.types.Operator):
     """Recalculate all motion paths (for changes they can't see by themselves, like """ \
-        """constraints or drivers)"""
+        """constraints or drivers) and the onion ghosts (after editing a mesh)"""
     bl_idname = "emp.path_update"
     bl_label = "Update Motion Paths"
 
     def execute(self, context):
+        from . import onion
+        onion.clear_all()
         state.sync_caches(context.scene)
         for c in state.caches.values():
             c.B = []

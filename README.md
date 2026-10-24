@@ -285,12 +285,22 @@ around the current one: on the keys, or every few frames (Display > Onion Skin: 
 step, opacity, colors). Modes: *Silhouette* (the meshes in one flat color per ghost),
 *Wire*, *Points* (the lightest; *Size* sets the dots and lines), *Bones* (sticks: the visible
 bones, or only the selected ones). The farther a ghost is from the current frame, the fainter.
-The ghosts are captured in the background and drawn from the graphics card, so the viewport
-stays fast. They follow the edits live, the nearest ones first, also while a key is dragged
-(with a heavy character they catch up as soon as the mouse rests for a moment). *Detail*
-limits the triangles per ghost: the mesh is simplified like Decimate (no holes, back faces
-skipped), and *Wire* and *Points* use the same simplified mesh, so the wire stays connected.
-Ghosts show in X-ray too.
+*Show*: the **Whole** character, only the part the edited bones move (**By Weight**: their
+vertex weights, and of the bones that follow them - children, IK chains), or only the objects
+they move (**By Object**, for characters made of separate parts: a part with no weight from
+them isn't shown). Cameras, lights and empties get ghosts too, drawn as lines (only a picture:
+a ghost light lights nothing).
+
+Heavy characters stay fast: once, with a *Preparing ghosts* note at the bottom, every mesh the
+armature deforms is simplified like Decimate (no holes) down to *Detail*, keeping its bone
+weights. After that, a ghost frame only evaluates the bones (the real meshes are left out) and
+the simplified mesh is bent by its weights; parts that don't bend (objects on a bone, props,
+cameras, lights) are one shape drawn with a different matrix per ghost (instanced). So the
+ghosts follow the edits live, the nearest ones first, also while a key is dragged, and the old
+ghost stays until its new one is ready (nothing blinks). Back faces are skipped, *Wire* and
+*Points* use the same simplified mesh (the wire stays connected), and ghosts show in X-ray
+too. After editing a mesh's shape, *Update Motion Paths* builds its ghost again (a change in
+the number of vertices or in the modifiers does that by itself).
 
 ## Display
 
