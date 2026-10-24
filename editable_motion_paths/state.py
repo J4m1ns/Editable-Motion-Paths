@@ -19,6 +19,9 @@ box_area = 0
 circle = None        # (x, y, radius, area pointer) circle select brush
 chart = None         # timing chart geometry of the last draw (see draw._draw_chart)
 speed_graph = None   # (path key, first, last frame) the speed graph showed last
+sculpt_cursor = None   # (x, y, radius, area pointer, painting) the sculpt brush circle
+sculpt_preview = None  # ([world points], area pointer) frame dots while a timing brush paints
+sculpt_hide = set()    # paths whose own frame dots are hidden meanwhile
 knife = None         # ([cut lines of world points], area pointer, cursor or None, snap) knife
 markers = None       # ([world points], area pointer[, labels]) previews of keys about to be added
 constraint = None    # (pivot, axis, color) axis line shown while transforming
@@ -376,7 +379,8 @@ def _bake_timer():
 
 @persistent
 def _on_depsgraph(scene, depsgraph):
-    if baking or not caches:
+    from . import onion
+    if baking or not caches or onion.busy():
         return
     st = settings(scene)
     if st is None or not st.auto_update:
@@ -390,11 +394,14 @@ def _on_depsgraph(scene, depsgraph):
                 pass
             tag_redraw()        # the path follows right away (e.g. a modifier's settings)
             schedule_rebake()
+            onion.changed()
             return
 
 
 @persistent
 def _on_undo(*_args):
+    from . import onion
+    onion.changed()
     for c in caches.values():
         c.dirty = True
     # hidden keys, value channels... come from the scene: take them over right away
@@ -410,6 +417,8 @@ def _on_undo(*_args):
 
 @persistent
 def _on_load(*_args):
+    from . import onion
+    onion.clear()
     caches.clear()
     ghosts.clear()
     _action_hashes.clear()

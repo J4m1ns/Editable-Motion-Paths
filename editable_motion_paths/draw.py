@@ -581,6 +581,11 @@ def _draw_view():
     gpu.state.depth_mask_set(False)
     cur = scene.frame_current + scene.frame_subframe
 
+    from . import onion
+    onion.draw(scene, st, us)
+    gpu.state.depth_test_set('NONE' if st.on_top else 'LESS_EQUAL')
+    gpu.state.depth_mask_set(False)
+
     up = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
     look = rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))
     for cache in caches:
@@ -697,7 +702,7 @@ def _draw_points(ctx, st, us):
         editable = cache.owner_selected() and not cache.locked
         lo, hi = path_window(scene, st, cache)
 
-        if st.show_frames:
+        if st.show_frames and cache.key not in state.sculpt_hide:
             col = COL_FRAME if editable else (0.7, 0.7, 0.7, 0.5)
             r = 1.8 * us
             vis, rep = _sample_flags(cache)
@@ -1051,6 +1056,31 @@ def _draw_knife(ctx, us):
         _flat(ring, col, 'LINE_STRIP')
 
 
+def _draw_sculpt(ctx, us):
+    """The sculpt brush: its circle (with the Sculpt Motion Path tool) and, while a timing
+    brush paints, the new frame dots."""
+    if ctx.area is None:
+        return
+    prev = state.sculpt_preview
+    if prev is not None and prev[1] == ctx.area.as_pointer():
+        discs = Discs()
+        for p in prev[0]:
+            discs.add(location_3d_to_region_2d(ctx.region, ctx.region_data, p), 2.4 * us, (1.0, 0.7, 0.25, 1.0))
+        gpu.state.blend_set('ALPHA')
+        discs.draw()
+    cur = state.sculpt_cursor
+    if cur is None or cur[3] != ctx.area.as_pointer():
+        return
+    tool = ctx.workspace.tools.from_space_view3d_mode(ctx.mode, create=False)
+    if tool is None or tool.idname not in {"emp.sculpt_path_pose", "emp.sculpt_path_object"}:
+        return
+    x, y, r, _a, painting = cur
+    ring = [(x + math.cos(a * math.pi / 32) * r, y + math.sin(a * math.pi / 32) * r) for a in range(65)]
+    gpu.state.line_width_set(1.5)
+    _flat(ring, (1.0, 0.7, 0.25, 0.95) if painting else (1.0, 1.0, 1.0, 0.7), 'LINE_STRIP')
+    gpu.state.line_width_set(1.0)
+
+
 def _draw_snap_point(ctx, us):
     if state.snap_point is None:
         return
@@ -1159,6 +1189,7 @@ def _draw_pixel():
         state.chart["area"] != ctx.area.as_pointer() else state.chart
     if st is not None and st.paths and not state.overlays_hidden():
         _draw_points(ctx, st, us)
+        _draw_sculpt(ctx, us)
         _draw_chart(ctx, st, us)
         _draw_speed_graph(ctx, st, us)
         _draw_prop_circle(ctx, us)

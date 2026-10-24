@@ -102,9 +102,11 @@ class Fitter:
         return False
 
     def hold_keys(self, keys):
-        """Keys at both ends of a hold (no motion between two neighbor keys)."""
+        """Keys at both ends of a hold (no motion between neighbor keys). A hold made of many
+        keys (baked) keeps only its first and last key: the ones inside add nothing."""
         out = set()
         limit = self.size * 1e-3
+        run = None
         for a, b in zip(keys, keys[1:]):
             pa = self.cache.measure(self.tg, a, self.value(a))
             still = True
@@ -115,7 +117,38 @@ class Fitter:
                     still = False
                     break
             if still:
-                out |= {a, b}
+                run = (run[0] if run else a, b)
+            elif run:
+                out |= set(run)
+                run = None
+        if run:
+            out |= set(run)
+        return out
+
+    def pose_keys(self, keys):
+        """Keys at the poses of the motion: where it stops for a moment or turns back
+        (contacts, extremes). Animators keep keys there."""
+        if len(keys) < 3:
+            return set()
+        pts = {t: self.cache.measure(self.tg, t, self.value(t)) for t in keys}
+        h = 0.5
+        speed = {}
+        for t in keys:
+            a = self.cache.measure(self.tg, t - h, self.value(t - h)) if t - h >= self.r0 else pts[t]
+            b = self.cache.measure(self.tg, t + h, self.value(t + h)) if t + h <= self.r1 else pts[t]
+            speed[t] = (b - a).length / (2 * h)
+        mean = sum(speed.values()) / len(speed) or 1e-9
+        out = set()
+        for i in range(1, len(keys) - 1):
+            t = keys[i]
+            d0 = pts[t] - pts[keys[i - 1]]
+            d1 = pts[keys[i + 1]] - pts[t]
+            # a stop for a moment: slower than both neighbors (inside a hold every key is still,
+            # and only the hold's ends matter, see hold_keys)
+            slow = speed[t] < 0.15 * mean and speed[t] < speed[keys[i - 1]] and speed[t] < speed[keys[i + 1]]
+            back = d0.length > 1e-9 and d1.length > 1e-9 and d0.angle(d1) > 2.2     # ~125 degrees
+            if slow or back:
+                out.add(t)
         return out
 
     # -- fitting -------------------------------------------------------------------

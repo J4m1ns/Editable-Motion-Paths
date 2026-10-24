@@ -224,13 +224,42 @@ path follows every change of a modifier's settings right away.
 
 ## Clean Up and loops
 
-* **Clean Up** (Keys panel, or X > Limited Dissolve) reduces keys while keeping the path in 3D
-  within a tolerance. It refits handles, keeps corners and holds, and keeps loops intact.
-  *Clean* removes keys; *Adaptive* rebuilds them with as few as possible.
+* **Clean Up** (Keys panel, or X > Limited Dissolve) reduces keys while keeping the motion:
+  where the bone is on every frame stays within a tolerance (so the timing is kept too, not
+  only the shape). Drag left / right to set how close it stays and watch the result live (the
+  original path stays as a ghost); M switches Clean / Adaptive, H keeps holds, P keeps poses.
+  It refits handles and keeps corners, the two ends of every hold, the poses (where the motion
+  stops for a moment or turns back), and loops intact. *Clean* removes keys; *Adaptive*
+  rebuilds them with as few as possible.
 * **Cycles**: no key is ever added outside a looping curve's range, and the first and last
   keys stay in sync. The part of the path outside the loop's keys is drawn faintly (Display >
   Loop Repeats). **Fix Loop** (Alt+C) matches the other end of the loop to the selected
   first or last key.
+
+## Sculpt Motion Path
+
+A second tool in the toolbar (under Edit Motion Path) paints on the paths with brushes, like
+sculpt mode. Pick a brush in the tool header (each has a picture):
+
+* timing brushes - the shape of the path stays, only where the bone is on each frame changes:
+  **Push** (drag the frames along the path), **Slow Down** (the frames gather under the brush),
+  **Speed Up** (they spread out), **Even** (even spacing). While you paint, the new frame dots
+  are shown; when you let go, the keys follow;
+* shape brushes: **Grab** (pull the path with the mouse), **Smooth**, **Pinch** (draw the path
+  toward the brush).
+
+**F**: radius, **Shift+F**: strength, **Ctrl**: the opposite effect (Slow Down becomes Speed
+Up, Pinch pushes away). Falloff as in sculpt mode.
+
+## Onion skinning
+
+The onion button in the tool header shows ghosts of the edited bones / objects on the frames
+around the current one: on the keys, or every few frames (Display > Onion Skin: before / after,
+step, opacity, colors). Modes: *Silhouette* (the meshes in one flat color per ghost),
+*Wire*, *Points* (the lightest), *Bones* (sticks). The ghosts are captured in the background
+while Blender is idle and drawn from the graphics card, so the viewport stays fast; after an
+edit they are captured again a moment later. *Detail* limits the triangles per ghost for
+heavy characters.
 
 ## Display
 

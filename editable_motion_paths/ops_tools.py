@@ -931,9 +931,10 @@ class EMP_OT_fix_loop(bpy.types.Operator):
 
 
 class EMP_OT_cleanup(bpy.types.Operator):
-    """Reduce the keys of the path while keeping its shape in 3D (selected range, or the whole """ \
-        """path). Handles are refitted, corners are kept. Clean: remove existing keys. """ \
-        """Adaptive: rebuild with as few keys as possible, placed where the shape needs them"""
+    """Reduce the keys of the path while keeping its motion: where the bone is on every frame """ \
+        """(selected range, or the whole path). Drag left / right to set how close it stays and """ \
+        """watch the result. Clean: remove existing keys. Adaptive: rebuild with as few keys as """ \
+        """possible, placed where the motion needs them"""
     bl_idname = "emp.cleanup"
     bl_label = "Clean Up Path"
     bl_options = {'REGISTER', 'UNDO'}
@@ -949,10 +950,89 @@ class EMP_OT_cleanup(bpy.types.Operator):
                     "the path size (lower keeps more keys)")
     keep_holds: BoolProperty(
         name="Keep Holds", default=True,
-        description="Keys where the motion stops (contacts, held poses) stay exactly as they are")
+        description="The first and last key of a hold (the motion standing still) stay as they are")
+    keep_poses: BoolProperty(
+        name="Keep Poses", default=True,
+        description="Keys where the motion stops for a moment or turns back (contacts, extremes) "
+                    "stay, like an animator would keep them")
+
     @classmethod
     def poll(cls, context):
         return context.mode in {'POSE', 'OBJECT'}
+
+    # -- live preview: drag to set the tolerance -----------------------------------
+
+    def invoke(self, context, event):
+        caches = [c for c in state.editable_caches(context.scene) if len(c.keys) > 2]
+        if not caches:
+            return self.execute(context)
+        self.snaps = []
+        for c in caches:
+            tg = c.target()
+            self.snaps.append(core.FCurveSnapshot(tg, tg.channels(c.ptype)))
+            state.ghosts[c.key] = list(c.points)
+        self.x0 = event.mouse_x
+        self.tol0 = self.tolerance
+        self.area = context.area
+        state.modal_running += 1
+        context.window_manager.modal_handler_add(self)
+        self._preview(context, event)
+        return {'RUNNING_MODAL'}
+
+    def _restore(self):
+        for s in self.snaps:
+            s.restore()
+        for c in state.caches.values():
+            c.dirty = True
+            c.refresh(force=True)
+
+    def _preview(self, context, event):
+        f = 2.0 ** ((event.mouse_x - self.x0) / (120.0 * compat.ui_scale()))
+        self.tolerance = min(20.0, max(0.01, self.tol0 * f))
+        self._restore()
+        self.execute(context)
+        txt = "Clean Up (%s): tolerance %.2f%%   %s   drag left / right: closer / fewer keys   " \
+              "M: method   H: keep holds %s   P: keep poses %s   LMB / Enter: done   Esc: cancel" % (
+                  "Clean" if self.method == 'CLEAN' else "Adaptive", self.tolerance,
+                  getattr(self, "result_text", ""), "ON" if self.keep_holds else "off",
+                  "ON" if self.keep_poses else "off")
+        if self.area is not None:
+            self.area.header_text_set(txt)
+        state.hud = ("%.2f%%  %s" % (self.tolerance, getattr(self, "result_text", "")),
+                     (event.mouse_region_x, event.mouse_region_y))
+        state.tag_redraw()
+
+    def modal(self, context, event):
+        t, v = event.type, event.value
+        if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            self._preview(context, event)
+        elif v == 'PRESS' and t in {'M', 'H', 'P'}:
+            if t == 'M':
+                self.method = 'ADAPTIVE' if self.method == 'CLEAN' else 'CLEAN'
+            elif t == 'H':
+                self.keep_holds = not self.keep_holds
+            else:
+                self.keep_poses = not self.keep_poses
+            self._preview(context, event)
+        elif (t == 'LEFTMOUSE' and v == 'PRESS') or (t in {'RET', 'NUMPAD_ENTER', 'SPACE'} and v == 'PRESS'):
+            self._end(context)
+            if getattr(self, "result_text", None):
+                self.report({'INFO'}, self.result_text)
+            return {'FINISHED'}
+        elif t in {'RIGHTMOUSE', 'ESC'} and v == 'PRESS':
+            self._restore()
+            self._end(context)
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
+
+    def _end(self, context):
+        state.modal_running = max(0, state.modal_running - 1)
+        state.ghosts.clear()
+        state.hud = None
+        if self.area is not None:
+            self.area.header_text_set(None)
+        pick.tag_anim_editors()
+        state.tag_redraw()
 
     def execute(self, context):
         from . import fit
@@ -986,6 +1066,8 @@ class EMP_OT_cleanup(bpy.types.Operator):
             fixed = {t for t in inside if fitter.is_corner(t)} | {float(r0), float(r1)}
             if self.keep_holds:
                 fixed |= fitter.hold_keys([t for t in inside])
+            if self.keep_poses:
+                fixed |= fitter.pose_keys([t for t in inside])
             if self.method == 'CLEAN':
                 knots, slopes = fitter.prune(inside, fixed, tol)
             else:
@@ -1004,8 +1086,10 @@ class EMP_OT_cleanup(bpy.types.Operator):
                                          "(and 2+ keys for a range)")
             return {'CANCELLED'}
         pick.tag_anim_editors()
-        self.report({'INFO'}, "Clean Up: %d -> %d keys, max deviation %.2f%% of the path size" % (
-            before, after, worst))
+        self.result_text = "%d -> %d keys, max deviation %.2f%%" % (before, after, worst)
+        if not getattr(self, "snaps", None):        # (the live preview shows it in the header)
+            self.report({'INFO'}, "Clean Up: %d -> %d keys, max deviation %.2f%% of the path size" % (
+                before, after, worst))
         return {'FINISHED'}
 
 
