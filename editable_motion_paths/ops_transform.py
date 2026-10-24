@@ -958,7 +958,7 @@ class EMP_OT_transform(bpy.types.Operator):
             self.value = (a, b, 0.0)
             return
 
-        if self.mode == 'ROTATE' and self.twist and self.ring_axis == 1 and not num.active:
+        if self.mode == 'ROTATE' and self.twist and self.ring_axis in (1, 4) and not num.active:
             # dragging the green ring: twist by the angle swept around it
             ang = self._twist_ring_angle(region, rv3d, mouse)
             if ang is not None:
@@ -1097,15 +1097,22 @@ class EMP_OT_transform(bpy.types.Operator):
             st['n'] * (e.co - c).dot(st['n'])
 
     def _twist_ring_angle(self, region, rv3d, mouse):
-        """The green (Y) ring: twist angle of the bone around its own axis."""
+        """The green (Y) ring: twist angle of the bone around its own axis. The rotation
+        ribbon's handle (ring_axis 4) turns around the same axis, at the key."""
         for _c, es in self.groups:
             for e in es:
                 if e.part != 'KEY' or e.center is None or e.src is not None:
                     continue
                 n = e.basis.col[1].normalized()
                 r = (e.co - e.center).length
-                ref = e.center + e.basis.col[2].normalized() * r
-                res = self._ring_angle(region, rv3d, ('twist', e.cache.key, round(e.k.t, 3)), e.center, n, ref,
+                center = e.center
+                if self.ring_axis == 4:
+                    from . import draw
+                    st = state.settings()
+                    center = e.co
+                    r = max(abs(x) for x in draw.rot_ribbon_span(st, e.cache))
+                ref = center + e.basis.col[0 if self.ring_axis == 4 else 2].normalized() * r
+                res = self._ring_angle(region, rv3d, ('twist', e.cache.key, round(e.k.t, 3)), center, n, ref,
                                        mouse)
                 return None if res is None else res[1]
         return None

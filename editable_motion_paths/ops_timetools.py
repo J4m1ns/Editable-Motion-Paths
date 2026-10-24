@@ -620,6 +620,8 @@ class EMP_MT_timing(bpy.types.Menu):
         layout.operator("emp.ease", text="Ease", icon='IPO_EASE_IN_OUT')
         layout.menu("EMP_MT_space", icon='ALIGN_JUSTIFY')
         layout.operator("emp.tween", text="Breakdown", icon='IPO_SINE')
+        op = layout.operator("wm.call_panel", text="Easing Presets...", icon='IPO_EASE_IN_OUT')
+        op.name, op.keep_open = "EMP_PT_easing_presets", True
         layout.operator("emp.slide", text="Slide (G G)", icon='TRACKING_FORWARDS')
         layout.separator()
         layout.operator("emp.time_scale", icon='ARROW_LEFTRIGHT')

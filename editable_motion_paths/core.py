@@ -417,7 +417,7 @@ class PathCache:
         self.base_points = []   # scale / value paths: the location path they are drawn on
         self.sample_vals = []   # scale / value paths: channel values at every sample
         self.hidden = set()     # frames of hidden keys
-        self.sample_axes = []   # scale paths: the target's X, Y, Z directions at every sample
+        self.sample_axes = []   # scale / rotation paths: the target's X, Y, Z directions at every sample
         self.vis = []           # per sample: is this part of the path shown (not next to a hidden key)
         self.rep = []           # per sample: a repeat of a loop outside its keys (drawn faint)
         self.loop_range = None  # (first, last) key frame of looping motion
@@ -696,7 +696,8 @@ class PathCache:
         if self.ptype in (SCALE, VALUE):
             self.base_points = [self.head(tg, t) for t in self.times]
             self.sample_vals = [ch.values(t) for t in self.times]
-        if self.ptype == SCALE:
+        if self.ptype in (SCALE, ROTATION):
+            # scale ribbons / rotation ribbon: the target's own axes at every sample
             self.sample_axes = [self.axes(tg, t) for t in self.times]
             if self.ptype == VALUE:
                 # speed colors show how fast the value changes

@@ -1009,10 +1009,60 @@ class EMP_OT_cleanup(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class _EaseTimingJob:
+    """Ease that keeps the path: the segments next to the selected keys of one path, each with
+    its original motion (a SpaceJob), retimed along the path."""
+
+    def __init__(self, cache, tg, sel):
+        from .ops_timing import SpaceJob
+        self.cache = cache
+        self.keys, self.mask = [], []       # (for _AdjustOp)
+        self.sel = sel
+        self.snapshot = core.FCurveSnapshot(tg, tg.channels(cache.ptype))
+        ks = [k.t for k in cache.keys]
+        segs = set()
+        for t in sel:
+            i = ks.index(t)
+            if i > 0:
+                segs.add((ks[i - 1], t))
+            if i + 1 < len(ks):
+                segs.add((t, ks[i + 1]))
+        self.segs = [((a, b), SpaceJob(cache, tg, float(a), float(b))) for a, b in sorted(segs)]
+
+
+def ease_target(job, tg, slow_start, slow_end, e):
+    """Target motion of one segment: the same path, travelled with a slow start and / or end
+    (e > 0: up to the bone coming to rest at the key) or evenly (e < 0)."""
+    cache = job.cache
+    total = job.arc[-1]
+    r0, r1 = job.r0, job.r1
+    p = 2.0 + e
+
+    def prof(u):
+        if e < 0.0:
+            return u
+        if slow_start and slow_end:
+            a, b = u ** p, (1.0 - u) ** p
+            return a / (a + b) if a + b > 0.0 else u
+        if slow_end:
+            return 1.0 - (1.0 - u) ** p
+        return u ** p
+    w = min(1.0, abs(e))
+
+    def fn(t):
+        u = min(1.0, max(0.0, (t - r0) / (r1 - r0)))
+        s0 = job._at(job.arc, t)
+        s = s0 + (total * prof(u) - s0) * w
+        tt = job._time_at_arc(s)
+        return cache.solve(tg, t, job._at(job.pts, tt), job._at(job.vals, tt))
+    return fn
+
+
 class EMP_OT_ease(_AdjustOp, bpy.types.Operator):
     """Ease (slow in / slow out) at the selected keys: drag right for a stronger ease (the """ \
-        """frame dots bunch up at the key), left to move through the key more evenly. """ \
-        """I / O / B while dragging: ease in, out or both"""
+        """frame dots bunch up at the key), left to move through the key more evenly. Keep the """ \
+        """Path (default): only the timing changes, the path keeps its shape; Handles: the key's """ \
+        """handles change (T while dragging). I / O / B: ease in, out or both"""
     bl_idname = "emp.ease"
     bl_label = "Ease"
     bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
@@ -1027,17 +1077,79 @@ class EMP_OT_ease(_AdjustOp, bpy.types.Operator):
         ('IN', "In", "Slow in: arrive gently (the part before the key)"),
         ('OUT', "Out", "Slow out: leave gently (the part after the key)"),
     ], default='BOTH')
+    method: EnumProperty(name="Method", items=[
+        ('TIMING', "Keep the Path", "Only the timing changes: the frames bunch up at the key along "
+                                    "the same path (keys are added where needed)"),
+        ('HANDLES', "Handles", "The key's handles get flatter and longer in time (the path near "
+                               "the key changes a little too)"),
+    ], default='TIMING')
+    tolerance: FloatProperty(name="Tolerance", subtype='PERCENTAGE', default=0.4, min=0.01, soft_max=5.0,
+                             description="Keep the Path: allowed distance from the exact new motion "
+                                         "(percent of the path size); lower adds more keys")
 
     def _label(self):
         return {"BOTH": "Ease In & Out", "IN": "Ease In", "OUT": "Ease Out"}[self.side] + \
-            "  (I / O / B)"
+            "  (I / O / B)   %s (T)" % ("keeping the path" if self.method == 'TIMING' else "handles")
 
     def _modal_key(self, context, event):
+        if event.type == 'T':
+            # switch the method: start again from the original curves
+            for s in reversed(self.snapshots):
+                s.restore()
+            for c in state.caches.values():
+                c.dirty = True
+                c.refresh(force=True)
+            self.method = 'HANDLES' if self.method == 'TIMING' else 'TIMING'
+            self.ensured = False
+            self.jobs = self._jobs(context, None, ensure=False)
+            return True
         m = {'I': 'IN', 'O': 'OUT', 'B': 'BOTH'}.get(event.type)
         if m is None:
             return False
         self.side = m
         return True
+
+    def _jobs(self, context, snapshots=None, ensure=True):
+        if self.method == 'HANDLES':
+            return _AdjustOp._jobs(self, context, snapshots, ensure)
+        jobs = []
+        for cache in state.editable_caches(context.scene):
+            tg = cache.target()
+            if tg is None or len(cache.keys) < 2:
+                continue
+            sel = [k.t for k in cache.keys if k.sel] or [k.t for k in cache.keys if not k.hidden]
+            ks = [k.t for k in cache.keys]
+            frames = set(sel)
+            for t in sel:
+                i = ks.index(t)
+                frames.update(ks[max(i - 1, 0):i + 2])
+            if snapshots is not None:
+                snapshots.append(core.FCurveSnapshot(tg, tg.channels(cache.ptype)))
+            if ensure and core.ensure_keys(tg, cache.ptype, sorted(frames), None,
+                                           state.settings(context.scene).pin_partial):
+                cache.refresh(force=True)
+                tg = cache.target()
+            jobs.append(_EaseTimingJob(cache, tg, sel))
+        return jobs
+
+    def _apply_timing(self, job, tg, touched):
+        from .ops_timing import refit
+        job.snapshot.restore()
+        cache = job.cache
+        cache.refresh(force=True)
+        tg = cache.target()
+        e = self.factor
+        sel = set(job.sel)
+        for (a, b), sj in job.segs:
+            if sj.arc[-1] < 1e-9:
+                continue        # a hold: nothing to ease
+            slow_start = a in sel and self.side in {'BOTH', 'OUT'}
+            slow_end = b in sel and self.side in {'BOTH', 'IN'}
+            if not (slow_start or slow_end) or abs(e) < 1e-9:
+                continue
+            touched.update(refit(sj, tg, ease_target(sj, tg, slow_start, slow_end, e), {round(t, 3) for t in sel},
+                                 self.tolerance))
+            tg = cache.target()
 
     def _originals(self, job, tg):
         """Handle data of the selected keys before easing (captured once per job)."""
@@ -1086,6 +1198,9 @@ class EMP_OT_ease(_AdjustOp, bpy.types.Operator):
         return (x + sign * dt, y + s * sign * dt)
 
     def _apply_job(self, job, tg, touched):
+        if self.method == 'TIMING':
+            self._apply_timing(job, tg, touched)
+            return
         coll = tg.coll
         e = self.factor
         for o in self._originals(job, tg):

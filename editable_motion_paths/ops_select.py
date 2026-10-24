@@ -235,11 +235,11 @@ class EMP_OT_click(bpy.types.Operator):
         if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             m = Vector((event.mouse_region_x, event.mouse_region_y))
             if (m - self.press).length >= max(self.threshold, 3):
-                if getattr(self, "ring", None) == 'RY':
-                    # the green ring: twist the bone around its own axis
+                if getattr(self, "ring", None) in {'RY', 'RB'}:
+                    # the green ring / the ribbon's handle: twist the bone around its own axis
                     bpy.ops.emp.transform('INVOKE_DEFAULT', mode='ROTATE', twist=True, release_confirm=True,
                                           start_x=int(self.press.x), start_y=int(self.press.y),
-                                          ring_axis=1)
+                                          ring_axis=space.RING_AXES[self.ring])
                 elif getattr(self, "ring", None):
                     bpy.ops.emp.transform('INVOKE_DEFAULT', mode='TRANSLATE', release_confirm=True,
                                           start_x=int(self.press.x), start_y=int(self.press.y),

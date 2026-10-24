@@ -6,7 +6,7 @@ all its channels. Apply bakes it into keys (and cleans them up), copy / paste mo
 between paths, and the Modifier Tools functions work on the whole stack."""
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 
 from . import compat, core, pick, state
 
@@ -414,6 +414,111 @@ class EMP_OT_fmod_apply(_StackOp, bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _selected_ranges(cache):
+    """Frame ranges of the selected parts of the path: runs of selected keys (a single selected
+    key: the segments on both sides of it)."""
+    ks = cache.keys
+    out = []
+    i = 0
+    while i < len(ks):
+        if not ks[i].sel:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(ks) and ks[j + 1].sel:
+            j += 1
+        if j > i:
+            out.append((ks[i].t, ks[j].t))
+        elif len(ks) > 1:
+            out.append((ks[max(i - 1, 0)].t, ks[min(i + 1, len(ks) - 1)].t))
+        i = j + 1
+    merged = []
+    for a, b in sorted(out):
+        if merged and a <= merged[-1][1] + 1e-6:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    return merged
+
+
+class EMP_OT_fmod_apply_selected(_StackOp, bpy.types.Operator):
+    """Apply the modifier to the selected parts of the path only: its effect is baked into keys """ \
+        """there and the modifier is removed (the rest of the motion stays as it was without it)"""
+    bl_idname = "emp.fmod_apply_selected"
+    bl_label = "Apply to Selected"
+
+    name: StringProperty(options={'SKIP_SAVE'})
+    smooth: FloatProperty(name="Smooth Seams", default=2.0, min=0.0, soft_max=10.0,
+                          description="Frames over which the effect fades in and out at the ends "
+                                      "of the selected parts (0: a hard cut)")
+    simplify: BoolProperty(name="Clean Up", default=True,
+                           description="Reduce the baked keys while keeping the motion (Clean Up)")
+
+    def execute(self, context):
+        import math
+        cache = active_cache(context)
+        ranges = _selected_ranges(cache) if cache is not None else []
+        if not ranges:
+            self.report({'WARNING'}, "Select keys of the path: the modifier is baked between them")
+            return {'CANCELLED'}
+        touched = 0
+        for _l, fc in channels(cache):
+            if fc is None:
+                continue
+            m = next((x for x in fc.modifiers if x.name == self.name), None)
+            if m is None:
+                continue
+            mods = list(fc.modifiers)
+            mutes = [x.mute for x in mods]
+            frames = sorted({f for a, b in ranges for f in range(int(math.ceil(a)), int(math.floor(b)) + 1)})
+            for x in mods:
+                x.mute = True
+            base = {f: fc.evaluate(f) for f in frames}
+            m.mute = False
+            with_m = {f: fc.evaluate(f) for f in frames}
+            for x, mu in zip(mods, mutes):
+                x.mute = mu
+            fc.modifiers.remove(m)
+            kps = fc.keyframe_points
+            for a, b in ranges:
+                for f in frames:
+                    if not a <= f <= b:
+                        continue
+                    d = min(f - a, b - f)
+                    if self.smooth > 0.0:
+                        x = min(1.0, d / self.smooth)
+                        w = x * x * (3.0 - 2.0 * x)
+                    else:
+                        w = 1.0 if d > 0 else 0.0
+                    if w <= 0.0:
+                        continue        # the ends of the part keep their keys
+                    kp = kps.insert(f, base[f] + (with_m[f] - base[f]) * w, options={'FAST'})
+                    kp.interpolation = 'BEZIER'
+                    kp.handle_left_type = kp.handle_right_type = 'AUTO_CLAMPED'
+            fc.update()
+            touched += 1
+        if not touched:
+            return {'CANCELLED'}
+        cache.refresh(force=True)
+        if self.simplify:
+            area = next((a for a in context.screen.areas if a.type == 'VIEW_3D'), None)
+            for a, b in ranges:
+                pick.deselect_all([cache])
+                cache.refresh(force=True)
+                for k in cache.keys:
+                    if a - 1e-3 <= k.t <= b + 1e-3:
+                        pick.select_part(cache, k, 'KEY', True)
+                cache.refresh(force=True)
+                if area is not None:
+                    with context.temp_override(area=area, region=next(r for r in area.regions if r.type == 'WINDOW')):
+                        bpy.ops.emp.cleanup('EXEC_DEFAULT', method='CLEAN', tolerance=0.3)
+                cache.refresh(force=True)
+        _done(cache)
+        self.report({'INFO'}, "%s baked into %d part%s of the path" % (self.name, len(ranges),
+                                                                       "" if len(ranges) == 1 else "s"))
+        return {'FINISHED'}
+
+
 _clipboard = []
 
 
@@ -534,6 +639,7 @@ class EMP_MT_fmod_entry(bpy.types.Menu):
             return
         name = m.name
         layout.operator("emp.fmod_apply", text="Apply", icon='CHECKMARK').name = name
+        layout.operator("emp.fmod_apply_selected", text="Apply to Selected", icon='RESTRICT_SELECT_OFF').name = name
         layout.operator("emp.fmod_duplicate", text="Duplicate", icon='DUPLICATE').name = name
         layout.operator("emp.fmod_copy", text="Copy", icon='COPYDOWN').name = name
         layout.operator("emp.fmod_paste", text="Paste", icon='PASTEDOWN')
@@ -625,7 +731,8 @@ class EMP_PT_modifiers_popover(bpy.types.Panel):
         draw_stack(self.layout, context)
 
 
-classes = (EMP_OT_fmod_add, EMP_OT_fmod_remove, EMP_OT_fmod_axis, EMP_OT_fmod_duplicate, EMP_OT_fmod_mute,
+classes = (EMP_OT_fmod_add, EMP_OT_fmod_remove, EMP_OT_fmod_axis, EMP_OT_fmod_duplicate,
+           EMP_OT_fmod_apply_selected, EMP_OT_fmod_mute,
            EMP_OT_fmod_move,
            EMP_OT_fmod_apply,
            EMP_OT_fmod_copy, EMP_OT_fmod_paste, EMP_OT_fmod_tools, EMP_MT_fmod_add, EMP_MT_fmod_tools,

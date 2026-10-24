@@ -1,5 +1,5 @@
 import bpy
-from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProperty,
+from bpy.props import (BoolProperty, BoolVectorProperty, CollectionProperty, EnumProperty, FloatProperty,
                        FloatVectorProperty, IntProperty, PointerProperty, StringProperty)
 
 from . import state
@@ -126,6 +126,18 @@ class EMP_Settings(bpy.types.PropertyGroup):
                                              "keys. Drag a ring to turn around that axis (Y: twist), "
                                              "drag the key to turn freely",
                                  update=_redraw)
+    show_rot_ribbon: BoolProperty(name="Rotation Ribbon", default=True, update=_redraw,
+                                  description="Rotation paths: a ribbon along the path of the tip, "
+                                              "turned like the bone's X axis, so the twist (around "
+                                              "Y) shows. Drag the handle on its edge to twist")
+    rot_ribbon_width: FloatProperty(name="Ribbon Width", default=1.0, min=0.05, soft_max=4.0,
+                                    update=_redraw, description="Rotation ribbon: how wide it is")
+    rot_ribbon_side: EnumProperty(
+        name="Ribbon Side", update=_redraw,
+        items=[('BOTH', "Both Sides", "Centered on the path of the tip"),
+               ('POSITIVE', "+X", "On the side of the bone's +X axis"),
+               ('NEGATIVE', "-X", "On the side of the bone's -X axis")],
+        default='BOTH')
     show_reach: BoolProperty(name="Reach", default=True,
                              description="Rotation paths: a circle showing how far the tip can go "
                                          "(it stays on a sphere around the bone head)", update=_redraw)
@@ -133,6 +145,23 @@ class EMP_Settings(bpy.types.PropertyGroup):
         name="Timing Chart", default=True, update=_redraw,
         description="A timing chart of the selected keys at the bottom of the viewport: where every "
                     "frame is between them. Drag a frame tick (or a frame dot on the path) to change it")
+    easing_mode: EnumProperty(
+        name="Easing Mode",
+        items=[('TIMING', "Keep the Path", "Retime along the path: the shape stays (Location and "
+                                           "Rotation paths)"),
+               ('CHANNELS', "Channels", "Blender's easing interpolation on the chosen channels, like in "
+                                        "the Graph Editor")],
+        default='TIMING')
+    easing_direction: EnumProperty(
+        name="Easing Direction",
+        items=[('EASE_IN', "In", "Slow start"), ('EASE_OUT', "Out", "Slow end"),
+               ('EASE_IN_OUT', "In & Out", "Slow start and end")],
+        default='EASE_IN_OUT')
+    easing_channels: BoolVectorProperty(name="Easing Channels", size=4, default=(True, True, True, True),
+                                        description="Which channels get the easing (drag across to "
+                                                    "switch several)")
+    easing_strength: FloatProperty(name="Strength", default=1.0, min=0.0, max=1.0, subtype='FACTOR',
+                                   description="How much of the easing (0: the timing as it was)")
     show_speed_graph: BoolProperty(name="Speed Graph", default=False, update=_redraw,
                                    description="A graph of the speed of the active path, above the "
                                                "timing chart")

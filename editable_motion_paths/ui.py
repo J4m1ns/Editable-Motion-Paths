@@ -2,7 +2,7 @@
 
 import bpy
 
-from . import core, ops_fmods, state
+from . import core, ops_easing, ops_fmods, state
 
 
 def _k(op, key, props=None, **mods):
@@ -49,7 +49,7 @@ TOOL_KEYMAP = (
     _k("emp.duplicate_move", 'D', shift=True),
     _k("emp.loopcut", 'R', ctrl=True),
     _k("emp.bevel", 'B', ctrl=True),
-    _k("emp.knife", 'K'),
+    _k("emp.knife", 'K', ctrl=True),        # (K is Blender's keying set insert)
     _k("emp.merge", 'M'),
     _k("emp.copy_keys", 'C', ctrl=True),
     _k("emp.paste_keys", 'V', ctrl=True),
@@ -109,7 +109,7 @@ HELP = (
         ("Ctrl+Click path", "insert a key"),
         ("E", "extrude: continue the motion (wheel: frames)"),
         ("Shift+D", "duplicate and move the copies"),
-        ("Ctrl+R, K", "loop cut / knife"),
+        ("Ctrl+R, Ctrl+K", "loop cut / knife"),
         ("Ctrl+B", "bevel (A width, S segments, P profile)"),
         ("M", "merge (at the last selected key)"),
         ("Ctrl+C, Ctrl+V", "copy the active key's pose / paste on the current frame"),
@@ -299,6 +299,7 @@ class EMP_MT_looptools(bpy.types.Menu):
     def draw(self, context):
         layout = self.layout
         layout.operator("emp.circle", icon='MESH_CIRCLE')
+        layout.operator("emp.arc", icon='SPHERECURVE')
         layout.operator("emp.flatten", icon='MESH_PLANE')
         layout.operator("emp.straighten", icon='IPO_LINEAR')
         layout.operator("emp.gstretch", icon='GREASEPENCIL')
@@ -566,6 +567,11 @@ def _draw_display(layout, st):
     col.prop(st, "show_spokes")
     col.prop(st, "show_rot_rings")
     col.prop(st, "show_reach")
+    col.prop(st, "show_rot_ribbon")
+    if st.show_rot_ribbon:
+        sub = col.row(align=True)
+        sub.prop(st, "rot_ribbon_width", text="Width")
+        sub.prop(st, "rot_ribbon_side", text="")
     col.prop(st, "show_timing_chart")
     col.prop(st, "show_speed_graph")
     if st.show_speed_graph:
@@ -632,8 +638,10 @@ class EMP_PT_help(_Panel, bpy.types.Panel):
 
 classes = (EMP_MT_handle_type, EMP_MT_interpolation, EMP_MT_value_channel, EMP_OT_set_value_channel,
            EMP_MT_space, EMP_MT_looptools, EMP_MT_snap, EMP_MT_curves, EMP_MT_context, EMP_UL_paths,
-           EMP_PT_main, EMP_PT_shape, EMP_PT_timing, EMP_PT_keys, ops_fmods.EMP_PT_modifiers,
+           EMP_PT_main, EMP_PT_shape, EMP_PT_timing, ops_easing.EMP_PT_easing_sidebar, EMP_PT_keys,
+           ops_fmods.EMP_PT_modifiers,
            EMP_PT_range, EMP_PT_display, EMP_PT_display_popover, ops_fmods.EMP_PT_modifiers_popover,
+           ops_easing.EMP_PT_easing_presets,
            EMP_PT_help)
 
 _addon_keymaps = []

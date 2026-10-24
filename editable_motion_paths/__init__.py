@@ -11,12 +11,12 @@ bl_info = {
 
 import bpy
 
-from . import (api, draw, ops_fmods, ops_io, ops_keys, ops_select, ops_shape, ops_slide, ops_timetools,
-               ops_timing, ops_tools, ops_transform, ops_value, props, state, ui)
+from . import (api, draw, ops_easing, ops_fmods, ops_io, ops_keys, ops_select, ops_shape, ops_slide,
+               ops_timetools, ops_timing, ops_tools, ops_transform, ops_value, props, state, ui)
 
 _classes = (ops_transform.classes + ops_slide.classes + ops_keys.classes + ops_select.classes +
             ops_shape.classes + ops_tools.classes + ops_timing.classes + ops_io.classes +
-            ops_value.classes + ops_timetools.classes + ops_fmods.classes)
+            ops_value.classes + ops_timetools.classes + ops_fmods.classes + ops_easing.classes)
 
 
 def register():
@@ -24,6 +24,7 @@ def register():
     for c in _classes:
         bpy.utils.register_class(c)
     ops_keys.register_macros()
+    ops_easing.register_icons()
     ui.register()
     draw.register()
     state.register()
@@ -33,6 +34,7 @@ def unregister():
     state.unregister()
     draw.unregister()
     ui.unregister()
+    ops_easing.unregister_icons()
     for c in reversed(_classes):
         bpy.utils.unregister_class(c)
     props.unregister()

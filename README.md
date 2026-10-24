@@ -30,7 +30,7 @@ to Blender's normal bone / object behaviour.
 | Mode | What is drawn | What editing changes |
 |---|---|---|
 | **1 Location** | Trajectory of the bone head / object origin | Location keys |
-| **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. A selected key shows the bone's **X, Y and Z rings**, like Blender's rotate gizmo: drag a ring to turn around that axis only (it follows the mouse steadily even when the ring is seen edge-on); the green Y ring around the bone twists it around its own axis (like Ctrl+T). Dragging the key itself turns the tip freely, like a **trackball**. The faint circle shows how far the tip can reach; drag it to turn around the view axis (like R). **Ctrl+T** twists the bone around its own axis |
+| **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. A selected key shows the bone's **X, Y and Z rings**, like Blender's rotate gizmo: drag a ring to turn around that axis only (it follows the mouse steadily even when the ring is seen edge-on); the green Y ring around the bone twists it around its own axis (like Ctrl+T). Dragging the key itself turns the tip freely, like a **trackball**. The faint circle shows how far the tip can reach; drag it to turn around the view axis (like R). A purple **ribbon** along the path, turned like the bone's X axis, shows the twist; drag the handle on its edge to twist (Display: width and side). **Ctrl+T** twists the bone around its own axis |
 | **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale; their color shows the Y scale (blue below 1, red above). A box at the current frame shows the current scale | Scale keys: a selected key shows a **scale gizmo** whose X and Z handles sit on the ribbon edges (drag an edge to make that ribbon wider; Y along the bone; the white one scales all). **Click** a gizmo handle to show that channel's handles as **whiskers** along the ribbon (time along the path, value across it) and pick both of them; drag a whisker to edit it. **V** and **T** (handle type, interpolation) work on the selected keys of that channel only, like on one curve in the Graph Editor. Clicking a whisker picks that handle (Shift: add another; undo brings the picking back). **Alt+S** makes the picked handles longer or shorter, **Alt+Shift+S** moves them up or down (both handles of a smooth key tilt together; one handle: the other one follows in line); with none picked, the channel's handles of the selected keys; I / O / B: before the key, after it, both. So the handles can be shaped from the keyboard alone. **S** scales all axes (X / Y / Z: one). On the selected part, thin frame lines across the ribbons show the spacing of the scale change |
 | **4 Value** | A **track** for one animated value (IK/FK switch, custom property, constraint influence…), *above the path* or *beside the path* (follows its shape in the plane of the motion, *outside* or *inside* its curves, and stays put when the view turns) | That value: move its keys away from / toward the path. Pick the value in the sidebar or tool header |
 
@@ -103,7 +103,7 @@ The tool uses the settings you know from modeling, in the header and with the us
 | **Shift+D** | duplicate: copies go halfway to the next key and follow the mouse; the **wheel** moves them through the motion a frame at a time (jumping over other keys). *Duplicate in Time* (menu) places copies with left / right instead |
 | **Ctrl+C / Ctrl+V** | copy the pose of the active key / paste it on the current frame: the channels of the current mode (*Whole Pose* in the redo panel: all of them) |
 | **Ctrl+R** | loop cut: evenly spaced keys in the segment under the mouse (wheel: number of cuts) |
-| **K** | knife: draw a line, keys are inserted where it crosses the path |
+| **Ctrl+K** | knife, like the mesh Knife: keys are inserted where the line crosses the path. LMB: point (drag: draw), RMB: new cut, Shift: snap to the middle of a segment, Ctrl: no snapping (it snaps to keys and frame dots), A: angle constraint (screen / relative), X / Y / Z: along an axis, S: frame numbers, Ctrl+Z: undo a point, Enter / Space / double-click: cut; the view can be turned while cutting |
 | **Ctrl+B** | bevel: round a key into a Bezier arc (A: width, S or wheel: segments, P: profile, 0.5 = circle) |
 | **M** | merge at the last selected (active, white ring) key, the first, the center or the 3D cursor |
 | **X**, **Delete**, **Ctrl+X** | delete menu / delete / dissolve |
@@ -177,9 +177,17 @@ That is Blender's own behaviour; set the smoothing to *None* if you want edits t
   (wheel: strength), like Blender's easing. Drag right to
   blend in. Keys are added only where the old ones can't follow; the report shows how close
   the result is.
-* **Ease (Shift+E)**: slow in / slow out at the selected keys, by changing the handle slope and
-  its length in time. *In* slows the bone down into the key, *Out* lets it leave the key
-  slowly.
+* **Ease (Shift+E)**: slow in / slow out at the selected keys. *Keep the Path* (default) only
+  changes the timing: the frames bunch up at the key along the same path (keys are added where
+  needed). *Handles* (T while dragging) flattens the key's handles and makes them longer in
+  time, the old way. *In* slows the bone down into the key, *Out* lets it leave the key slowly.
+* **Easing Presets** (Timing menu, or the Timing & Speed panel): a library of easing curves
+  with pictures - Sine, Quadratic, Cubic, Quartic, Quintic, Exponential, Circular, Back,
+  Bounce, Elastic, each In, Out or In & Out - for the selected part of the path (the selected
+  keys; one key: the segments around it). *Keep the Path* retimes along the path (Back and
+  Elastic overshoot along the direction of the motion); *Channels* sets Blender's easing
+  interpolation on the channels you pick (drag across them to switch several), like in the
+  Graph Editor.
 
 ## Shape tools
 
@@ -187,7 +195,10 @@ That is Blender's own behaviour; set the smoothing to *None* if you want edits t
   **Exaggerate** (more or less bend relative to the neighbors or the center). Drag left /
   right; negative values sharpen or tone down.
 * **Bevel**, **Spin** (continue the motion on an arc around the 3D cursor: orbits, swings).
-* **LoopTools**: *Circle* (a perfect arc), *Flatten* (one plane), *Straighten* (a line),
+* **LoopTools**: *Circle* (a perfect arc; *Angle* turns it around the line between its ends,
+  *Invert* bends it the other way, *Radius*, *Regular* spacing), *Arc* (one smooth arc that
+  follows the shape and flows on into the path around it without kinks; *Bulge*, *Smooth
+  Ends*), *Flatten* (one plane: best fit or facing the view), *Straighten* (a line),
   *Follow Stroke* (draw the motion with the Annotate tool, D + drag, and the selected part of the
   path follows it) and *Relax*. They keep the timing: the new shape is travelled with the old
   spacing (*Keep Timing* in the redo panel).
@@ -204,7 +215,9 @@ quaternions, the components of a value) choose which channels it works on: click
 that channel, Shift+Click to add or remove it, and the dot next to them puts it on all of them (a
 ring: some are left out, a filled dot: it is on all already). Its settings stay the same on all of
 them. Its header works like a modeling modifier's: collapse arrow, monitor
-(show it in the viewport), a drop-down with Apply (bake into keys and clean up), Duplicate, Copy, Paste and
+(show it in the viewport), a drop-down with Apply (bake into keys and clean up), Apply to Selected
+(baked only into the selected parts of the path, with smooth seams; the modifier goes), Duplicate,
+Copy, Paste and
 Move Up / Down / to First / to Last, and X to remove. The Modifier Tools menu next to Add
 Modifier applies, removes, hides or expands them all. Alt+C's Cycles shows up here too. The
 path follows every change of a modifier's settings right away.

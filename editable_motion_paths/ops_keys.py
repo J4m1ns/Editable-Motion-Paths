@@ -1,5 +1,7 @@
 """Key topology operators: delete, dissolve, insert (like vertices of a curve)."""
 
+import math
+
 import bpy
 from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty,
                        StringProperty)
@@ -319,30 +321,148 @@ def _seg_cross(p, q, a, b):
 
 
 class EMP_OT_knife(bpy.types.Operator):
-    """Cut the paths with a line: keys are inserted where it crosses them, the motion stays """ \
-        """(K). Click to add points or drag to draw, Enter / Space: cut, Esc: cancel"""
+    """Cut the paths like the mesh Knife: keys are inserted where the line crosses them, the """ \
+        """motion stays (Ctrl+K). LMB: add a point or drag to draw, RMB: new cut, Shift: snap to """ \
+        """the middle of a segment, Ctrl: no snapping, A: angle constraint, X / Y / Z: axis, """ \
+        """S: frame numbers, Ctrl+Z: undo a point, Enter / Space / double-click: cut, Esc: cancel"""
     bl_idname = "emp.knife"
     bl_label = "Knife Path"
     bl_options = {'REGISTER', 'UNDO'}
 
     whole_frames: BoolProperty(name="Whole Frames", default=True,
                                description="Round the cuts to whole frames")
+    angle_increment: FloatProperty(name="Angle Snapping Increment", subtype='ANGLE', default=math.radians(30.0),
+                                   min=math.radians(1.0), max=math.radians(180.0),
+                                   description="The angle constraint (A) snaps the line to multiples "
+                                               "of this angle")
 
     def invoke(self, context, event):
         if context.region_data is None or not state.editable_caches(context.scene):
             return {'PASS_THROUGH'}
-        self.pts = []
-        self.cur = Vector((event.mouse_region_x, event.mouse_region_y))
+        self.cuts = [[]]            # separate cut lines (RMB starts a new one), world points
+        # the cut lies at the depth of the paths, so it stays on them when the view turns
+        pts = [p for c in state.editable_caches(context.scene) for p in c.points]
+        self.depth = sum(pts, Vector()) / len(pts) if pts else context.region_data.view_location.copy()
         self.drawing = False
+        self.angle_mode = None      # None / 'SCREEN' / 'RELATIVE'
+        self.axis = None            # None / 0 / 1 / 2 (world X / Y / Z)
+        self.show_frames = True
+        self.snap = None            # (world point, kind) the cursor snapped to
+        self.raw = Vector((event.mouse_region_x, event.mouse_region_y))
+        self.cur = self.raw.copy()
+        self.mods = (False, False)
         context.window_manager.modal_handler_add(self)
         context.window.cursor_modal_set('KNIFE')
+        self._update_cursor(context)
         self._show(context)
         return {'RUNNING_MODAL'}
+
+    # -- the cursor: snapping and constraints ---------------------------------------
+
+    def _snap_point(self, context, m, midpoint):
+        """Snap to a key or a frame dot near the mouse (Shift: the middle of the segment under
+        the mouse, in time)."""
+        from bpy_extras.view3d_utils import location_3d_to_region_2d as proj
+        region, rv3d = context.region, context.region_data
+        us = compat.ui_scale()
+        best = None
+        for c in state.editable_caches(context.scene):
+            tg = c.target()
+            if tg is None:
+                continue
+            if midpoint:
+                # the sample nearest to the mouse, then the middle of its segment
+                near = None
+                for t, p in zip(c.times, c.points):
+                    s = proj(region, rv3d, p)
+                    if s is not None and (near is None or (s - m).length < near[0]):
+                        near = ((s - m).length, t)
+                if near is None or near[0] > 40.0 * us:
+                    continue
+                ks = [k.t for k in c.keys]
+                before = [t for t in ks if t <= near[1]]
+                after = [t for t in ks if t > near[1]]
+                if not before or not after:
+                    continue
+                tm = (before[-1] + after[0]) * 0.5
+                p = c.point(tg, tm)
+                s = proj(region, rv3d, p)
+                if s is not None and (best is None or (s - m).length < best[0]):
+                    best = ((s - m).length, s, p, "middle of %g - %g" % (before[-1], after[0]))
+                continue
+            for t, p in zip(c.times, c.points):
+                if abs(t - round(t)) > 1e-6:
+                    continue
+                s = proj(region, rv3d, p)
+                if s is None:
+                    continue
+                d = (s - m).length
+                if d <= 12.0 * us and (best is None or d < best[0]):
+                    is_key = any(abs(k.t - t) < 1e-3 for k in c.keys)
+                    best = (d, s, p, ("key %d" if is_key else "frame %d") % round(t))
+        return best
+
+    def _scr(self, context, p):
+        from bpy_extras.view3d_utils import location_3d_to_region_2d
+        return location_3d_to_region_2d(context.region, context.region_data, p)
+
+    def _world(self, context, s):
+        from bpy_extras.view3d_utils import region_2d_to_location_3d
+        return region_2d_to_location_3d(context.region, context.region_data, s, self.depth)
+
+    def _constrained(self, context, m):
+        pts = [q for q in (self._scr(context, p) for p in self.cuts[-1]) if q is not None]
+        if not pts:
+            return m
+        last = pts[-1]
+        if self.axis is not None:
+            from bpy_extras.view3d_utils import location_3d_to_region_2d as proj, region_2d_to_location_3d
+            region, rv3d = context.region, context.region_data
+            w = region_2d_to_location_3d(region, rv3d, last, rv3d.view_location)
+            ax = Vector([1.0 if i == self.axis else 0.0 for i in range(3)])
+            a, b = proj(region, rv3d, w), proj(region, rv3d, w + ax)
+            if a is None or b is None or (b - a).length < 1e-6:
+                return m
+            d = (b - a).normalized()
+            return last + d * (m - last).dot(d)
+        if self.angle_mode is not None:
+            v = m - last
+            if v.length < 1e-6:
+                return m
+            ref = 0.0
+            if self.angle_mode == 'RELATIVE' and len(pts) >= 2:
+                r = pts[-1] - pts[-2]
+                ref = math.atan2(r.y, r.x)
+            a = math.atan2(v.y, v.x) - ref
+            inc = self.angle_increment
+            a = round(a / inc) * inc + ref
+            return last + Vector((math.cos(a), math.sin(a))) * v.length
+        return m
+
+    def _update_cursor(self, context):
+        ctrl, shift = self.mods
+        m = self._constrained(context, self.raw)
+        self.snap = None
+        if not ctrl and not self.drawing and self.axis is None and self.angle_mode is None:
+            hit = self._snap_point(context, m, shift)
+            if hit is not None:
+                m = hit[1]
+                self.snap = (hit[2], hit[3])
+        self.cur = Vector(m)
+
+    # -- crossings ----------------------------------------------------------------
+
+    def _lines(self, context):
+        """The cut lines on the screen (the current one runs on to the cursor)."""
+        lines = [[q for q in (self._scr(context, p) for p in c) if q is not None] for c in self.cuts if c]
+        if self.cuts[-1] and not self.drawing:
+            lines[-1] = lines[-1] + [self.cur]
+        return [ln for ln in lines if len(ln) >= 2]
 
     def _crossings(self, context):
         from bpy_extras.view3d_utils import location_3d_to_region_2d
         region, rv3d = context.region, context.region_data
-        line = self.pts + ([self.cur] if self.pts else [])
+        lines = self._lines(context)
         out = []
         for c in state.editable_caches(context.scene):
             proj = [location_3d_to_region_2d(region, rv3d, p) for p in c.points]
@@ -351,58 +471,118 @@ class EMP_OT_knife(bpy.types.Operator):
                 p, q = proj[i], proj[i + 1]
                 if p is None or q is None:
                     continue
-                for a, b in zip(line, line[1:]):
-                    hit = _seg_cross(p, q, a, b)
-                    if hit is not None:
-                        t = c.times[i] + (c.times[i + 1] - c.times[i]) * hit[0]
-                        frames.add(round(t) if self.whole_frames else round(t, 2))
+                for line in lines:
+                    for a, b in zip(line, line[1:]):
+                        hit = _seg_cross(p, q, a, b)
+                        if hit is not None:
+                            t = c.times[i] + (c.times[i + 1] - c.times[i]) * hit[0]
+                            frames.add(round(t) if self.whole_frames else round(t, 2))
+            # a point snapped right onto a frame dot cuts there too
+            for line in self._lines(context):
+                for pt in line:
+                    for i, s in enumerate(proj):
+                        if s is not None and (s - pt).length < 0.5 and abs(c.times[i] - round(c.times[i])) < 1e-6:
+                            frames.add(round(c.times[i]))
             have = {round(k.t, 3) for k in c.keys}
-            fs = sorted(f for f in frames if round(float(f), 3) not in have)
+            fs = sorted(f for f in frames if round(float(f), 3) not in have and c.fs < f < c.fe)
             out.append((c, [float(f) for f in fs]))
         return out
 
     def _show(self, context):
-        cross = self._crossings(context) if len(self.pts) >= 1 else []
-        tgs = []
+        cross = self._crossings(context)
+        marks, labels = [], []
         for c, fs in cross:
             tg = c.target()
-            tgs += [c.point(tg, f) for f in fs]
-        state.knife = ([p.copy() for p in self.pts] + [self.cur.copy()], context.area.as_pointer())
-        state.markers = (tgs, context.area.as_pointer())
-        n = len(tgs)
-        context.area.header_text_set("Knife: click points or drag   Enter / Space: cut (%d new key%s)   "
-                                     "Esc: cancel" % (n, "" if n == 1 else "s"))
+            for f in fs:
+                marks.append(c.point(tg, f))
+                labels.append("%g" % f if self.show_frames else "")
+        state.knife = ([list(c) for c in self.cuts if c], context.area.as_pointer(),
+                       None if self.drawing else self.cur.copy(), self.snap)
+        state.markers = (marks, context.area.as_pointer(), labels)
+        n = len(marks)
+        cons = ""
+        if self.axis is not None:
+            cons = "   along %s" % "XYZ"[self.axis]
+        elif self.angle_mode is not None:
+            cons = "   angle %d° (%s)" % (round(math.degrees(self.angle_increment)),
+                                              "screen" if self.angle_mode == 'SCREEN' else "relative")
+        snap = ("   snapped: %s" % self.snap[1]) if self.snap else ""
+        context.area.header_text_set(
+            "Knife: %d new key%s%s%s   LMB: point / drag   RMB: new cut   Shift: middle of a segment   "
+            "Ctrl: no snapping   A: angle   X Y Z: axis   S: frame numbers   Ctrl+Z: undo point   "
+            "Enter / Space / double-click: cut   Esc: cancel" % (n, "" if n == 1 else "s", cons, snap))
         state.tag_redraw()
+
+    # -- events -------------------------------------------------------------------
 
     def modal(self, context, event):
         t, v = event.type, event.value
-        if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
-            self.cur = Vector((event.mouse_region_x, event.mouse_region_y))
-            if self.drawing and (not self.pts or (self.cur - self.pts[-1]).length > 8.0):
-                self.pts.append(self.cur.copy())
+        mods = (event.ctrl, event.shift)
+        if mods != self.mods:
+            self.mods = mods
+            self._update_cursor(context)
             self._show(context)
+        if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            self.raw = Vector((event.mouse_region_x, event.mouse_region_y))
+            self._update_cursor(context)
+            pts = self.cuts[-1]
+            last = self._scr(context, pts[-1]) if pts else None
+            if self.drawing and (last is None or (self.cur - last).length > 8.0 * compat.ui_scale()):
+                pts.append(self._world(context, self.cur))
+            self._show(context)
+        elif t == 'LEFTMOUSE' and v == 'DOUBLE_CLICK':
+            return self._end(context, True)
         elif t == 'LEFTMOUSE':
             if v == 'PRESS':
-                self.pts.append(self.cur.copy())
+                # a snapped point sits exactly on the path
+                self.cuts[-1].append(self.snap[0].copy() if self.snap else self._world(context, self.cur))
                 self.drawing = True
             elif v == 'RELEASE':
                 self.drawing = False
+            self._update_cursor(context)
+            self._show(context)
+        elif t == 'RIGHTMOUSE' and v == 'PRESS':
+            if self.cuts[-1]:
+                self.cuts.append([])        # a new, separate cut line
+                self._show(context)
+        elif t == 'Z' and v == 'PRESS' and event.ctrl:
+            if not self.cuts[-1] and len(self.cuts) > 1:
+                self.cuts.pop()
+            if self.cuts[-1]:
+                self.cuts[-1].pop()
+            self._show(context)
+        elif t == 'A' and v == 'PRESS':
+            self.axis = None
+            self.angle_mode = {None: 'SCREEN', 'SCREEN': 'RELATIVE', 'RELATIVE': None}[self.angle_mode]
+            self._update_cursor(context)
+            self._show(context)
+        elif t in {'X', 'Y', 'Z'} and v == 'PRESS' and not event.ctrl:
+            i = "XYZ".index(t)
+            self.axis = None if self.axis == i else i
+            self.angle_mode = None
+            self._update_cursor(context)
+            self._show(context)
+        elif t == 'S' and v == 'PRESS':
+            self.show_frames = not self.show_frames
             self._show(context)
         elif t in {'RET', 'NUMPAD_ENTER', 'SPACE'} and v == 'PRESS':
             return self._end(context, True)
-        elif t in {'ESC', 'RIGHTMOUSE'} and v == 'PRESS':
+        elif t == 'ESC' and v == 'PRESS':
             return self._end(context, False)
+        elif t in {'MIDDLEMOUSE', 'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'TRACKPADPAN', 'TRACKPADZOOM'}:
+            return {'PASS_THROUGH'}     # the view can be turned while cutting, like in modeling
         return {'RUNNING_MODAL'}
 
     def _end(self, context, confirm):
-        cross = self._crossings(context) if confirm and self.pts else []
+        self.drawing = False
+        cross = self._crossings(context) if confirm else []
         state.knife = None
         state.markers = None
         context.window.cursor_modal_restore()
         context.area.header_text_set(None)
         state.tag_redraw()
         n = 0
-        if cross:
+        if any(fs for _c, fs in cross):
             pick.deselect_all(state.editable_caches(context.scene))
         for c, fs in cross:
             c.refresh(force=True)

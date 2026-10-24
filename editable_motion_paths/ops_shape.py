@@ -731,13 +731,35 @@ class _LoopTool:
 AUTO = {'AUTO', 'AUTO_CLAMPED'}
 
 
+def _turned(points, a, b, angle):
+    """Points turned around the line through a and b by `angle`."""
+    from mathutils import Quaternion
+    axis = b - a
+    if axis.length < 1e-9 or abs(angle) < 1e-9:
+        return points
+    q = Quaternion(axis.normalized(), angle)
+    return {key: a + q @ (p - a) for key, p in points.items()}
+
+
 class EMP_OT_circle(_LoopTool, bpy.types.Operator):
-    """Put the selected keys on a perfect circular arc (LoopTools Circle)"""
+    """Put the selected keys on a perfect circular arc (LoopTools Circle). Angle turns the arc """ \
+        """around the line between its ends, Invert bends it the other way"""
     bl_idname = "emp.circle"
     bl_label = "Circle"
 
+    angle: FloatProperty(name="Angle", subtype='ANGLE', default=0.0, soft_min=-math.pi, soft_max=math.pi,
+                         description="Turn the arc around the line between its first and last key")
+    invert: BoolProperty(name="Invert", default=False,
+                         description="Bend the arc the other way (concave becomes convex)")
+    radius: FloatProperty(name="Radius", default=0.0, min=0.0, soft_max=10.0, unit='LENGTH',
+                          description="Radius of the circle (0: fit to the keys)")
+    regular: BoolProperty(name="Regular", default=False,
+                          description="Spread the keys evenly around the arc")
+
     def shape(self, context, cache, tg, ks):
         cen, n, r = geom.best_circle([k.co for k in ks])
+        if self.radius > 0.0:
+            r = self.radius
         pos = {}
         dirs = {}
         for k in ks:
@@ -745,6 +767,17 @@ class EMP_OT_circle(_LoopTool, bpy.types.Operator):
             if q.length < 1e-9:
                 q = n.orthogonal()
             dirs[k.t] = q.normalized()
+        if self.regular and len(ks) > 2:
+            # the same arc from the first to the last key, the keys at equal angles
+            d0, d1 = dirs[ks[0].t], dirs[ks[-1].t]
+            total = 0.0
+            for a, b in zip(ks, ks[1:]):
+                da, db = dirs[a.t], dirs[b.t]
+                total += math.atan2(n.dot(da.cross(db)), da.dot(db))
+            from mathutils import Quaternion
+            for i, k in enumerate(ks):
+                dirs[k.t] = Quaternion(n, total * i / (len(ks) - 1)) @ d0
+        for k in ks:
             pos[k.t] = cen + dirs[k.t] * r
         hw = {}
         for i, k in enumerate(ks):
@@ -758,7 +791,108 @@ class EMP_OT_circle(_LoopTool, bpy.types.Operator):
                 if T.dot(pos[o.t] - pos[k.t]) < 0.0:
                     T = -T
                 hw[(k.t, side)] = pos[k.t] + T * L
+        turn = self.angle + (math.pi if self.invert else 0.0)
+        if abs(turn) > 1e-9:
+            a, b = pos[ks[0].t].copy(), pos[ks[-1].t].copy()
+            pos = _turned(pos, a, b, turn)
+            hw = _turned(hw, a, b, turn)
         self._write(cache, tg, ks, pos, hw)
+
+
+class EMP_OT_arc(_LoopTool, bpy.types.Operator):
+    """Smooth the selected part of the path into one clean arc that follows its shape """ \
+        """(no circle needed); its ends flow on into the path around it, without kinks"""
+    bl_idname = "emp.arc"
+    bl_label = "Arc"
+    min_keys = 2
+
+    bulge: FloatProperty(name="Bulge", default=1.0, min=0.0, soft_max=3.0,
+                         description="How far the arc swings out (1: like the path was)")
+    smooth_ends: BoolProperty(name="Smooth Ends", default=True,
+                              description="The arc leaves and joins the path around it in the same "
+                                          "direction (off: it keeps its own directions at the ends)")
+
+    def shape(self, context, cache, tg, ks):
+        from mathutils import Vector
+        first, last = ks[0], ks[-1]
+        a, b = first.co.copy(), last.co.copy()
+        chord = b - a
+        if chord.length < 1e-9:
+            return False
+
+        def unit(v, fallback):
+            return v.normalized() if v is not None and v.length > 1e-9 else fallback
+        c = chord.normalized()
+        if self.smooth_ends:
+            # continue the motion coming into the first key and leaving the last one
+            ta = unit(a - first.hl if first.hl is not None else None, unit(first.hr - a if first.hr is not None else None, c))
+            tb = unit(last.hr - b if last.hr is not None else None, unit(b - last.hl if last.hl is not None else None, c))
+        else:
+            ta = unit(first.hr - a if first.hr is not None else None, c)
+            tb = unit(b - last.hl if last.hl is not None else None, c)
+        # the old shape: the path between the two keys, by its share of the length
+        pts = [p for t, p in zip(cache.times, cache.points) if first.t - 1e-6 <= t <= last.t + 1e-6]
+        if len(pts) < 2:
+            pts = [k.co for k in ks]
+        arc = geom.cumulative(pts)
+        total = arc[-1] or 1.0
+        # least squares for the two handle lengths of one cubic a -> b
+        s00 = s01 = s11 = r0 = r1 = 0.0
+        for p, s in zip(pts, arc):
+            u = s / total
+            b0, b1, b2, b3 = (1 - u) ** 3, 3 * (1 - u) ** 2 * u, 3 * (1 - u) * u * u, u ** 3
+            base = a * (b0 + b1) + b * (b2 + b3)
+            e0, e1 = ta * b1, -tb * b2
+            d = p - base
+            s00 += e0.dot(e0)
+            s01 += e0.dot(e1)
+            s11 += e1.dot(e1)
+            r0 += e0.dot(d)
+            r1 += e1.dot(d)
+        det = s00 * s11 - s01 * s01
+        if abs(det) > 1e-12:
+            l0 = (r0 * s11 - r1 * s01) / det
+            l1 = (s00 * r1 - s01 * r0) / det
+        else:
+            l0 = l1 = chord.length / 3.0
+        floor = chord.length * 0.05
+        l0, l1 = max(l0, floor) * self.bulge, max(l1, floor) * self.bulge
+        P = (a, a + ta * l0, b - tb * l1, b)
+
+        def at(u):
+            v = 1.0 - u
+            return P[0] * v ** 3 + P[1] * 3 * v * v * u + P[2] * 3 * v * u * u + P[3] * u ** 3
+
+        def deriv(u):
+            v = 1.0 - u
+            return (P[1] - P[0]) * 3 * v * v + (P[2] - P[1]) * 6 * v * u + (P[3] - P[2]) * 3 * u * u
+        # the keys keep their share of the length along the new arc
+        n = 200
+        ups = [i / n for i in range(n + 1)]
+        bpts = [at(u) for u in ups]
+        barc = geom.cumulative(bpts)
+        btot = barc[-1] or 1.0
+        import bisect
+        times = [t for t, _p in zip(cache.times, cache.points) if first.t - 1e-6 <= t <= last.t + 1e-6]
+        us = {}
+        for k in ks:
+            i = bisect.bisect_left(times, k.t - 1e-6)
+            share = (arc[min(i, len(arc) - 1)] / total) if len(times) == len(arc) else \
+                (ks.index(k) / (len(ks) - 1))
+            target = share * btot
+            j = min(max(bisect.bisect_left(barc, target), 1), n)
+            f = 0.0 if barc[j] - barc[j - 1] < 1e-12 else (target - barc[j - 1]) / (barc[j] - barc[j - 1])
+            us[k.t] = ups[j - 1] + (ups[j] - ups[j - 1]) * f
+        us[first.t], us[last.t] = 0.0, 1.0
+        pos = {k.t: at(us[k.t]) for k in ks}
+        hw = {}
+        for i, k in enumerate(ks):
+            d = deriv(us[k.t])
+            if i > 0:
+                hw[(k.t, 'L')] = pos[k.t] - d * (us[k.t] - us[ks[i - 1].t]) / 3.0
+            if i + 1 < len(ks):
+                hw[(k.t, 'R')] = pos[k.t] + d * (us[ks[i + 1].t] - us[k.t]) / 3.0
+        self._write(cache, tg, ks, pos, hw, end_free=not self.smooth_ends)
 
 
 class EMP_OT_flatten(_LoopTool, bpy.types.Operator):
@@ -766,9 +900,17 @@ class EMP_OT_flatten(_LoopTool, bpy.types.Operator):
     bl_idname = "emp.flatten"
     bl_label = "Flatten"
 
+    plane: EnumProperty(name="Plane", items=[
+        ('BEST', "Best Fit", "The plane closest to the keys"),
+        ('VIEW', "View", "Facing the view, through the middle of the keys")], default='BEST')
+
     def shape(self, context, cache, tg, ks):
         pts = [k.co for k in ks]
         cen, n = geom.best_plane(pts)
+        rv3d = getattr(context, "region_data", None)
+        if self.plane == 'VIEW' and rv3d is not None:
+            from mathutils import Vector
+            n = (rv3d.view_rotation @ Vector((0.0, 0.0, 1.0))).normalized()
         pos = {k.t: geom.project_plane(k.co, cen, n) for k in ks}
         hw = {}
         for k in ks:
@@ -890,5 +1032,5 @@ class EMP_OT_gstretch(_LoopTool, bpy.types.Operator):
 
 classes = (EMP_OT_cursor_to_selected, EMP_OT_cursor_to_active, EMP_OT_selection_to_cursor,
            EMP_OT_selection_to_active, EMP_OT_selection_to_grid, EMP_MT_snap_pie, EMP_OT_snap_pie,
-           EMP_OT_mirror, EMP_OT_bevel, EMP_OT_spin, EMP_OT_circle, EMP_OT_flatten,
+           EMP_OT_mirror, EMP_OT_bevel, EMP_OT_spin, EMP_OT_circle, EMP_OT_arc, EMP_OT_flatten,
            EMP_OT_straighten, EMP_OT_gstretch)

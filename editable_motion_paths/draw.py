@@ -437,6 +437,76 @@ def scale_whiskers(st, cache, k):
     return out
 
 
+COL_ROT_RIBBON = (0.72, 0.55, 1.0)
+
+
+def rot_ribbon_span(st, cache):
+    """(inner, outer) offsets along the bone's X axis of the rotation ribbon, in world units."""
+    tg = cache.target()
+    length = (tg.length if tg is not None else 1.0) * cache.rot_len
+    w = 0.18 * length * st.rot_ribbon_width
+    return {'POSITIVE': (0.0, w), 'NEGATIVE': (-w, 0.0)}.get(st.rot_ribbon_side, (-w * 0.5, w * 0.5))
+
+
+def rot_ribbon_handle(st, cache, k):
+    """World point of the twist handle on the ribbon's edge at key k."""
+    i = next((i for i, t in enumerate(cache.times) if abs(t - k.t) < 1e-6), None)
+    if i is None or i >= len(cache.sample_axes):
+        return None
+    lo, hi = rot_ribbon_span(st, cache)
+    edge = hi if abs(hi) >= abs(lo) else lo
+    return k.co + cache.sample_axes[i][0] * edge
+
+
+def _draw_rot_ribbon(st, cache, lo, hi, editable, us):
+    """Rotation paths: a ribbon along the path of the tip, across the bone's X axis, so the
+    twist (roll around Y) shows as the ribbon turning."""
+    pts = cache.points
+    n = len(pts)
+    if len(cache.sample_axes) != n:
+        return
+    vis = cache.vis if len(cache.vis) == n else [True] * n
+    a0, a1 = rot_ribbon_span(st, cache)
+    alpha = 0.2 if editable else 0.08
+    tris, cols, e0, e1 = [], [], [], []
+    prev = None
+    for i, t in enumerate(cache.times):
+        if not _in(t, lo, hi) or not vis[i]:
+            prev = None
+            continue
+        x = cache.sample_axes[i][0]
+        cur = (pts[i] + x * a0, pts[i] + x * a1)
+        if prev is not None:
+            tris += [prev[0], prev[1], cur[0], cur[0], prev[1], cur[1]]
+            e0 += [prev[0], cur[0]]
+            e1 += [prev[1], cur[1]]
+        prev = cur
+    if tris:
+        sh = gpu.shader.from_builtin('SMOOTH_COLOR')
+        cols = [COL_ROT_RIBBON + (alpha,)] * len(tris)
+        batch_for_shader(sh, 'TRIS', {"pos": tris, "color": cols}).draw(sh)
+        ea = 0.7 if editable else 0.3
+        _lines(e0 + e1, [COL_ROT_RIBBON + (ea,)] * (len(e0) + len(e1)), 1.0 * us)
+    if editable:
+        # the twist handles of the selected keys: a line across the ribbon and a dot on its edge
+        lines, dots = [], []
+        for k in cache.keys:
+            if not k.sel or not _in(k.t, lo, hi):
+                continue
+            h = rot_ribbon_handle(st, cache, k)
+            if h is not None:
+                lines += [k.co, h]
+                dots.append(h)
+        _lines(lines, [COL_ROT_RIBBON + (1.0,)] * len(lines), 2.0 * us)
+        if dots:
+            discs = Discs()
+            for p in dots:
+                s = location_3d_to_region_2d(bpy.context.region, bpy.context.region_data, p)
+                if s is not None:
+                    discs.add_outlined(s, 4.5 * us, COL_ROT_RIBBON + (1.0,))
+            discs.draw()
+
+
 def _draw_scale_gizmos(st, cache, keys, us):
     lines, cols = [], []
     picked_sel = state.whisker_sel()
@@ -536,6 +606,8 @@ def _draw_view():
 
         if cache.ptype == core.SCALE:
             _draw_ribbon(st, cache, rv3d, lo, hi, editable, us)
+        elif cache.ptype == core.ROTATION and st.show_rot_ribbon:
+            _draw_rot_ribbon(st, cache, lo, hi, editable, us)
         elif cache.ptype == core.VALUE:
             _draw_value_base(cache, lo, hi, us)
         _draw_path_runs(st, cache, editable, cur, lo, hi, us)
@@ -947,6 +1019,38 @@ def _smooth(pts, cols, kind):
     batch_for_shader(sh, kind, {"pos": pts, "color": cols}).draw(sh)
 
 
+def _draw_knife(ctx, us):
+    """The knife's cut lines (kept in 3D, so they stay on the paths when the view turns), their
+    points, the cursor and what it snapped to - like the mesh Knife."""
+    lines3d, _area, cur, snap = state.knife
+    region, rv3d = ctx.region, ctx.region_data
+    lines = []
+    for ln in lines3d:
+        pts = [s for s in (location_3d_to_region_2d(region, rv3d, p) for p in ln) if s is not None]
+        lines.append(pts)
+    if cur is not None and lines3d:
+        lines[-1] = lines[-1] + [cur]
+    gpu.state.blend_set('ALPHA')
+    gpu.state.line_width_set(2.0)
+    for pts in lines:
+        if len(pts) >= 2:
+            _flat([(p.x, p.y) for p in pts], (0.3, 1.0, 0.4, 0.9), 'LINE_STRIP')
+    gpu.state.line_width_set(1.0)
+    sq = 3.0 * us
+    quads = []
+    for pts in lines:
+        for p in pts[:-1] if cur is not None and pts is lines[-1] else pts:
+            quads += [(p.x - sq, p.y - sq), (p.x + sq, p.y - sq), (p.x + sq, p.y + sq),
+                      (p.x - sq, p.y - sq), (p.x + sq, p.y + sq), (p.x - sq, p.y + sq)]
+    if quads:
+        _flat(quads, (0.3, 1.0, 0.4, 1.0), 'TRIS')
+    if cur is not None:
+        r = (6.0 if snap else 4.0) * us
+        col = (1.0, 0.85, 0.2, 1.0) if snap else (1.0, 1.0, 1.0, 0.9)
+        ring = [(cur.x + math.cos(a * math.pi / 12) * r, cur.y + math.sin(a * math.pi / 12) * r) for a in range(25)]
+        _flat(ring, col, 'LINE_STRIP')
+
+
 def _draw_snap_point(ctx, us):
     if state.snap_point is None:
         return
@@ -1073,19 +1177,20 @@ def _draw_pixel():
         batch_for_shader(sh, 'LINE_LOOP', {"pos": coords}).draw(sh)
 
     if state.knife is not None and ctx.area is not None and ctx.area.as_pointer() == state.knife[1]:
-        pts = [(p.x, p.y) for p in state.knife[0]]
-        if len(pts) >= 2:
-            sh = gpu.shader.from_builtin('UNIFORM_COLOR')
-            gpu.state.blend_set('ALPHA')
-            gpu.state.line_width_set(2.0)
-            sh.uniform_float("color", (0.3, 1.0, 0.4, 0.9))
-            batch_for_shader(sh, 'LINE_STRIP', {"pos": pts}).draw(sh)
-            gpu.state.line_width_set(1.0)
+        _draw_knife(ctx, us)
     if state.markers is not None and ctx.area is not None and ctx.area.as_pointer() == state.markers[1]:
         discs = Discs()
-        for p in state.markers[0]:
-            discs.add_outlined(location_3d_to_region_2d(ctx.region, ctx.region_data, p), 4.5 * us,
-                               (0.3, 1.0, 0.4, 1.0))
+        labels = state.markers[2] if len(state.markers) > 2 else None
+        blf.size(font, 10 * us)
+        blf.color(font, 0.6, 1.0, 0.65, 1.0)
+        for i, p in enumerate(state.markers[0]):
+            s = location_3d_to_region_2d(ctx.region, ctx.region_data, p)
+            if s is None:
+                continue
+            discs.add_outlined(s, 4.5 * us, (0.3, 1.0, 0.4, 1.0))
+            if labels and labels[i]:
+                blf.position(font, s.x + 7 * us, s.y + 5 * us, 0)
+                blf.draw(font, labels[i])
         gpu.state.blend_set('ALPHA')
         discs.draw()
     if state.circle is not None and ctx.area is not None and ctx.area.as_pointer() == state.circle[3]:

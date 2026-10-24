@@ -377,8 +377,8 @@ def extrude(obj, bone=None, frame=None, frames_later=6, offset=(0.0, 0.0, 0.0), 
 
 
 def loop_tool(obj, bone=None, frames=None, tool='CIRCLE', influence=1.0, mode=None):
-    """tool: 'CIRCLE', 'FLATTEN' or 'STRAIGHTEN' on the keys at `frames`."""
-    op = {'CIRCLE': bpy.ops.emp.circle, 'FLATTEN': bpy.ops.emp.flatten,
+    """tool: 'CIRCLE', 'ARC', 'FLATTEN' or 'STRAIGHTEN' on the keys at `frames`."""
+    op = {'CIRCLE': bpy.ops.emp.circle, 'ARC': bpy.ops.emp.arc, 'FLATTEN': bpy.ops.emp.flatten,
           'STRAIGHTEN': bpy.ops.emp.straighten}[tool]
     return _run_op(op, frames, obj, bone, mode, influence=influence)
 

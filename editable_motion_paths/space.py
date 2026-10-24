@@ -74,7 +74,8 @@ def element_basis(cache, tg, k):
     return _normalized(M.to_3x3() @ q.to_matrix())
 
 
-RING_AXES = {'RX': 0, 'RY': 1, 'RZ': 2, 'RV': 3}   # RY: twist; RV: the reach circle (view axis)
+# RY: twist; RB: the twist handle on the rotation ribbon; RV: the reach circle (view axis)
+RING_AXES = {'RX': 0, 'RY': 1, 'RZ': 2, 'RV': 3, 'RB': 4}
 
 
 def rot_rings(cache, tg, k, segments=48):
