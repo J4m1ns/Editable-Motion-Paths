@@ -307,7 +307,33 @@ ghost stays until its new one is ready (nothing blinks). Back faces are skipped,
 too. After editing a mesh's shape, *Update Motion Paths* builds its ghost again (a change in
 the number of vertices or in the modifiers does that by itself).
 
+## Center of mass
+
+The button next to the onion one (a dot with an arrow down) shows where the character's weight
+is - a guide for believable poses; it changes nothing:
+
+* the **center of mass** of the pose, live while you pose (a white dot), and a **plumb line**
+  down to the floor;
+* the **support** (on by default): the outline of what touches the floor; where the plumb line
+  meets the floor turns green inside it (a stable pose), red outside (falling, or moving), gray
+  when nothing touches the floor (in the air);
+* the **velocity** (on by default): an arrow where the body is going, about 8 frames ahead;
+* the **trajectory** (off by default): the center's path over the frames - a jump's arc should
+  be a parabola.
+
+The mass of every deform bone is worked out once from its vertex weights (with a *Preparing
+center of mass* note): each vertex counts its area times its distance from the bone, about the
+volume around it, so a torso weighs more than a hand. A pose bone's custom property
+`com_mass` scales its mass by hand (e.g. 0 for a cape or a prop). The velocity, the floor
+level and the trajectory are worked out in the background frame by frame (only the bones are
+evaluated, like the onion ghosts) and follow your edits.
+
 ## Display
+
+**Global / Local** (the globe button in the tool header): *Global* paths are the motion in the
+world; *Local* leaves the parents' motion out - the path is drawn in the parent's space as it is
+on the current frame, so it shows (and you edit) only the bone's or object's own motion, and it
+moves along with the parent when the frame changes.
 
 The color button in the tool header (or **U**) opens the display settings you change while
 animating. The ones you set once - colors, line width, key size, ribbon widths, the rotation

@@ -208,6 +208,7 @@ class _Proxy:
         self.keep = None        # (P,) shown in "by weight"
         self.arm = None
         self.M0 = None          # object matrix when built
+        self.rest_inv = None    # DEFORM: (B, 4, 4) inverse rest matrices of the bones
 
 
 def _mesh_sig(o):
@@ -356,35 +357,47 @@ def _weights(p, o, arm, me, inv, K=4):
         for k, (b, v) in enumerate(top):
             idx[pi, k] = b
             w[pi, k] = v / tot if tot > 0 else 0.0
-    p.bones = [b.name for b in arm.data.bones]
-    p.idx, p.w = idx, w
+    # only the bones with weight (a big rig: far fewer matrices per ghost)
+    names = [b.name for b in arm.data.bones]
+    used = np.unique(idx[w > 0]) if (w > 0).any() else np.array([0])
+    remap = np.zeros(max(len(names), 1), dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    p.bones = [names[int(u)] for u in used]
+    p.idx, p.w = remap[idx], w
     p.free = w.sum(axis=1) < 1e-6
-    # rest shape: r = (sum w S(f0))^-1 v(f0)
-    S = _skin_mats(arm, p)                                   # (B, 4, 4) world skinning now
-    A = np.einsum('pk,pkij->pij', w, S[idx])                 # (P, 4, 4)
-    A[p.free] = np.eye(4)
+    # rest shape, in the armature's space: r = (sum w Ma B(f0))^-1 v(f0) (no weight: Ma^-1 v),
+    # so the proxy also follows an armature object that moves
+    p.rest_inv = rest_inverses(arm, p.bones)
+    Ma, Bs = bone_mats(arm, p.bones, p.rest_inv)
+    A = np.einsum('pk,pkij->pij', w, Ma @ Bs[idx])          # (P, 4, 4)
+    A[p.free] = Ma
     v = np.concatenate([p.co.astype(np.float64), np.ones((P, 1))], axis=1)
     try:
         p.rest = np.einsum('pij,pj->pi', np.linalg.inv(A), v)
     except np.linalg.LinAlgError:
-        p.rest = v
-    p.M0 = arm.matrix_world.copy()
+        p.rest = v @ np.linalg.inv(Ma).T
 
 
-def _skin_mats(arm, p):
-    """(B, 4, 4) world-space bending of every bone now: armature @ pose @ rest^-1 @ armature^-1."""
+def rest_inverses(arm, names):
+    """(B, 4, 4): the inverse rest matrix of every bone (armature space)."""
+    import numpy as np
+    out = np.empty((len(names), 4, 4))
+    for i, name in enumerate(names):
+        b = arm.data.bones.get(name)
+        out[i] = np.linalg.inv(np.array(b.matrix_local, dtype=np.float64)) if b is not None else np.eye(4)
+    return out
+
+
+def bone_mats(arm, names, rest_inv):
+    """(armature matrix, (B, 4, 4) how every bone bends now in the armature's space: pose @ rest^-1)."""
     import numpy as np
     Ma = np.array(arm.matrix_world, dtype=np.float64)
-    Mi = np.linalg.inv(Ma)
-    out = np.empty((len(p.bones), 4, 4))
-    for i, name in enumerate(p.bones):
-        pb = arm.pose.bones.get(name)
-        if pb is None:
-            out[i] = np.eye(4)
-            continue
-        B = np.array(pb.matrix, dtype=np.float64) @ np.linalg.inv(np.array(pb.bone.matrix_local, dtype=np.float64))
-        out[i] = Ma @ B @ Mi
-    return out
+    out = np.empty((len(names), 4, 4))
+    bones = arm.pose.bones
+    for i, name in enumerate(names):
+        pb = bones.get(name)
+        out[i] = np.array(pb.matrix, dtype=np.float64) @ rest_inv[i] if pb is not None else np.eye(4)
+    return Ma, out
 
 
 def _pose(p):
@@ -393,12 +406,11 @@ def _pose(p):
     arm = bpy.data.objects.get(p.arm)
     if arm is None or p.rest is None:
         return p.co
-    S = _skin_mats(arm, p)
-    v = np.einsum('pk,pkij,pj->pi', p.w, S[p.idx], p.rest)
+    Ma, Bs = bone_mats(arm, p.bones, p.rest_inv)
+    v = np.einsum('pk,pkij,pj->pi', p.w, Bs[p.idx], p.rest)
     if p.free.any():
-        # no weights: it goes with the armature object
-        D = np.array(arm.matrix_world, dtype=np.float64) @ np.linalg.inv(np.array(p.M0, dtype=np.float64))
-        v[p.free] = p.rest[p.free] @ D.T
+        v[p.free] = p.rest[p.free]          # (no weight: it goes with the armature object)
+    v = v @ Ma.T
     return v[:, :3].astype(np.float32)
 
 

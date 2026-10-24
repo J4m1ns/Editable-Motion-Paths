@@ -186,6 +186,27 @@ class EMP_Settings(bpy.types.PropertyGroup):
                ('VISIBLE', "Visible Bones", "The bones you can see (hidden bones and hidden bone "
                                            "collections are left out)")],
         default='VISIBLE')
+    show_com: BoolProperty(
+        name="Center of Mass", default=False, update=_redraw,
+        description="Show the character's center of mass (from its deform bones and their weights), a "
+                    "plumb line to the floor, the support and where the body is going: to check that a "
+                    "pose is believable")
+    com_trail: BoolProperty(name="Trajectory", default=False, update=_redraw,
+                            description="Center of mass: its path over the frames (a jump's arc should be a "
+                                        "parabola)")
+    com_velocity: BoolProperty(name="Velocity", default=True, update=_redraw,
+                               description="Center of mass: an arrow where the body is going (about 8 frames "
+                                           "ahead)")
+    com_support: BoolProperty(name="Support", default=True, update=_redraw,
+                              description="Center of mass: the outline of what touches the floor; the plumb "
+                                          "point is green inside it (stable), red outside, gray in the air")
+    path_space: EnumProperty(
+        name="Path Space", update=_refresh,
+        items=[('GLOBAL', "Global", "The motion in the world: the parents' motion is in the path", 'WORLD', 0),
+               ('LOCAL', "Local", "Only the bone's / object's own motion: the path is drawn in its parent's "
+                                  "space as it is on the current frame, so it moves along with the parent "
+                                  "and the parent's motion isn't in it", 'ORIENTATION_LOCAL', 1)],
+        default='GLOBAL')
     onion_show: EnumProperty(
         name="Show", update=_redraw,
         items=[('WHOLE', "Whole", "The whole character (every mesh the armature moves, and what is on it)"),

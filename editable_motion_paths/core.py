@@ -413,6 +413,7 @@ class PathCache:
         self.vplane_n = Vector((0.0, 0.0, 1.0))  # value track beside the path: the path's plane normal
         self.value_side = 'OUTSIDE'
         self.circle = None      # scale / value paths drawn around a circle (see _circle_layout)
+        self.local = None       # Local space: the frame whose parent space every frame is drawn in
         self.track_mode = 'UP'
         self.base_points = []   # scale / value paths: the location path they are drawn on
         self.sample_vals = []   # scale / value paths: channel values at every sample
@@ -456,6 +457,10 @@ class PathCache:
     # -- parent space ----------------------------------------------------------
 
     def B_at(self, t):
+        if self.local is not None:
+            # Local: the parent stays as it is on the current frame, so only the bone's / object's
+            # own motion shows (and is edited)
+            t = self.local
         B = self.B
         x = t - self.fs
         if x <= 0.0:
@@ -645,9 +650,10 @@ class PathCache:
             self.ptype, (tg.loc, tg.rot, tg.scale))
         self.track_mode = settings.value_track if settings else 'UP'
         self.value_side = settings.value_side if settings else 'OUTSIDE'
+        self.local = float(bpy.context.scene.frame_current) if settings and settings.path_space == 'LOCAL' else None
         lay = (settings.layout, settings.circle_radius, settings.circle_use_range, settings.circle_start,
                settings.circle_end) if settings and self.ptype in (SCALE, VALUE) else None
-        sig = (self.bake_id, self.rot_len, tg.rot_mode, self.track_mode, self.value_side, lay,
+        sig = (self.bake_id, self.rot_len, tg.rot_mode, self.track_mode, self.value_side, lay, self.local,
                tuple(tuple(_fc_signature(fc) for fc in ch.fcurves) for ch in used),
                tuple(tuple(ch.static) for ch in used))
         if not force and not self.dirty and sig == self.sig and self.valid:

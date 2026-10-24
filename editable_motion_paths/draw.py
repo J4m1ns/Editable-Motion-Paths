@@ -531,6 +531,8 @@ def _draw_view():
 
     from . import onion
     onion.draw(scene, st, us)
+    from . import com
+    com.draw(scene, st, us)
     gpu.state.depth_test_set('NONE' if st.on_top else 'LESS_EQUAL')
     gpu.state.depth_mask_set(False)
 
@@ -1236,16 +1238,20 @@ def _draw_pixel():
         blf.color(font, 1.0, 1.0, 1.0, 1.0)
         blf.position(font, x, y, 0)
         blf.draw(font, text)
-    from . import onion
-    if onion.status and st is not None and st.show_onion:
-        # the ghosts' proxies are being built (once): say so, at the bottom
+    from . import com, onion
+    if st is not None and st.show_com and not state.overlays_hidden() and ctx.region_data is not None:
+        com.draw_2d(ctx, st, us)
+    note = (onion.status if st is not None and st.show_onion else "") or \
+        (com.status if st is not None and st.show_com else "")
+    if note:
+        # the ghosts' proxies / the bone masses are being worked out (once): say so, at the bottom
         blf.size(font, 12 * us)
-        w = blf.dimensions(font, onion.status)[0]
+        w = blf.dimensions(font, note)[0]
         blf.enable(font, blf.SHADOW)
         blf.shadow(font, 3, 0.0, 0.0, 0.0, 0.9)
         blf.color(font, 1.0, 0.85, 0.4, 1.0)
         blf.position(font, (ctx.region.width - w) * 0.5, 64 * us, 0)
-        blf.draw(font, onion.status + "...")
+        blf.draw(font, note + "...")
         blf.disable(font, blf.SHADOW)
     if state.gallery is not None and ctx.area is not None and ctx.area.as_pointer() == state.gallery['area']:
         from . import ops_easing

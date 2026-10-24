@@ -153,6 +153,8 @@ def _draw_tool_settings(context, layout, tool):
     layout.operator("emp.path_add", text="Add Path", icon='ADD')
     layout.prop(st, "show_all_handles")
     layout.prop(st, "show_onion", text="", icon='ONIONSKIN_ON')
+    layout.prop(st, "show_com", text="", icon_value=ops_easing.icon_id("com"))
+    layout.prop(st, "path_space", text="", icon_only=True)
     layout.popover("EMP_PT_display_popover", text="", icon='COLOR')
     layout.popover("EMP_PT_modifiers_popover", text="", icon='MODIFIER')
 
@@ -641,6 +643,7 @@ class EMP_PT_display(_Panel, bpy.types.Panel):
 def _draw_display(layout, st):
     layout.use_property_split = True
     layout.use_property_decorate = False
+    layout.row().prop(st, "path_space", expand=True)
     layout.prop(st, "color_mode")
     col = layout.column(heading="Show")
     col.prop(st, "show_frames")
@@ -660,6 +663,13 @@ def _draw_display(layout, st):
             sub = col.column(align=True)
             sub.prop(st, "speed_start")
             sub.prop(st, "speed_end")
+    col.prop(st, "show_com")
+    if st.show_com:
+        box = col.box()
+        row = box.row(align=True)
+        row.prop(st, "com_velocity", toggle=True)
+        row.prop(st, "com_support", toggle=True)
+        row.prop(st, "com_trail", toggle=True)
     col.prop(st, "show_onion")
     if st.show_onion:
         box = col.box()

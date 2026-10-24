@@ -383,7 +383,8 @@ def _bake_timer():
 @persistent
 def _on_depsgraph(scene, depsgraph):
     from . import onion
-    if baking or not caches or onion.busy():
+    from . import com
+    if baking or not caches or onion.busy() or com.busy():
         return
     st = settings(scene)
     if st is None or not st.auto_update:
@@ -398,13 +399,15 @@ def _on_depsgraph(scene, depsgraph):
             tag_redraw()        # the path follows right away (e.g. a modifier's settings)
             schedule_rebake()
             onion.changed()
+            com.changed()
             return
 
 
 @persistent
 def _on_undo(*_args):
-    from . import onion
+    from . import com, onion
     onion.changed()
+    com.changed()
     for c in caches.values():
         c.dirty = True
     # hidden keys, value channels... come from the scene: take them over right away
@@ -422,6 +425,8 @@ def _on_undo(*_args):
 def _on_load(*_args):
     from . import onion
     onion.clear_all()
+    from . import com
+    com.clear()
     caches.clear()
     ghosts.clear()
     _action_hashes.clear()
