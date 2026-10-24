@@ -264,12 +264,17 @@ the mouse), in the tool header, or with a **right click** (brushes, radius, stre
   **Speed Up** (they spread out), **Even** (even spacing). While you paint, the new frame dots
   are shown; when you let go, the keys follow;
 * shape brushes: **Grab** (pull the path with the mouse), **Smooth**, **Pinch** (draw the path
-  toward the brush). Smooth over a part with few keys adds keys there so it has something to
-  smooth.
+  toward the brush). With **Insert Keys** (on by default) a part with too few keys under the
+  brush gets keys there first (the motion doesn't change), so the brush can shape it;
+* **Dissolve**: paint over the keys the path doesn't need and they go - one by one, the nearest
+  to the brush first, each only if the motion stays within *Tolerance* (percent of the path
+  size). *Keep Timing* (on): where the bone is on every frame must stay; off: only the shape of
+  the path counts, so more keys can go. The old path shows as a ghost while you paint, and one
+  note at the end says how many keys went and how far the path moved. The ends of the path stay.
 
 **F**: radius, **Shift+F**: strength (shown like Blender's radial control), **Ctrl**: the
 opposite effect (Slow Down becomes Speed Up, Pinch pushes away), **Shift**: Smooth,
-**Ctrl+Shift**: Even, whatever the brush. Falloff as in sculpt mode. The brush settings are
+**Ctrl+Shift**: Even, **Alt**: Dissolve, whatever the brush. Falloff as in sculpt mode. The brush settings are
 not part of undo (Ctrl+Z undoes the strokes only). The edit tool's keys work here too: 1-4
 modes, U, J, P, Shift+T, Alt+C, Ctrl+H.
 

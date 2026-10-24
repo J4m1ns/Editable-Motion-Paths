@@ -2,8 +2,9 @@
 
 Timing brushes (Push, Slow Down, Speed Up, Even) move the frames along the path; the shape
 stays. While you paint, the new frame dots are previewed; when you let go, the keys are
-refitted to the new timing once. Shape brushes (Grab, Smooth, Pinch) move the keys.
-F: radius, Shift+F: strength, Ctrl: the opposite effect, Shift: Smooth, Ctrl+Shift: Even,
+refitted to the new timing once. Shape brushes (Grab, Smooth, Pinch) move the keys (Insert Keys:
+adding keys where there are too few to shape); Dissolve removes the keys the path does not need.
+F: radius, Shift+F: strength, Ctrl: the opposite effect, Shift: Smooth, Ctrl+Shift: Even, Alt: Dissolve,
 right click: the brushes."""
 
 import bpy
@@ -29,6 +30,8 @@ BRUSHES = [
     ('GRAB', "Grab", "Shape: pull the path under the brush along with the mouse"),
     ('SMOOTH', "Smooth", "Shape: smooth the path under the brush"),
     ('PINCH', "Pinch", "Shape: draw the path toward the brush center (Ctrl: push it away)"),
+    ('DISSOLVE', "Dissolve", "Clean: remove the keys under the brush that the path doesn't need; its shape "
+                             "(and timing) stay within the tolerance (Alt: Dissolve, whatever the brush)"),
 ]
 TIMING = {'PUSH', 'SLOW', 'FAST', 'EVEN'}
 
@@ -239,7 +242,7 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
     invert: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
     brush_override: bpy.props.StringProperty(options={'HIDDEN', 'SKIP_SAVE'},
                                              description="Use this brush for the stroke (Shift: Smooth, "
-                                                         "Ctrl+Shift: Even)")
+                                                         "Ctrl+Shift: Even, Alt: Dissolve)")
 
     def invoke(self, context, event):
         if context.region_data is None:
@@ -287,6 +290,11 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
             state.sculpt_hide = {j.cache.key for j in self.jobs}
         elif self.brush == 'GRAB':
             region, rv3d = context.region, context.region_data
+            if bs.insert_keys:
+                for c in caches:
+                    self._add_keys(c, region, rv3d, m)
+            # (the drag starts from here every move; Esc goes back to before the keys were added)
+            self.grab_snaps = [(c, core.FCurveSnapshot(c.target(), c.target().channels(c.ptype))) for c in caches]
             self.grab = []
             for c in caches:
                 mask = self.masks[c.key]
@@ -297,6 +305,17 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                     wt = _falloff(bs, (s - m).length, self.radius)
                     if wt > 0.0:
                         self.grab.append((c, k.t, k.co.copy(), wt))
+        elif self.brush == 'DISSOLVE':
+            # the path as it was: shown as a ghost while painting, and measured against
+            self.removed, self.worst = 0, 0.0
+            self.orig = {}
+            for c in caches:
+                pts = list(c.points)
+                lo = [min(p[i] for p in pts) for i in range(3)]
+                hi = [max(p[i] for p in pts) for i in range(3)]
+                size = max(sum((h - l) ** 2 for h, l in zip(hi, lo)) ** 0.5, 1e-6)
+                self.orig[c.key] = (dict(zip(c.times, pts)), pts, size)
+                state.ghosts[c.key] = pts
         state.modal_running += 1
         self._cursor(context, m)
         context.window_manager.modal_handler_add(self)
@@ -320,6 +339,11 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                 self.last = m
         elif t == 'LEFTMOUSE' and v == 'RELEASE':
             self._commit(context)
+            if self.brush == 'DISSOLVE':
+                # one summary at the end (not a note on every dab)
+                self.report({'INFO'}, "Dissolve: %d key%s removed, the path moved by up to %.2f%% of its size%s" % (
+                    self.removed, "" if self.removed == 1 else "s", self.worst,
+                    "" if _bs().dissolve_keep_timing else " (shape only)"))
             return self._end(context, {'FINISHED'})
         elif t in {'ESC', 'RIGHTMOUSE'} and v == 'PRESS':
             for c, s in self.snaps:
@@ -333,6 +357,8 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
         state.modal_running = max(0, state.modal_running - 1)
         state.sculpt_preview = None
         state.sculpt_hide = set()
+        for c in self.caches:
+            state.ghosts.pop(c.key, None)
         if state.sculpt_cursor is not None:
             x, y, r, a, _on = state.sculpt_cursor
             state.sculpt_cursor = (x, y, r, a, False)
@@ -352,6 +378,8 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                 self._timing_dab(j, st, region, rv3d, m, delta, sign)
                 pts += [j.point(j.w[f]) for f in j.frames]
             state.sculpt_preview = (pts, context.area.as_pointer())
+        elif self.brush == 'DISSOLVE':
+            self._dissolve_dab(context, st, region, rv3d, m)
         else:
             self._shape_dab(context, st, region, rv3d, m, sign)
         state.tag_redraw()
@@ -418,7 +446,7 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
 
     def _grab(self, context, m):
         region, rv3d = context.region, context.region_data
-        for c, s in self.snaps:
+        for c, s in self.grab_snaps:
             s.restore()
             c.refresh(force=True)
         by_cache = {}
@@ -428,9 +456,9 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
             by_cache.setdefault(c, []).append((t, co0 + (b - a) * wt))
         self._write(context, by_cache)
 
-    def _add_keys_for_smooth(self, c, region, rv3d, m):
-        """Smooth over a part of the path with (almost) no keys: add keys there first, so it has
-        something to smooth (the motion doesn't change)."""
+    def _add_keys(self, c, region, rv3d, m):
+        """Insert Keys: a part of the path under the brush with (almost) no keys gets keys there
+        first, so the brush has something to shape (the motion doesn't change)."""
         under = []
         mask = self.masks.get(c.key)
         for t, p in zip(c.times, c.points):
@@ -456,8 +484,8 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
     def _shape_dab(self, context, st, region, rv3d, m, sign):
         by_cache = {}
         for c in self.caches:
-            if self.brush == 'SMOOTH':
-                self._add_keys_for_smooth(c, region, rv3d, m)
+            if st.insert_keys:
+                self._add_keys(c, region, rv3d, m)
             ks = [k for k in c.keys if not k.hidden]
             mask = self.masks.get(c.key)
             for i, k in enumerate(ks):
@@ -479,6 +507,62 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                     W = k.co.lerp(center, max(-1.0, min(1.0, wt * 0.3 * sign)))
                 by_cache.setdefault(c, []).append((k.t, W))
         self._write(context, by_cache)
+
+    def _deviation(self, c):
+        """How far the path is now from where it was when the stroke began (percent of its size):
+        frame by frame (Keep Timing), or only from the old shape."""
+        by_t, pts, size = self.orig[c.key]
+        worst = 0.0
+        if _bs().dissolve_keep_timing:
+            for t, p in zip(c.times, c.points):
+                q = by_t.get(t)
+                if q is not None:
+                    worst = max(worst, (p - q).length)
+        else:
+            for p in c.points:
+                best = 1e18
+                for a, b in zip(pts, pts[1:]):
+                    ab = b - a
+                    L = ab.length_squared
+                    f = 0.0 if L < 1e-12 else max(0.0, min(1.0, (p - a).dot(ab) / L))
+                    best = min(best, (a + ab * f - p).length_squared)
+                worst = max(worst, best ** 0.5)
+        return worst / size * 100.0
+
+    def _dissolve_dab(self, context, st, region, rv3d, m):
+        """Try the keys under the brush, the one nearest the center first: a key goes if the path
+        stays within the tolerance without it (the keys around it refit their handles)."""
+        for c in self.caches:
+            mask = self.masks.get(c.key)
+            ks = [k for k in c.keys if not k.hidden]
+            cands = []
+            for i, k in enumerate(ks):
+                if i == 0 or i == len(ks) - 1 or (mask and not mask[2](k.t)):
+                    continue            # the ends of the path stay
+                s = location_3d_to_region_2d(region, rv3d, k.co)
+                if s is not None and (s - m).length < self.radius:
+                    cands.append(((s - m).length, k.t))
+            for _d, t in sorted(cands):
+                tg = c.target()
+                ch = tg.channels(c.ptype)
+                snap = core.FCurveSnapshot(tg, ch)
+                done = 0
+                for fc in ch.fcurves:
+                    if fc is not None and len(fc.keyframe_points) > 2:
+                        done += keys.dissolve_channel(fc, [t])
+                if not done:
+                    continue
+                core.update_fcurves([fc for fc in ch.fcurves if fc is not None])
+                c.dirty = True
+                c.refresh(force=True)
+                dev = self._deviation(c)
+                if dev > st.dissolve_tolerance:
+                    snap.restore()
+                    c.dirty = True
+                    c.refresh(force=True)
+                else:
+                    self.removed += 1
+                    self.worst = max(self.worst, dev)
 
     def _write(self, context, by_cache):
         for c, moves in by_cache.items():
@@ -579,6 +663,7 @@ SCULPT_KEYMAP = (
     _k("emp.sculpt_stroke", 'LEFTMOUSE', {"invert": True}, ctrl=True),
     _k("emp.sculpt_stroke", 'LEFTMOUSE', {"brush_override": 'SMOOTH'}, shift=True),
     _k("emp.sculpt_stroke", 'LEFTMOUSE', {"brush_override": 'EVEN'}, shift=True, ctrl=True),
+    _k("emp.sculpt_stroke", 'LEFTMOUSE', {"brush_override": 'DISSOLVE'}, alt=True),
     _k("emp.sculpt_size", 'F'),
     _k("emp.sculpt_size", 'F', {"strength": True}, shift=True),
     _k("emp.sculpt_hover", 'MOUSEMOVE', value='ANY', any=True),
@@ -609,8 +694,14 @@ def _draw_settings(context, layout, tool):
     name = {i: n for i, n, _d in BRUSHES}.get(bs.brush, "")
     layout.label(text=name)
     layout.prop(bs, "radius")
-    layout.prop(bs, "strength", slider=True)
-    layout.prop(bs, "falloff", text="")
+    if bs.brush == 'DISSOLVE':
+        layout.prop(bs, "dissolve_tolerance")
+        layout.prop(bs, "dissolve_keep_timing")
+    else:
+        layout.prop(bs, "strength", slider=True)
+        layout.prop(bs, "falloff", text="")
+    if bs.brush in {'GRAB', 'SMOOTH', 'PINCH'}:
+        layout.prop(bs, "insert_keys")
     layout.prop(st, "edit_mode", text="")
 
 
@@ -630,9 +721,14 @@ def draw_brushes(layout, context):
     col.prop(bs, "radius")
     col.prop(bs, "strength", slider=True)
     layout.prop(bs, "falloff")
+    row = layout.row(heading="Grab, Smooth, Pinch")
+    row.prop(bs, "insert_keys")
+    col = layout.column(heading="Dissolve", align=True)
+    col.prop(bs, "dissolve_tolerance")
+    col.prop(bs, "dissolve_keep_timing")
     col = layout.column(align=True)
     col.label(text="F: radius   Shift+F: strength   Ctrl: the opposite effect")
-    col.label(text="Shift: Smooth   Ctrl+Shift: Even   right click: these settings")
+    col.label(text="Shift: Smooth   Ctrl+Shift: Even   Alt: Dissolve   right click: these settings")
     col.label(text="Selected keys mask the path (only that part changes)   Alt+A: clear the mask")
 
 
@@ -655,7 +751,7 @@ class EMP_SculptPoseTool(bpy.types.WorkSpaceTool):
     bl_label = "Sculpt Motion Path"
     bl_description = ("Paint on motion paths with brushes: the timing (Push, Slow Down, Speed Up, Even: "
                       "the shape stays) or the shape (Grab, Smooth, Pinch). F: radius, Shift+F: strength, "
-                      "Ctrl: the opposite effect, Shift: Smooth, Ctrl+Shift: Even, right click: the brushes")
+                      "Ctrl: the opposite effect, Shift: Smooth, Ctrl+Shift: Even, Alt: Dissolve, right click: the brushes")
     bl_icon = "brush.particle.comb"
     bl_widget = None
     bl_keymap = SCULPT_KEYMAP

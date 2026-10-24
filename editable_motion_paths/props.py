@@ -61,6 +61,18 @@ class EMP_BrushSettings(bpy.types.PropertyGroup):
                ('ROOT', "Root", "", 'ROOTCURVE', 2), ('SHARP', "Sharp", "", 'SHARPCURVE', 3),
                ('LINEAR', "Linear", "", 'LINCURVE', 4), ('CONSTANT', "Constant", "", 'NOCURVE', 5)],
         default='SMOOTH', description="How the brush fades out toward its edge")
+    insert_keys: BoolProperty(
+        name="Insert Keys", default=True,
+        description="Grab, Smooth, Pinch: where there are few keys under the brush, add keys there "
+                    "first (the motion doesn't change), so the brush can shape the path")
+    dissolve_tolerance: FloatProperty(
+        name="Tolerance", subtype='PERCENTAGE', default=1.0, min=0.01, soft_max=10.0,
+        description="Dissolve: a key goes only if the path then moves less than this (percent of the "
+                    "path size)")
+    dissolve_keep_timing: BoolProperty(
+        name="Keep Timing", default=True,
+        description="Dissolve: the timing must stay too (where the bone is on every frame). Off: only "
+                    "the shape of the path counts, so more keys can go")
 
 
 class EMP_PathEntry(bpy.types.PropertyGroup):
