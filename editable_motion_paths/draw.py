@@ -62,11 +62,11 @@ def _jitter_color(x):
 
 
 def jitter_values(cache):
-    """Roughness at every sample of the path: |4th difference| of the per-frame positions
-    (zero for any smooth cubic motion) relative to the speed AROUND it (the fastest of the 4
-    frames on each side), so fast but smooth parts (big spacing) stay calm, and so does a slow,
-    smooth turn next to faster motion (a foot peeling off the floor). The speed used never
-    drops below a quarter of the average, so tiny wobbles near holds don't light up."""
+    """Roughness at every sample of the path: |4th difference| of the per-frame positions (zero
+    for any smooth cubic motion; a jump of the acceleration at a key, a pop or noise make it
+    big) against the motion's TYPICAL acceleration over the whole path - so what is rough is
+    measured on the scale of the motion: a small change while the foot is planted (slow, little
+    acceleration) stays calm, a pop or a wobble that would show at full speed glows."""
     cached = getattr(cache, "_jitter", None)
     if cached is not None and cached[0] is cache.sig:
         return cached[1]
@@ -76,14 +76,13 @@ def jitter_values(cache):
     d4 = [0.0] * n
     for i in range(2, n - 2):
         d4[i] = (P[i - 2] - 4.0 * P[i - 1] + 6.0 * P[i] - 4.0 * P[i + 1] + P[i + 2]).length
+    d2 = sorted((P[i - 1] - 2.0 * P[i] + P[i + 1]).length for i in range(1, n - 1))
     steps = [(b - a).length for a, b in zip(P, P[1:])]
     speed = sum(steps) / max(1, n - 1)
-    floor = max(speed * 0.25, 1e-9)
-
-    def local(i):
-        s = steps[max(0, i - 4):i + 4]
-        return max(max(s), floor) if s else floor
-    rough = [max(d4[max(0, i - 1):i + 2]) / local(i) for i in range(n)]
+    # the typical acceleration: most of the motion's (a linear motion: as if it changed over 20
+    # frames); 4x it, so the threshold keeps its meaning
+    typical = max(d2[int(len(d2) * 0.8)] if d2 else 0.0, speed / 20.0, 1e-9) * 4.0
+    rough = [max(d4[max(0, i - 1):i + 2]) / typical for i in range(n)]
     at = {round(t): r for (t, _p), r in zip(frames, rough)}
     out = [at.get(round(t), 0.0) for t in cache.times]
     cache._jitter = (cache.sig, out)

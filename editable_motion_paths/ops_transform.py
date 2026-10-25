@@ -786,6 +786,10 @@ class EMP_OT_transform(bpy.types.Operator):
         # needs some distance to stay controllable
         self.scale_d0 = max(self.scale_start, (8.0 if self.axis_index >= 0 and self.release_confirm else 40.0) * us)
         self.anchor = self.mouse_virtual.copy()
+        # a gizmo handle follows the mouse along its own line (the mouse's distance across it
+        # doesn't count, like Blender's scale gizmo)
+        d = self.mouse_virtual - self.pivot_2d
+        self.scale_dir = d.normalized() if self.axis_index >= 0 and self.release_confirm and             d.length > 4.0 * us else None
 
     def _restore(self):
         for s in reversed(getattr(self, "snapshots", [])):
@@ -1004,7 +1008,11 @@ class EMP_OT_transform(bpy.types.Operator):
             f = 1.0 if f is None else f
         else:
             # starts at exactly 1, even with the mouse on the key
-            f = 1.0 + ((mouse - self.pivot_2d).length - self.scale_start) / self.scale_d0
+            if getattr(self, "scale_dir", None) is not None:
+                along = (mouse - self.pivot_2d).dot(self.scale_dir)
+            else:
+                along = (mouse - self.pivot_2d).length
+            f = 1.0 + (along - self.scale_start) / self.scale_d0
             if snap_scale:
                 inc = 0.01 if fine else 0.1
                 f = round(f / inc) * inc

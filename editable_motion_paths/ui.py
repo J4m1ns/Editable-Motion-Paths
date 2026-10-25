@@ -759,11 +759,18 @@ def draw_limb_weight(layout, st):
         col.label(text="chest, the hips or a limb")
     else:
         col.label(text="Limb Weight: what %s moves" % pb.name)
+    from .props import weight_unit
+    unit = weight_unit()
+    if unit != 'PERCENT':
+        layout.prop(st, "com_body_mass", text="Body Mass, kg")
     if share is not None and share <= com.WHOLE or "com_limb" in pb:
         row = layout.row(align=True)
         sub = row.row(align=True)
         sub.enabled = share is not None and share <= com.WHOLE
-        sub.prop(st, "com_limb_share", text="Of the Body")
+        if unit == 'PERCENT':
+            sub.prop(st, "com_limb_share", text="Of the Body")
+        else:
+            sub.prop(st, "com_limb_mass", text="Mass, " + ("kg" if unit == 'KG' else "lb"))
         sub = row.row(align=True)
         sub.enabled = "com_limb" in pb
         sub.operator("emp.com_limb_reset", text="", icon='LOOP_BACK')
@@ -795,6 +802,8 @@ def _draw_display(layout, st, popover=False, context=None):
     m = st.edit_mode
     every = not popover
     layout.prop(st, "color_mode")
+    if st.color_mode == 'JITTER':
+        layout.prop(st, "jitter_threshold", text="Threshold", slider=True)
     col = layout.column(heading="Show")
     col.prop(st, "show_frames")
     col.prop(st, "show_handles")

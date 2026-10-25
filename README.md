@@ -177,8 +177,9 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   the part of it you grab goes up (faster there) or down (slower), the rest of the segment makes
   up for it - grab it on the left to change the start of the segment, on the right for its end.
   The path keeps its shape and the keys their frames (keys are added where needed, like *Ease*;
-  they are selected, so the graph keeps showing the same keys). While you drag, the graph keeps
-  its frames and height.
+  they are selected - *Select New Keys* in the preferences); after a drag the keys at both ends
+  of the graph are selected too (one key selected: its neighbors - *Keep the Graph's Keys*), so
+  the graph doesn't jump to other keys. While you drag, the graph keeps its frames and height.
 * Where the chart and the graph are and how they look - the **corner**, margins, width, heights,
   text size, background, curve and key colors - is in the add-on's preferences (*Timing Chart and
   Speed Graph*); the 3D view shows each change right away, and *Reset the Charts' Look* puts it
@@ -338,7 +339,7 @@ cameras, lights) are one shape drawn with a different matrix per ghost (instance
 ghosts follow the edits live, the nearest ones first, also while a key is dragged, and the old
 ghost stays until its new one is ready (nothing blinks). Back faces are skipped, *Wire* and
 *Points* use the same simplified mesh (the wire stays connected), and ghosts show in X-ray
-too. After editing a mesh's shape, *Update Ghosts* builds its ghost again (a change in the
+too. *In Front* (on by default) draws them over everything. After editing a mesh's shape, *Update Ghosts* builds its ghost again (a change in the
 number of vertices or in the modifiers does that by itself).
 
 The ghosts are captured ahead of time for every frame they can be on (the keys, or every step
@@ -382,7 +383,10 @@ boot, a prop in the hand). The limb lights up while it changes; the arrow next t
 the worked out share. With the center shown, the right-click menu has **Edit Limb Weight...** (a
 small popup under the mouse). A controller that moves the whole body (the root, the torso) has
 no weight of its own - pick the chest, the hips or a limb. Space switches that are off (a head
-that could follow the hand, influence 0) don't make a bone part of a limb. (It is kept on the controller bone as the custom property `com_limb`; a
+that could follow the hand, influence 0) don't make a bone part of a limb. The weight is shown
+in percent, or in kilograms / pounds (the preferences: *Limb Weight In*) from the character's
+*Body Mass*. A new weight works the trajectory out again from scratch. (It is kept on the
+controller bone as the custom property `com_limb`; a
 deform bone's `com_mass` still scales that one bone, e.g. 0 for a cape.) The velocity, the floor
 level and the trajectory are worked out in the background frame by frame (only the bones are
 evaluated, like the onion ghosts) and follow your edits.
@@ -402,11 +406,12 @@ add-on's preferences (*Colors, Sizes, Keys...* at the bottom of the sidebar's Di
 the same in every file.
 
 * **Color**: *Speed* (blue slow, red fast), **Jitter**, *Before / After* and *Solid*. Jitter
-  is a heat map of roughness. Smooth motion stays gray (fast smooth motion too: roughness is
-  measured against the speed around it, so a slow, smooth turn next to faster motion stays calm
-  too); hitches, pops (a key where the speed jumps, e.g. a Linear segment after a flat Bezier
-  handle) and noisy wobbles glow yellow to red. Select
-  the red part and smooth it. *Threshold* sets the sensitivity.
+  is a heat map of roughness. Smooth motion stays gray: roughness (the jump of the
+  acceleration from frame to frame) is measured against the motion's typical acceleration, so
+  a small change while a foot is planted stays calm, fast smooth motion too; hitches, pops (a
+  key where the speed jumps, e.g. a Linear segment after a flat Bezier handle) and noisy
+  wobbles glow yellow to red. Select the red part and smooth it. *Threshold* (right under the
+  color, in the display settings) sets the sensitivity.
 * Baked keys (a key every frame or two) are drawn as small dots, so dense motion stays
   readable.
 * Turning off **Show Overlays** hides the paths, and viewport hotkeys then work as in plain

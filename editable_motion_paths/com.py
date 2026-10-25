@@ -148,7 +148,7 @@ def _apply_limbs(arm, d, limbs):
     m = d["m_base"].copy()
     idx = {n: i for i, n in enumerate(d["names"])}
     for name, f in limbs:
-        f = min(max(f, 0.02), 50.0)         # (never no mass at all: the center would be gone)
+        f = min(max(f, 0.02), 1e5)          # (never no mass at all: the center would be gone)
         for b in onion.affected_bones(arm, {name}):
             i = idx.get(b)
             if i is not None:
@@ -158,10 +158,10 @@ def _apply_limbs(arm, d, limbs):
 
 
 def changed_all(arm):
-    """The masses changed: the whole track is worked out again."""
-    tr = _track.get(arm.name)
-    if tr:
-        _redo.setdefault(arm.name, set()).update(tr)
+    """The masses changed: the whole track is worked out again, from scratch (old and new
+    frames mixed would bend the trajectory and throw the velocity arrow off)."""
+    _track.pop(arm.name, None)
+    _redo.pop(arm.name, None)
     _now.pop(arm.name, None)
     _schedule(0.05)
 

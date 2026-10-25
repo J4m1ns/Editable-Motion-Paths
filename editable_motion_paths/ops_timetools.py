@@ -711,8 +711,12 @@ class EMP_OT_speed_drag(bpy.types.Operator):
             tg = c.target()
             if abs(self.amount) > 1e-9:
                 u0 = (self.grab - self.frame) / max(self.frame_b - self.frame, 1e-6)
-                # (the segment's keys and the new ones are selected: the graph keeps its frames)
-                refit(self.job, tg, bump_target(self.job, tg, u0, self.amount), True)
+                # (Select New Keys: the segment's keys and the new ones are selected, so the
+                # graph keeps its frames)
+                from .props import prefs
+                p = prefs()
+                refit(self.job, tg, bump_target(self.job, tg, u0, self.amount),
+                      True if p is None or p.speed_select_new else self.sel)
             c.refresh(force=True)
 
     def execute(self, context):
@@ -792,14 +796,22 @@ class EMP_OT_speed_drag(bpy.types.Operator):
             self.snapshot.restore()
             self.c.dirty = True
             self.c.refresh(force=True)
-        elif self.mode == 'KEY' and state.settings(context.scene).speed_range == 'SEGMENT':
-            # the graph's ends stay selected, so it keeps showing the same keys
-            ends = {round(self.new_frame if abs(t - self.frame) < 1e-3 else t, 3) for t in (self.sg["lo"],
-                                                                                           self.sg["hi"])}
+        else:
+            from .props import prefs
+            p = prefs()
+            keep = (p is None or p.speed_keep_ends) and state.settings(context.scene).speed_range == 'SEGMENT'
+            moved = self.new_frame if self.mode == 'KEY' else None
+            want = set()
+            if keep:
+                # Keep the Graph's Keys: its ends (one key selected: its neighbors) get selected,
+                # so the graph keeps showing the same keys
+                want = {round(moved if moved is not None and abs(t - self.frame) < 1e-3 else t, 3)
+                        for t in (self.sg["lo"], self.sg["hi"])}
+            if moved is not None and round(self.frame, 3) in self.sel:
+                want.add(round(moved, 3))           # (the moved key stays selected)
             self.c.refresh(force=True)
             for k in self.c.keys:
-                if round(k.t, 3) in ends or round(k.t, 3) in self.sel or abs(k.t - self.new_frame) < 1e-3 and \
-                        round(self.frame, 3) in self.sel:
+                if round(k.t, 3) in want:
                     pick.select_part(self.c, k, 'KEY', True)
         pick.tag_anim_editors()
         state.tag_redraw()

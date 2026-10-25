@@ -247,29 +247,39 @@ class EMP_OT_scale_whisker(bpy.types.Operator):
         m = Vector((event.mouse_region_x, event.mouse_region_y))
         st = state.settings(context.scene)
         half = draw.ribbon_half(st, c)
-        # the frame under the mouse along the path, on this handle's side of the key
+        y_rib = self.ch == 1 and st.scale_y_display == 'RIBBON'
+
+        def line(t):
+            """Where the whisker's value is measured at frame t: (base point, direction per half
+            ribbon width)."""
+            if y_rib:
+                base, across, unit = draw.y_ribbon(st, c, tg, t)
+                return base, across * (unit / half)
+            ax = c.axes(tg, t)
+            return c.head(tg, t), (ax[2] if self.ch == 1 else ax[self.ch] * self.sign)
+        # the frame whose line (across the ribbon) the mouse is on, on this handle's side of the
+        # key - not just the nearest point of the path: the Y ribbon is far beside it
         a, b = (self.limit[0], self.x) if self.side == 'L' else (self.x, self.limit[1])
         best = None
         n = 48
         for i in range(n + 1):
             t = a + (b - a) * i / n
-            s = proj(region, rv3d, c.head(tg, t))
-            if s is not None:
-                d = (s - m).length
-                if best is None or d < best[0]:
-                    best = (d, t)
+            base, a3 = line(t)
+            p0, p1 = proj(region, rv3d, base), proj(region, rv3d, base + a3 * half)
+            if p0 is None or p1 is None:
+                continue
+            e = p1 - p0
+            if e.length < 1e-6:
+                d = (m - p0).length
+            else:
+                d = abs((m - p0).cross(e)) / e.length        # (2D: the distance across the line)
+            if best is None or d < best[0]:
+                best = (d, t)
         if best is None:
             return
         t = best[1]
         dt = max(abs(t - self.x), 0.05)
-        base = c.head(tg, t)
-        ax = c.axes(tg, t)
-        y_rib = self.ch == 1 and st.scale_y_display == 'RIBBON'
-        if y_rib:
-            base, across, unit = draw.y_ribbon(st, c, tg, t)
-            a3 = across * (unit / half)
-        else:
-            a3 = ax[2] if self.ch == 1 else ax[self.ch] * self.sign
+        base, a3 = line(t)
         s0 = proj(region, rv3d, base)
         s1 = proj(region, rv3d, base + a3 * half)
         if s0 is None or s1 is None or (s1 - s0).length < 1e-6:

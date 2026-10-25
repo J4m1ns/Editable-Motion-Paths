@@ -33,6 +33,25 @@ def _set_limb(self, value):
         com.set_limb_share(arm, pb.name, value / 100.0)
 
 
+LB_PER_KG = 2.2046226
+
+
+def weight_unit():
+    p = prefs()
+    return p.com_weight_unit if p is not None else 'PERCENT'
+
+
+def _get_limb_mass(self):
+    share = _get_limb(self) / 100.0
+    m = share * self.com_body_mass
+    return m * LB_PER_KG if weight_unit() == 'LB' else m
+
+
+def _set_limb_mass(self, value):
+    kg = value / LB_PER_KG if weight_unit() == 'LB' else value
+    _set_limb(self, 100.0 * kg / max(self.com_body_mass, 1e-6))
+
+
 def _rebake(self, context):
     for c in state.caches.values():
         c.B = []
@@ -252,6 +271,14 @@ class EMP_Settings(bpy.types.PropertyGroup):
         description="Center of mass: how much of the body's mass the limb this controller moves is (worked out "
                     "from the meshes; set it by hand if it's off - a heavy boot, a prop in the hand). The limb "
                     "lights up while it changes; the arrow sets it back to the worked out value")
+    com_limb_mass: FloatProperty(
+        name="Limb Mass", min=0.0, soft_max=200.0, precision=2, get=_get_limb_mass, set=_set_limb_mass,
+        description="Center of mass: the mass of the limb this controller moves (its share of the Body Mass, in "
+                    "the unit set in the preferences)")
+    com_body_mass: FloatProperty(
+        name="Body Mass", default=70.0, min=0.1, soft_max=500.0, precision=1, update=_redraw,
+        description="Center of mass: the character's whole mass in kilograms (only for showing the limbs' "
+                    "masses in kg / lb; the center itself only needs the shares)")
     com_floor_height: FloatProperty(name="Floor Height", default=0.0, subtype='DISTANCE', unit='LENGTH',
                                     update=_redraw)
     onion_show: EnumProperty(
@@ -269,7 +296,7 @@ class EMP_Settings(bpy.types.PropertyGroup):
         description="The ghosts show the neighboring frames as if the pose you are changing were keyed "
                     "on this frame (during G / R / S and after it, until you change the frame). With Auto "
                     "Keying on, this happens during G / R / S anyway")
-    onion_in_front: BoolProperty(name="In Front", default=False, update=_redraw,
+    onion_in_front: BoolProperty(name="In Front", default=True, update=_redraw,
                                  description="Draw the ghosts over everything (X-ray)")
     show_rot_ribbon: BoolProperty(name="Rotation Ribbon", default=True, update=_redraw,
                                   description="Rotation paths: a ribbon along the path of the tip, "
@@ -443,6 +470,21 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         items=[('PLAIN_AXES', "Plain Axes", ""), ('ARROWS', "Arrows", ""), ('SINGLE_ARROW', "Single Arrow", ""),
                ('CIRCLE', "Circle", ""), ('CUBE', "Cube", ""), ('SPHERE', "Sphere", ""), ('CONE', "Cone", "")],
         default='PLAIN_AXES')
+    com_weight_unit: EnumProperty(
+        name="Limb Weight In", update=_redraw,
+        description="Center of mass: how a limb's weight is shown and set",
+        items=[('PERCENT', "Percent", "Its share of the whole body"),
+               ('KG', "Kilograms", "Its mass, from the character's Body Mass"),
+               ('LB', "Pounds", "Its mass, from the character's Body Mass")],
+        default='PERCENT')
+    speed_select_new: BoolProperty(
+        name="Select New Keys", default=True, update=_redraw,
+        description="Speed graph: the keys a drag of the curve adds are selected (so the graph keeps "
+                    "showing the same keys)")
+    speed_keep_ends: BoolProperty(
+        name="Keep the Graph's Keys", default=True, update=_redraw,
+        description="Speed graph: after a drag, the keys at both ends of the graph are selected too (one "
+                    "key selected: its neighbors), so the graph doesn't jump to other keys")
     graph_corner: EnumProperty(
         name="Corner", update=_redraw,
         description="Timing chart and speed graph: the corner of the 3D view they are in",
@@ -515,7 +557,14 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         col.prop(self, "onion_other_display")
         layout.separator()
         col = layout.column()
+        col.label(text="Center of Mass")
+        col.prop(self, "com_weight_unit")
+        layout.separator()
+        col = layout.column()
         col.label(text="Timing Chart and Speed Graph (the 3D view shows changes right away)")
+        sub = col.column(heading="After a Drag")
+        sub.prop(self, "speed_select_new")
+        sub.prop(self, "speed_keep_ends")
         col.prop(self, "graph_corner")
         sub = col.column(align=True)
         sub.prop(self, "graph_margin_x")
@@ -564,8 +613,9 @@ PREF_NAMES = ("color", "jitter_threshold", "show_ghost", "show_spokes", "show_re
               "onion_color_before", "onion_color_after",
               "onion_other_display", "graph_corner", "graph_margin_x", "graph_margin_y", "graph_width",
               "chart_height", "speed_height", "graph_text_size", "graph_bg", "speed_curve_color", "speed_fill_opacity",
-              "graph_key_color", "graph_sel_color", "graph_frame_color", "chart_tick_color", "chart_key_color")
-GRAPH_LOOK = PREF_NAMES[-15:]
+              "graph_key_color", "graph_sel_color", "graph_frame_color", "chart_tick_color", "chart_key_color",
+              "com_weight_unit", "speed_select_new", "speed_keep_ends")
+GRAPH_LOOK = PREF_NAMES[-18:-3]
 for _n in PREF_NAMES:
     setattr(EMP_Settings, _n, _pref_property(_n))
 
