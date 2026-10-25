@@ -752,7 +752,7 @@ def _on_depsgraph(scene, depsgraph):
 # doesn't change them (the ghosts don't go off, the edit mode doesn't jump back), it goes to the
 # edits. What is data stays with undo: the path list, the selection, the ranges, the masses.
 _UNDONE_SETTINGS = {"rna_type", "name", "paths", "picked_handles", "select_history", "com_limb_share",
-                    "com_limb_mass", "com_body_mass", "range_mode", "frame_start", "frame_end"}
+                    "com_limb_mass", "com_own_share", "com_own_mass", "com_body_mass", "range_mode", "frame_start", "frame_end"}
 VIEW_SETTINGS = set()       # filled in register(): every other setting of scene.emp
 _view_before = {}
 

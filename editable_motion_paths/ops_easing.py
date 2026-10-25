@@ -183,10 +183,17 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         hit = gallery_hit(context, g, mx, my)
         if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             g['hover'] = hit
-            if g['drag']:
+            if g.get('move'):
+                # dragged by its frame: it goes with the mouse (kept inside the view)
+                region = context.region
+                w, h = gallery_size(_gus(g))
+                g['x0'] = min(max(mx - g['move'][0], 4.0), max(region.width - w - 4.0, 4.0))
+                g['y0'] = min(max(my - g['move'][1], 4.0), max(region.height - _covered_top(context.area, region) - h - 4.0, 4.0))
+            elif g['drag']:
                 _slider_from_mouse(context, st, g, g['drag'], mx)
         elif t == 'LEFTMOUSE' and v == 'RELEASE':
             g['drag'] = None
+            g['move'] = None
         elif t == 'LEFTMOUSE' and v == 'DOUBLE_CLICK' and hit is not None and hit[0] == 'ease':
             st.easing_type = hit[1]
             return self._apply(context)
@@ -195,6 +202,7 @@ class EMP_OT_easing_preset(bpy.types.Operator):
             if hit is None:
                 if not gallery_inside(g, mx, my):
                     return self._close(context, {'CANCELLED'})      # a click outside: close
+                g['move'] = (mx - g['x0'], my - g['y0'])          # its frame: drag it somewhere else
             elif hit[0] == 'mode':
                 st.easing_mode = hit[1]
             elif hit[0] == 'dir':
@@ -693,7 +701,7 @@ def draw_gallery(ctx, us):
     room = region.height - _covered_top(ctx.area, region) if region is not None and ctx.area is not None else 1e9
     hint_y = g['y0'] + h + 12.0 * us if g['y0'] + h + 22.0 * us < room else g['y0'] - 12.0 * us
     text("Click: pick (the preview shows it)     Enter / double click: apply     Ctrl+click a slider: type     "
-         "Esc: close", g['x0'] + w * 0.5, hint_y, size=10, col=(1.0, 1.0, 1.0, 0.7))
+         "Drag its frame: move it     Esc: close", g['x0'] + w * 0.5, hint_y, size=10, col=(1.0, 1.0, 1.0, 0.7))
 
 
 def _outline(x, y, w, h, us, col):

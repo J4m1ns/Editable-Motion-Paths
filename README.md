@@ -392,18 +392,22 @@ for the edited armature or the active one, with or without a path:
 
 The mass of every deform bone is worked out once from its vertex weights (with a *Preparing
 center of mass* note): each vertex counts its area times its distance from the bone, about the
-volume around it, so a torso weighs more than a hand. **Limb Weight** (the center's settings):
-select a controller in Pose Mode - an IK hand, a foot, an FK bone - and it shows how much of the
-body the limb it moves is (worked out from the meshes); set another share if it's off (a heavy
-boot, a prop in the hand). The limb lights up while it changes; the arrow next to it goes back to
-the worked out share. With the center shown, the right-click menu has **Edit Limb Weight...** (a
-small popup under the mouse). A controller that moves the whole body (the root, the torso) has
-no weight of its own - pick the chest, the hips or a limb. Space switches that are off (a head
-that could follow the hand, influence 0) don't make a bone part of a limb. The weight is shown
-in percent, or in kilograms / pounds (the preferences: *Limb Weight In*) from the character's
-*Body Mass*. A new weight works the trajectory out again from scratch. (It is kept on the
-controller bone as the custom property `com_limb`; a
-deform bone's `com_mass` still scales that one bone, e.g. 0 for a cape.) The velocity, the floor
+volume around it, so a torso weighs more than a hand. **Weights** (the center's settings): the
+active bone in Pose Mode (the last one clicked) shows two weights - **With What It Carries** (the
+bone and what hangs on it: the shoulder carries the whole arm; for a controller, everything it
+moves) and **Just This Bone** (without its child bones: a hand without the fingers). Set them
+where they're off (a heavy boot, a prop in the hand) and the other bones make up for it: a part
+keeps its weight also when a smaller part inside it gets its own (set the arm to 6%, then the hand
+to 1%: the arm stays 6%, the rest of it shares the other 5%), and the bones in no part share the
+rest of the body. So it's enough to go over the main bones; the add-on works out the rest. The part
+lights up while it changes; the arrow next to a weight goes back to the worked out one. With the
+center shown, the right-click menu has **Edit Limb Weight...** (a small popup under the mouse). A
+bone that moves the whole body (the root, the torso) has no weight of its own - pick the chest,
+the hips or a limb. Space switches that are off (a head that could follow the hand, influence 0)
+don't make a bone part of a limb. The weights are shown in percent, or in kilograms / pounds (the
+preferences: *Limb Weight In*) from the character's *Body Mass*. A new weight works the trajectory
+out again from scratch. (They are kept on the bones as the custom properties `com_zone` and
+`com_own`; a deform bone's `com_mass` still scales that one bone, e.g. 0 for a cape.) The velocity, the floor
 level and the trajectory are worked out in the background frame by frame (only the bones are
 evaluated, like the onion ghosts) and follow your edits.
 

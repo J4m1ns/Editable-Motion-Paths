@@ -4,8 +4,9 @@ pose is believable (a visual aid only; nothing is changed).
 * The mass of every deform bone is worked out once from the meshes it moves: the onion proxies
   (the meshes melted down, with their bone weights), each vertex counting its area times its
   distance from the bone (about the volume around the bone), so a torso weighs more than a
-  hand. A pose bone's custom property "com_mass" scales its mass by hand; a controller's
-  "com_limb" (the Limb Weight in the panel) scales every bone it moves (its limb).
+  hand. A pose bone's custom property "com_mass" scales its mass by hand. The weights set in
+  the panel are stored on the bones: "com_zone" (the bone with what hangs on it) and "com_own"
+  (the bone alone), shares of the body that the masses are solved to (see _apply_limbs).
 * The point follows the pose live (from the bone matrices only); a plumb line drops it to the
   floor.
 * In the background, frame by frame over the paths' range (only the bones are evaluated, like
@@ -145,22 +146,69 @@ def _build_mass(scene, arm, st):
     return True
 
 
+WEIGHT_PROPS = {'zone': "com_zone", 'own': "com_own"}   # pose bone property of each kind of weight
+
+
 def _limbs(arm):
-    """The limb weights set on controllers: ((bone, factor), ...)."""
-    return tuple(sorted((pb.name, float(pb["com_limb"])) for pb in arm.pose.bones if "com_limb" in pb))
+    """The weights set on bones: ((bone, 'zone' / 'own', share of the body), ...)."""
+    return tuple(sorted((pb.name, part, float(pb[prop])) for pb in arm.pose.bones
+                        for part, prop in WEIGHT_PROPS.items() if prop in pb))
+
+
+def own_bones(arm, bone, zone=None):
+    """The bones the bone moves itself: its zone without what its child bones carry (a hand
+    without the fingers, a foot without the toes)."""
+    zone = onion.affected_bones(arm, {bone}) if zone is None else zone
+    pb = arm.pose.bones.get(bone)
+    out = set(zone)
+    for child in (pb.children if pb is not None else ()):
+        out -= onion.affected_bones(arm, {child.name})
+    out.add(bone)
+    return out
+
+
+def _sets(arm, d, bone):
+    """(zone, own): the indices of the bones with mass the bone carries / moves itself."""
+    import numpy as np
+    cache = d.setdefault("sets", {})
+    got = cache.get(bone)
+    if got is None:
+        idx = {n: i for i, n in enumerate(d["names"])}
+        zone = onion.affected_bones(arm, {bone})
+        own = own_bones(arm, bone, zone)
+        got = cache[bone] = (np.array(sorted(idx[n] for n in zone if n in idx), dtype=np.int64),
+                             np.array(sorted(idx[n] for n in own if n in idx), dtype=np.int64))
+    return got
 
 
 def _apply_limbs(arm, d, limbs):
-    """The masses with the limb weights: each controller's factor scales the bones it moves."""
-    m = d["m_base"].copy()
-    idx = {n: i for i, n in enumerate(d["names"])}
-    for name, f in limbs:
-        f = min(max(f, 0.02), 1e5)          # (never no mass at all: the center would be gone)
-        for b in onion.affected_bones(arm, {name}):
-            i = idx.get(b)
-            if i is not None:
-                m[i] *= f
-    d["m"] = m
+    """The masses with the weights set: every weight holds its part of the body exactly; the bones
+    of a part that have no weight of their own share what is left of it (as they compare); the
+    bones in no part share the rest of the body. Smaller parts are worked out first, so a hand
+    set inside an arm keeps the arm's weight (the rest of the arm makes up for it)."""
+    import numpy as np
+    base = d["m_base"]
+    total = float(base.sum()) or 1.0
+    m = base / total
+    b = m.copy()
+    fixed = np.zeros(len(m), dtype=bool)
+    parts = []
+    for name, part, share in limbs:
+        sel = _sets(arm, d, name)[0 if part == 'zone' else 1]
+        if len(sel):
+            parts.append((len(sel), sel, min(max(share, 0.0005), 0.99)))
+    for _n, sel, share in sorted(parts, key=lambda p: p[0]):
+        held = float(m[sel][fixed[sel]].sum())
+        free = sel[~fixed[sel]]
+        if len(free):
+            room = float(b[free].sum())
+            if room > 0.0:
+                m[free] = b[free] * max(share - held, 0.0005 * len(free)) / room
+        fixed[sel] = True
+    rest = ~fixed
+    if rest.any() and float(b[rest].sum()) > 0.0:
+        m[rest] = b[rest] * max(1.0 - float(m[fixed].sum()), 0.001) / float(b[rest].sum())
+    d["m"] = m * total
     d["limbs"] = limbs
 
 
@@ -173,44 +221,52 @@ def changed_all(arm):
     _schedule(0.05)
 
 
-def limb_share(arm, bone):
-    """How much of the body's mass the limb a controller moves is (0..1), or None (not worked
-    out yet, or it moves no bone with weight)."""
+def limb_share(arm, bone, part='zone'):
+    """How much of the body's mass the bone carries ('zone': it and what hangs on it; 'own': it
+    alone), 0..1, or None (not worked out yet, or no bone with weight)."""
     d = _mass.get(arm.name)
     if d is None or not d["names"]:
         return None
-    aff = onion.affected_bones(arm, {bone})
-    idx = [i for i, n in enumerate(d["names"]) if n in aff]
+    sel = _sets(arm, d, bone)[0 if part == 'zone' else 1]
     total = float(d["m"].sum())
-    if not idx or total <= 0.0:
+    if not len(sel) or total <= 0.0:
         return None
-    return float(d["m"][idx].sum()) / total
+    return float(d["m"][sel].sum()) / total
 
 
-def set_limb_share(arm, bone, share):
-    """Make the controller's limb this much of the body (the rest keeps its masses): its factor
-    is stored on the controller ("com_limb"); back to 1: the property goes."""
+def set_limb_share(arm, bone, share, part='zone'):
+    """Make the bone carry this much of the body ('zone': with what hangs on it; 'own': alone); it is
+    stored on the bone ("com_zone" / "com_own"), the other bones make up for it."""
     d = _mass.get(arm.name)
     pb = arm.pose.bones.get(bone)
-    now = limb_share(arm, bone)
+    now = limb_share(arm, bone, part)
     if d is None or pb is None or not now:
         return False
-    if now > WHOLE:
+    if part == 'zone' and limb_share(arm, bone, 'zone') > WHOLE:
         return False            # it moves the whole body: its weight can't move the center
-    share = min(max(share, 0.001), 0.95)
-    total = float(d["m"].sum())
-    m = now * total
-    want = share * (total - m) / (1.0 - share)
-    f = float(pb.get("com_limb", 1.0)) * want / m
-    if abs(f - 1.0) < 1e-4:
-        if "com_limb" in pb:
-            del pb["com_limb"]
-    else:
-        pb["com_limb"] = f
+    pb[WEIGHT_PROPS[part]] = min(max(share, 0.001), 0.95)
     _apply_limbs(arm, d, _limbs(arm))
     changed_all(arm)
-    flash_limb(arm, bone)
+    flash_limb(arm, bone, part)
     return True
+
+
+def reset_limb(arm, bone, part=None):
+    """The weight(s) set on the bone go: worked out from the meshes again."""
+    pb = arm.pose.bones.get(bone)
+    if pb is None:
+        return False
+    gone = False
+    for p in ([part] if part else list(WEIGHT_PROPS)):
+        if WEIGHT_PROPS[p] in pb:
+            del pb[WEIGHT_PROPS[p]]
+            gone = True
+    d = _mass.get(arm.name)
+    if gone and d is not None:
+        _apply_limbs(arm, d, _limbs(arm))
+        changed_all(arm)
+    flash_limb(arm, bone, part or 'zone')
+    return gone
 
 
 WHOLE = 0.97       # a controller moving more of the body than this moves all of it
@@ -219,9 +275,9 @@ WHOLE = 0.97       # a controller moving more of the body than this moves all of
 _flash = [None, 0.0, False]     # (armature, controller) lit up, when, its fade timer runs
 
 
-def flash_limb(arm, bone):
-    """Light up the limb for a moment (while its weight is being set)."""
-    _flash[:2] = [(arm.name, bone), time.time()]
+def flash_limb(arm, bone, part='zone'):
+    """Light up the limb (or the bone alone) for a moment (while its weight is being set)."""
+    _flash[:2] = [(arm.name, bone, part), time.time()]
 
     def fade():
         state.tag_redraw()
@@ -251,6 +307,8 @@ def _draw_flash(scene, us):
     if arm is None or arm.type != 'ARMATURE':
         return
     aff = onion.affected_bones(arm, {_flash[0][1]})
+    if len(_flash[0]) > 2 and _flash[0][2] == 'own':
+        aff = own_bones(arm, _flash[0][1], aff)
     tris = []
     for o in _meshes(scene, arm):
         p = onion._proxies.get(o.name)

@@ -257,23 +257,20 @@ class EMP_OT_reset_button(bpy.types.Operator):
 
 
 class EMP_OT_com_limb_reset(bpy.types.Operator):
-    """Set the limb's weight back to the one worked out from the meshes"""
+    """Set this weight back to the one worked out from the meshes"""
     bl_idname = "emp.com_limb_reset"
     bl_label = "Worked Out Weight"
     bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
+
+    part: EnumProperty(items=[('zone', "With What It Carries", ""), ('own', "Just This Bone", "")],
+                       default='zone')
 
     def execute(self, context):
         from . import com
         from .props import _limb_target
         arm, pb = _limb_target(context)
-        if arm is None or "com_limb" not in pb:
+        if arm is None or not com.reset_limb(arm, pb.name, self.part):
             return {'CANCELLED'}
-        del pb["com_limb"]
-        d = com._mass.get(arm.name)
-        if d is not None:
-            com._apply_limbs(arm, d, com._limbs(arm))
-            com.changed_all(arm)
-        com.flash_limb(arm, pb.name)
         return {'FINISHED'}
 
 

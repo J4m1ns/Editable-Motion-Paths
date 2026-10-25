@@ -469,7 +469,11 @@ class EMP_MT_context(bpy.types.Menu):
     def draw(self, context):
         layout = self.layout
         layout.operator_context = 'INVOKE_REGION_WIN'
-        layout.operator("emp.edit_value", text="Edit Value...", icon='GREASEPENCIL')
+        # (Edit Value types the values of one key: with several bones / objects selected it has
+        # nothing to show)
+        many = len(context.selected_pose_bones or []) > 1 if context.mode == 'POSE' else             len(context.selected_objects or []) > 1
+        if not many:
+            layout.operator("emp.edit_value", text="Edit Value...", icon='GREASEPENCIL')
         if getattr(state.settings(context.scene), "show_com", False):
             layout.operator("emp.edit_limb_weight", text="Edit Limb Weight...", icon_value=ops_easing.icon_id("com"))
         layout.separator()
@@ -757,40 +761,47 @@ def _draw_com(layout, st):
 
 
 def draw_limb_weight(layout, st):
-    """The Limb Weight of the active controller (center of mass), or why there is none."""
+    """The weights of the active bone (center of mass): with what it carries, and just itself - or
+    why there are none. (Several bones selected: the active one, the last clicked.)"""
     from . import com
-    from .props import _limb_target
+    from .props import _limb_target, weight_unit
     arm, pb = _limb_target()
     if arm is None:
-        layout.label(text="Limb Weight: select a controller", icon='INFO')
+        layout.label(text="Limb Weight: select a bone", icon='INFO')
         layout.label(text="(Pose Mode)")
         return
-    share = com.limb_share(arm, pb.name)
+    zone = com.limb_share(arm, pb.name, 'zone')
+    own = com.limb_share(arm, pb.name, 'own')
     col = layout.column(align=True)
-    if share is None:
+    if zone is None:
         col.label(text=pb.name, icon='INFO')
         col.label(text="moves no part with weight")
-    elif share > com.WHOLE:
+    elif zone > com.WHOLE:
         col.label(text=pb.name, icon='INFO')
         col.label(text="moves the whole body: pick the")
         col.label(text="chest, the hips or a limb")
     else:
-        col.label(text="Limb Weight: what %s moves" % pb.name)
-    from .props import weight_unit
+        col.label(text="Weight of %s" % pb.name)
     unit = weight_unit()
     if unit != 'PERCENT':
         layout.prop(st, "com_body_mass", text="Body Mass, kg")
-    if share is not None and share <= com.WHOLE or "com_limb" in pb:
+    suffix = "" if unit == 'PERCENT' else (", kg" if unit == 'KG' else ", lb")
+    for part, share_prop, mass_prop, text in (
+            ('zone', "com_limb_share", "com_limb_mass", "With What It Carries"),
+            ('own', "com_own_share", "com_own_mass", "Just This Bone")):
+        share = zone if part == 'zone' else own
+        stored = com.WEIGHT_PROPS[part] in pb
+        if part == 'own' and (own is None or zone is None or abs(own - zone) < 1e-6) and not stored:
+            continue            # (no child bones with weight: the same as the one above)
+        if share is None and not stored:
+            continue
         row = layout.row(align=True)
         sub = row.row(align=True)
-        sub.enabled = share is not None and share <= com.WHOLE
-        if unit == 'PERCENT':
-            sub.prop(st, "com_limb_share", text="Of the Body")
-        else:
-            sub.prop(st, "com_limb_mass", text="Mass, " + ("kg" if unit == 'KG' else "lb"))
+        sub.enabled = share is not None and (part == 'own' or share <= com.WHOLE)
+        sub.prop(st, share_prop if unit == 'PERCENT' else mass_prop, text=text + suffix)
         sub = row.row(align=True)
-        sub.enabled = "com_limb" in pb
-        sub.operator("emp.com_limb_reset", text="", icon='LOOP_BACK')
+        sub.enabled = stored
+        sub.operator("emp.com_limb_reset", text="", icon='LOOP_BACK').part = part
 
 
 def _draw_smoothing(layout, context):

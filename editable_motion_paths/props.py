@@ -19,18 +19,44 @@ def _limb_target(context=None):
     return (ob, pb) if pb is not None else (None, None)
 
 
-def _get_limb(self):
+def _share(part):
     from . import com
     arm, pb = _limb_target()
-    share = com.limb_share(arm, pb.name) if arm is not None else None
+    share = com.limb_share(arm, pb.name, part) if arm is not None else None
     return 100.0 * share if share else 0.0
 
 
-def _set_limb(self, value):
+def _set_share(value, part):
     from . import com
     arm, pb = _limb_target()
     if arm is not None:
-        com.set_limb_share(arm, pb.name, value / 100.0)
+        com.set_limb_share(arm, pb.name, value / 100.0, part)
+
+
+def _get_limb(self):
+    return _share('zone')
+
+
+def _set_limb(self, value):
+    _set_share(value, 'zone')
+
+
+def _get_own(self):
+    return _share('own')
+
+
+def _set_own(self, value):
+    _set_share(value, 'own')
+
+
+def _get_own_mass(self):
+    m = _get_own(self) / 100.0 * self.com_body_mass
+    return m * LB_PER_KG if weight_unit() == 'LB' else m
+
+
+def _set_own_mass(self, value):
+    kg = value / LB_PER_KG if weight_unit() == 'LB' else value
+    _set_own(self, 100.0 * kg / max(self.com_body_mass, 1e-6))
 
 
 LB_PER_KG = 2.2046226
@@ -284,12 +310,21 @@ class EMP_Settings(bpy.types.PropertyGroup):
         default='AUTO', description="Center of mass: where the floor is (the plumb line ends there, the "
                                     "support is what touches it)")
     com_limb_share: FloatProperty(
-        name="Limb Weight", subtype='PERCENTAGE', min=0.1, max=95.0, precision=1, get=_get_limb, set=_set_limb,
-        description="Center of mass: how much of the body's mass the limb this controller moves is (worked out "
-                    "from the meshes; set it by hand if it's off - a heavy boot, a prop in the hand). The limb "
-                    "lights up while it changes; the arrow sets it back to the worked out value")
+        name="With What It Carries", subtype='PERCENTAGE', min=0.1, max=95.0, precision=1, get=_get_limb,
+        set=_set_limb,
+        description="Center of mass: how much of the body's mass the active bone and what hangs on it are (the "
+                    "whole arm on the shoulder). Worked out from the meshes; set it where it's off and the other "
+                    "bones make up for it - the part keeps this weight also when a smaller part inside it gets "
+                    "its own. It lights up while it changes; the arrow: worked out again")
+    com_own_share: FloatProperty(
+        name="Just This Bone", subtype='PERCENTAGE', min=0.1, max=95.0, precision=1, get=_get_own, set=_set_own,
+        description="Center of mass: how much of the body's mass the active bone alone is, without its child "
+                    "bones (a hand without the fingers). The rest of the part it carries makes up for it")
+    com_own_mass: FloatProperty(
+        name="Just This Bone", min=0.0, soft_max=200.0, precision=2, get=_get_own_mass, set=_set_own_mass,
+        description="Center of mass: the mass of the active bone alone (in the unit set in the preferences)")
     com_limb_mass: FloatProperty(
-        name="Limb Mass", min=0.0, soft_max=200.0, precision=2, get=_get_limb_mass, set=_set_limb_mass,
+        name="With What It Carries", min=0.0, soft_max=200.0, precision=2, get=_get_limb_mass, set=_set_limb_mass,
         description="Center of mass: the mass of the limb this controller moves (its share of the Body Mass, in "
                     "the unit set in the preferences)")
     com_body_mass: FloatProperty(
