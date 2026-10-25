@@ -3,6 +3,7 @@ path. Keep the Path (default) retimes along the path, its shape stays; Channels 
 easing interpolation on the chosen channels, like in the Graph Editor."""
 
 import os
+import time
 
 import bpy
 from bpy.props import BoolProperty, BoolVectorProperty, EnumProperty, FloatProperty, IntProperty
@@ -86,10 +87,9 @@ class EMP_OT_easing_preset(bpy.types.Operator):
     blend: FloatProperty(name="Blend", default=0.0, min=0.0, max=0.5, subtype='FACTOR',
                          description="Keep the Path: how softly the easing joins the timing left as it is "
                                      "before From and after To (share of the part)")
-    fit: BoolProperty(name="Fit to Part", default=False,
-                      description="Keep the Path: the whole easing fitted into From - To (Out from 60%: only the "
-                                  "end slows down). Off: the easing of the whole selection, applied between "
-                                  "From and To only")
+    invert: BoolProperty(name="Invert", default=False,
+                         description="Keep the Path: the easing goes on outside From - To, the timing between them "
+                                     "stays")
     back: FloatProperty(name="Overshoot", default=1.70158, min=0.0, soft_max=5.0,
                         description="Back: how far it goes past the end")
     amplitude: FloatProperty(name="Amplitude", default=1.0, min=0.0, soft_max=3.0,
@@ -132,13 +132,19 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         x0 = min(max(event.mouse_region_x - w * 0.5, 4.0), max(region.width - w - 4.0, 4.0))
         y0 = min(max(event.mouse_region_y - h * 0.5, 4.0), max(top - h - 22.0 * us, 4.0))
         state.gallery = self._g = dict(area=context.area.as_pointer(), x0=x0, y0=y0, hover=None, drag=None,
-                                       edit=None, us=us)
+                                       edit=None, us=us, since=time.time(), mouse=(event.mouse_region_x,
+                                                                                   event.mouse_region_y))
         _preview_jobs.clear()
+        # (a tick now and then: the tip under a resting mouse shows without the mouse moving)
+        self._timer = context.window_manager.event_timer_add(0.1, window=context.window)
         context.window_manager.modal_handler_add(self)
         state.tag_redraw()
         return {'RUNNING_MODAL'}
 
     def _close(self, context, result):
+        if getattr(self, "_timer", None) is not None:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
         state.gallery = None
         _preview_jobs.clear()
         state.tag_redraw()
@@ -153,7 +159,7 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         self.channels = st.easing_channels
         self.strength = st.easing_strength
         self.start, self.end, self.blend = st.easing_from, st.easing_to, st.easing_blend
-        self.fit = st.easing_fit
+        self.invert = st.easing_invert
         return self.execute(context)
 
     def _typing(self, context, st, event):
@@ -186,7 +192,15 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         if g.get('edit') and v == 'PRESS' and t not in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE', 'LEFTMOUSE'}:
             return self._typing(context, st, event)
         hit = gallery_hit(context, g, mx, my)
+        if t == 'TIMER':
+            if g['hover'] is not None and not g.get('tip') and time.time() - g['since'] >= TIP_DELAY:
+                g['tip'] = True
+                state.tag_redraw()
+            return {'RUNNING_MODAL'}
         if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            if hit != g['hover']:
+                g['since'], g['tip'] = time.time(), False
+            g['mouse'] = (mx, my)
             g['hover'] = hit
             if g.get('move'):
                 # dragged by its frame: it goes with the mouse (kept inside the view)
@@ -204,6 +218,7 @@ class EMP_OT_easing_preset(bpy.types.Operator):
             return self._apply(context)
         elif t == 'LEFTMOUSE' and v in {'PRESS', 'DOUBLE_CLICK'}:
             g['edit'] = None
+            g['since'], g['tip'] = time.time() + 10.0, False     # (no tip right after a click)
             if hit is None:
                 if not gallery_inside(g, mx, my):
                     return self._close(context, {'CANCELLED'})      # a click outside: close
@@ -224,8 +239,8 @@ class EMP_OT_easing_preset(bpy.types.Operator):
                     _slider_from_mouse(context, st, g, hit[1], mx)
             elif hit[0] == 'ease':
                 st.easing_type = hit[1]                 # picked: the preview shows it, Apply puts it on
-            elif hit[0] == 'fit' and st.easing_mode == 'TIMING':
-                st.easing_fit = not st.easing_fit
+            elif hit[0] == 'invert' and st.easing_mode == 'TIMING':
+                st.easing_invert = not st.easing_invert
             elif hit[0] == 'apply':
                 return self._apply(context)
         elif t in {'RET', 'NUMPAD_ENTER', 'SPACE'} and v == 'PRESS':
@@ -254,7 +269,7 @@ class EMP_OT_easing_preset(bpy.types.Operator):
             col.prop(self, "start", slider=True)
             col.prop(self, "end", slider=True)
             col.prop(self, "blend", slider=True)
-            col.prop(self, "fit")
+            col.prop(self, "invert")
         else:
             labels = channel_labels(context) or ["1", "2", "3", "4"]
             row = layout.row(align=True, heading="Channels")
@@ -316,11 +331,11 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         pts, vals = job.pts, job.vals
         d0 = (pts[1] - pts[0]).normalized() if len(pts) > 1 else None
         d1 = (pts[-1] - pts[-2]).normalized() if len(pts) > 1 else None
-        # (the easing on the From / To part; outside it the timing stays - see eased_arc)
-        S, A, B = eased_arc(job, self._fn(), self.strength, self.start, self.end, self.blend, self.fit)
+        # (the easing between From and To - or, inverted, outside them; elsewhere the timing stays)
+        S, kept = eased_arc(job, self._fn(), self.strength, self.start, self.end, self.blend, self.invert)
 
         def target(t):
-            if t <= A or t >= B:
+            if kept(t):
                 return cache.solve(tg, t, job._at(pts, t), job._at(vals, t))
             s = S(t)
             if s > total and d1 is not None:
@@ -378,87 +393,81 @@ SLIDERS = (('strength', "Strength", "easing_strength"), ('from', "From", "easing
            ('to', "To", "easing_to"), ('blend', "Blend", "easing_blend"))
 
 
-def _speed(job, t):
-    """Distance along the path per frame at frame t of the part, as it is now."""
-    return (job._at(job.arc, t + 0.5) - job._at(job.arc, t - 0.5))
+TIPS = {
+    ('mode', 'TIMING'): "Keep the Path: retime along the path - its shape stays, only where the bone is on "
+                        "each frame changes",
+    ('mode', 'CHANNELS'): "Channels: Blender's easing interpolation on the chosen channels, like in the "
+                          "Graph Editor (the shape of the path changes too)",
+    ('dir', 'EASE_IN'): "In: starts slowly and speeds up",
+    ('dir', 'EASE_OUT'): "Out: starts fast and slows down to the end",
+    ('dir', 'EASE_IN_OUT'): "In & Out: slow at both ends, fastest in the middle",
+    ('chan', None): "Channels mode: this channel gets the easing (one always stays on)",
+    ('preview', None): "The speed of the selected part: gray as it is now, blue with the easing (the picture "
+                       "under the mouse, else the one picked). The light band: From - To",
+    ('slider', 'strength'): "How much of the easing (0: the timing as it was). The mouse wheel too. "
+                            "Ctrl+click: type a value",
+    ('slider', 'from'): "Where the easing begins: before it the timing stays as it is. Ctrl+click: type a value",
+    ('slider', 'to'): "Where the easing ends: after it the timing stays as it is. Ctrl+click: type a value",
+    ('slider', 'blend'): "How softly the eased part joins the timing kept as it is (at least two frames). "
+                         "Ctrl+click: type a value",
+    ('invert', None): "Invert: the easing goes on outside From - To, the timing between them stays",
+    ('apply', None): "Put the picked easing on the selected part (Enter). After it, the redo panel at the "
+                     "bottom left has all the settings",
+    ('ease', 'LINEAR'): "Linear: an even speed all the way",
+    ('ease', 'SINE'): "Sine: the gentlest easing",
+    ('ease', 'QUAD'): "Quadratic: a soft easing",
+    ('ease', 'CUBIC'): "Cubic: a clear easing - the usual one",
+    ('ease', 'QUART'): "Quartic: a strong easing",
+    ('ease', 'QUINT'): "Quintic: a very strong easing",
+    ('ease', 'EXPO'): "Exponential: almost a hold, then a burst (or the other way around)",
+    ('ease', 'CIRC'): "Circular: eases like a quarter circle - sharp at the very end",
+    ('ease', 'BACK'): "Back: goes a bit past the end and comes back (or backs up before it starts)",
+    ('ease', 'BOUNCE'): "Bounce: lands and bounces like a dropped ball",
+    ('ease', 'ELASTIC'): "Elastic: overshoots and wobbles in like a spring",
+}
+TIP_DELAY = 0.5     # seconds the mouse rests on something before its tip shows
 
 
-def window_easing(fn, frames, dist, v_in=None, v_out=None):
-    """The easing on a part of the selected range: G(u) from 0 to 1 over the part. Where the motion
-    goes on past the part (v_in: the speed coming in at its start; v_out: the speed going on after
-    its end, distance per frame) the part's time is bent a little (u -> phi(u)) so that the speed
-    there is the same as before - no jolt where the easing begins; the easing's own shape stays
-    elsewhere."""
-    if dist <= 1e-9 or frames <= 1e-6 or (v_in is None and v_out is None):
-        return fn
-    h = 1e-3
-    c0 = c1 = 0.0
-    if v_in is not None:
-        g0 = (fn(h) - fn(0.0)) / h * dist / frames     # the easing's own speed there
-        k = v_in / g0 if g0 > 1e-9 else 4.0
-        c0 = min(max(k - 1.0, -0.95), 3.0)
-    if v_out is not None:
-        g1 = (fn(1.0) - fn(1.0 - h)) / h * dist / frames
-        k = v_out / g1 if g1 > 1e-9 else 4.0
-        c1 = min(max(1.0 - k, -3.0), 0.95)
+def eased_arc(job, fn, strength, start, end, blend, invert=False):
+    """(S, kept): S(t) is how far along the path the motion is on frame t after the easing (the arc
+    length of the part, from 0 to its length), `strength` of it; kept(t): the timing there stays as
+    it was. Applying it and the preview use the same.
 
-    def G(u):
-        phi = u + c0 * u * (1.0 - u) ** 2 + c1 * u * u * (1.0 - u)
-        return fn(min(max(phi, 0.0), 1.0))
-    return G
-
-
-def eased_arc(job, fn, strength, start, end, blend, fit=False):
-    """S(t): how far along the path the motion is on frame t after the easing (the arc length of
-    the part, from 0 to its length), `strength` of it. Applying it and the preview use the same.
-
-    The easing of the whole selection, applied between From and To only: before / after them the
-    timing stays, and it joins the eased one over `blend` of the part (at least two frames, or the
-    path would jump). fit: the whole easing fitted into From - To instead, starting / ending with the
-    speed the motion has there (see window_easing), faded in over `blend`."""
+    The easing of the whole selection, put on between From and To only (invert: outside them):
+    elsewhere the timing stays, and the two join over `blend` of the part (at least two frames, or
+    the path would jump)."""
     r0, r1 = job.r0, job.r1
     lo, hi = sorted((start, end))
     if hi - lo < 0.02:
         lo, hi = 0.0, 1.0
     A, B = r0 + (r1 - r0) * lo, r0 + (r1 - r0) * hi
-    sA, sB = job._at(job.arc, A), job._at(job.arc, B)
     inside_lo, inside_hi = lo > 1e-3, hi < 1.0 - 1e-3
+    total = job.arc[-1]
+    ramp = min(max(blend * (B - A), 2.0), (B - A) * 0.5)
 
     def smooth(x):
         x = min(max(x, 0.0), 1.0)
         return x * x * (3.0 - 2.0 * x)
-    if not fit:
-        total = job.arc[-1]
-        ramp = min(max(blend * (B - A), 2.0), (B - A) * 0.5)
 
-        def M(t):
-            s0 = job._at(job.arc, t)
-            if t <= A or t >= B:
-                return s0
-            k = strength
+    def weight(t):
+        """How much of the easing on frame t (0..1)."""
+        if t <= A or t >= B:
+            w = 0.0
+        else:
+            w = 1.0
             if inside_lo:
-                k *= smooth((t - A) / ramp)
+                w *= smooth((t - A) / ramp)
             if inside_hi:
-                k *= smooth((B - t) / ramp)
-            return s0 + (total * fn((t - r0) / (r1 - r0)) - s0) * k
-        return M, A, B
-    G = window_easing(fn, B - A, sB - sA, _speed(job, A) if inside_lo else None,
-                      _speed(job, B) if inside_hi else None)
+                w *= smooth((B - t) / ramp)
+        return (1.0 - w if invert else w) * strength
 
     def S(t):
         s0 = job._at(job.arc, t)
-        if t <= A or t >= B:
-            return s0
-        u = (t - A) / (B - A)
-        k = strength
-        if blend > 1e-3:
-            # (the ends of the part inside the selection fade in / out: a softer change of speed)
-            if inside_lo:
-                k *= smooth(u / blend)
-            if inside_hi:
-                k *= smooth((1.0 - u) / blend)
-        return s0 + (sA + (sB - sA) * G(u) - s0) * k
-    return S, A, B
+        return s0 + (total * fn((t - r0) / (r1 - r0)) - s0) * weight(t)
+
+    def kept(t):
+        return weight(t) <= 0.0
+    return S, kept
 
 
 def _ui_scale():
@@ -509,11 +518,11 @@ def gallery_items(context, g, us):
     y -= _PREVIEW * us + gap
     out.append(('preview', None, x0 + pad, y, inner, _PREVIEW * us, ""))
     y -= row + gap
-    fw = 46.0 * us                          # (the Fit to Part switch at the end of the row)
+    fw = 58.0 * us                          # (the Invert switch at the end of the row)
     sw = (inner - fw - 4 * 4 * us) / 4
     for i, (key, label, _prop) in enumerate(SLIDERS):
         out.append(('slider', key, x0 + pad + i * (sw + 4 * us), y, sw, row, label))
-    out.append(('fit', None, x0 + pad + inner - fw, y, fw, row, "Fit"))
+    out.append(('invert', None, x0 + pad + inner - fw, y, fw, row, "Invert"))
     y -= _WIDE * us + gap
     out.append(('ease', 'LINEAR', x0 + pad, y, inner, _WIDE * us, "Linear"))
     tile = _TILE * us
@@ -626,9 +635,9 @@ def preview_speeds(context, st, kind, n=64):
     def fn(u):
         return easing.ease(kind, direction, u, *p) if kind != 'LINEAR' else u
     timing = st.easing_mode == 'TIMING'
-    S, _A, _B = eased_arc(job, fn, st.easing_strength if timing else 1.0, st.easing_from if timing else 0.0,
-                          st.easing_to if timing else 1.0, st.easing_blend if timing else 0.0,
-                          st.easing_fit and timing)
+    S, _kept = eased_arc(job, fn, st.easing_strength if timing else 1.0, st.easing_from if timing else 0.0,
+                         st.easing_to if timing else 1.0, st.easing_blend if timing else 0.0,
+                         st.easing_invert and timing)
     ts = [r0 + (r1 - r0) * i / n for i in range(n + 1)]
     h = (r1 - r0) / n * 0.5
     before = [abs(job._at(job.arc, min(t + h, r1)) - job._at(job.arc, max(t - h, r0))) /
@@ -703,8 +712,8 @@ def draw_gallery(ctx, us):
                 text("%s: %s|" % (label, g['edit']['text']), x + bw * 0.5, y + bh * 0.5, col=(1.0, 0.85, 0.4, 1.0))
             else:
                 text("%s %d%%" % (label, round(value * 100)), x + bw * 0.5, y + bh * 0.5, col=col)
-        elif kind == 'fit':
-            on = timing and st.easing_fit
+        elif kind == 'invert':
+            on = timing and st.easing_invert
             draw._rounded_rect(x, y, bw, bh, 4.0 * us, blue if on else (lit if over and timing else dark))
             text(label, x + bw * 0.5, y + bh * 0.5, col=(1.0, 1.0, 1.0, 0.92 if timing else 0.35))
         elif kind == 'apply':
@@ -729,12 +738,46 @@ def draw_gallery(ctx, us):
                 s = bw - 26.0 * us
                 picture("ease_%s_%s" % (val, st.easing_direction), x + (bw - s) * 0.5, y + 20.0 * us, s)
                 text(label, x + bw * 0.5, y + 11.0 * us)
+    tip = g.get('tip') and g.get('hover') and not g.get('drag') and not g.get('move') and not g.get('edit')
+    if tip:
+        _draw_tip(ctx, g, us, text)
     # the hint above the gallery, or below it where there is no room above
     region = ctx.region
     room = region.height - _covered_top(ctx.area, region) if region is not None and ctx.area is not None else 1e9
     hint_y = g['y0'] + h + 12.0 * us if g['y0'] + h + 22.0 * us < room else g['y0'] - 12.0 * us
     text("Click: pick (the preview shows it)     Enter / double click: apply     Ctrl+click a slider: type     "
          "Drag its frame: move it     Esc: close", g['x0'] + w * 0.5, hint_y, size=10, col=(1.0, 1.0, 1.0, 0.7))
+
+
+def _draw_tip(ctx, g, us, text):
+    """The tip of what the mouse rests on: a dark box next to it, like Blender's tooltips."""
+    import blf
+    from . import draw
+    kind, val = g['hover']
+    msg = TIPS.get((kind, val)) or TIPS.get((kind, None))
+    if not msg:
+        return
+    words, lines, line = msg.split(), [], ""
+    for w_ in words:
+        if len(line) + len(w_) + 1 > 46:
+            lines.append(line)
+            line = w_
+        else:
+            line = (line + " " + w_).strip()
+    lines.append(line)
+    blf.size(0, 11 * us)
+    lh = 15.0 * us
+    tw = max(blf.dimensions(0, ln)[0] for ln in lines)
+    w, h = tw + 16.0 * us, lh * len(lines) + 10.0 * us
+    mx, my = g['mouse']
+    region = ctx.region
+    x = min(mx + 14.0 * us, region.width - w - 4.0) if region else mx + 14.0 * us
+    y = my - 18.0 * us - h
+    if y < 4.0:
+        y = my + 18.0 * us
+    draw._rounded_rect(x, y, w, h, 4.0 * us, (0.05, 0.05, 0.06, 0.97))
+    for i, ln in enumerate(lines):
+        text(ln, x + 8.0 * us, y + h - 5.0 * us - lh * (i + 0.5), size=11, left=True)
 
 
 def _outline(x, y, w, h, us, col):
@@ -762,9 +805,15 @@ def _draw_preview(ctx, st, kind, x, y, w, h, us, text):
     def P(i, v):
         return (gx + gw * i / (len(ts) - 1), gy + gh * min(v / top, 1.05))
     if st.easing_mode == 'TIMING' and (st.easing_from > 1e-3 or st.easing_to < 1.0 - 1e-3):
-        # the part the easing works on
+        # the part the easing works on (inverted: the parts outside From - To)
         a, b = sorted((st.easing_from, st.easing_to))
-        draw._rounded_rect(gx + gw * a, gy, max(gw * (b - a), 2.0), gh, 2.0 * us, (0.2, 0.25, 0.35, 0.5))
+        band = (0.2, 0.25, 0.35, 0.5)
+        if st.easing_invert:
+            for u0, u1 in ((0.0, a), (b, 1.0)):
+                if u1 - u0 > 1e-3:
+                    draw._rounded_rect(gx + gw * u0, gy, max(gw * (u1 - u0), 2.0), gh, 2.0 * us, band)
+        else:
+            draw._rounded_rect(gx + gw * a, gy, max(gw * (b - a), 2.0), gh, 2.0 * us, band)
     fill = []
     for i in range(len(ts) - 1):
         (x0, y0), (x1, y1) = P(i, after[i]), P(i + 1, after[i + 1])
@@ -806,7 +855,7 @@ def draw_presets(layout, context):
         row.prop(st, "easing_from", slider=True)
         row.prop(st, "easing_to", slider=True)
         col.prop(st, "easing_blend", slider=True)
-        col.prop(st, "easing_fit")
+        col.prop(st, "easing_invert")
 
     def setup(op, kind):
         op.easing = kind
@@ -815,7 +864,7 @@ def draw_presets(layout, context):
         op.channels = st.easing_channels
         op.strength = st.easing_strength
         op.start, op.end, op.blend = st.easing_from, st.easing_to, st.easing_blend
-        op.fit = st.easing_fit
+        op.invert = st.easing_invert
     setup(layout.operator("emp.easing_preset", text="Linear", icon_value=icon_id("ease_LINEAR")), 'LINEAR')
     grid = layout.grid_flow(row_major=True, columns=5, even_columns=True, even_rows=True, align=False)
     for kind, name in easing.TYPES:

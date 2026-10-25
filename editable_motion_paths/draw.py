@@ -173,11 +173,24 @@ def _in(t, lo, hi):
 # Primitives
 # ----------------------------------------------------------------------------
 
+def smooth_on():
+    """Anti-aliased lines and dots (the preferences: Smooth Display)."""
+    from .props import prefs
+    p = prefs()
+    return p is None or p.smooth_display
+
+
+def _aa(sh):
+    """A polyline shader with its edges anti-aliased (or not, as set)."""
+    sh.uniform_bool("lineSmooth", [smooth_on()])
+    return sh
+
+
 def _lines(coords, colors, width, kind='LINES'):
     if len(coords) < 2:
         return
     region = bpy.context.region
-    sh = gpu.shader.from_builtin('POLYLINE_SMOOTH_COLOR')
+    sh = _aa(gpu.shader.from_builtin('POLYLINE_SMOOTH_COLOR'))
     sh.uniform_float("viewportSize", (region.width, region.height))
     sh.uniform_float("lineWidth", width)
     batch_for_shader(sh, kind, {"pos": coords, "color": colors}).draw(sh)
@@ -200,6 +213,34 @@ def _disc_template():
             tris += [(0.0, 0.0), a, b]
         _DISC = np.array(tris, dtype=np.float32)
     return _DISC
+
+
+_SOFT = {}       # radius -> (positions, alpha factors, triangles) of a disc with a soft edge
+
+
+def _soft_disc(radius):
+    """A disc of this radius whose edge fades out over a pixel (anti-aliased): (positions (V, 2),
+    alpha factors (V,), triangles (T, 3) indexing them). The middle and a ring half a pixel inside
+    the edge at full alpha, a ring half a pixel outside it at none. Small dots get fewer segments."""
+    import numpy as np
+    got = _SOFT.get(radius)
+    if got is not None:
+        return got
+    n = int(max(8, min(24, radius * 2.0)))
+    a = np.linspace(0.0, 2.0 * np.pi, n + 1)[:-1]
+    ring = np.stack([np.cos(a), np.sin(a)], axis=1)
+    pos = np.concatenate([[(0.0, 0.0)], ring * max(radius - 0.5, 0.0), ring * (radius + 0.5)]).astype(np.float32)
+    fade = np.concatenate([np.ones(n + 1), np.zeros(n)]).astype(np.float32)
+    i = np.arange(n)
+    j = (i + 1) % n
+    inner, outer = 1 + i, 1 + n + i
+    tris = np.concatenate([np.stack([np.zeros(n, dtype=int), inner, 1 + j], axis=1),
+                           np.stack([inner, outer, 1 + n + j], axis=1),
+                           np.stack([inner, 1 + n + j, 1 + j], axis=1)]).astype(np.int32)
+    if len(_SOFT) > 256:
+        _SOFT.clear()
+    got = _SOFT[radius] = (pos, fade, tris)
+    return got
 
 
 class Discs:
@@ -228,7 +269,8 @@ class Discs:
         if not self.groups:
             return
         import numpy as np
-        sh = gpu.shader.from_builtin('UNIFORM_COLOR')
+        smooth = smooth_on()
+        sh = gpu.shader.from_builtin('SMOOTH_COLOR' if smooth else 'UNIFORM_COLOR')
         disc = _disc_template()
         # bigger (outline) discs first
         for (radius, color), items in sorted(self.groups.items(), key=lambda kv: -kv[0][0]):
@@ -237,9 +279,19 @@ class Discs:
             if single:
                 parts.append(np.array(single, dtype=np.float32))
             c = np.concatenate(parts) if len(parts) > 1 else parts[0]
-            tris = (c[:, None, :] + disc[None, :, :] * radius).reshape(-1, 2)
-            sh.uniform_float("color", color)
-            batch_for_shader(sh, 'TRIS', {"pos": tris}).draw(sh)
+            if smooth:
+                # a soft edge a pixel wide (alpha fading out): no jagged rims
+                pos, fade, tri = _soft_disc(radius)
+                verts = (c[:, None, :] + pos[None, :, :]).reshape(-1, 2)
+                cols = np.tile(np.array(color, dtype=np.float32), (len(fade), 1))
+                cols[:, 3] *= fade
+                ind = (tri[None, :, :] + (np.arange(len(c), dtype=np.int32) * len(pos))[:, None, None]).reshape(-1, 3)
+                batch_for_shader(sh, 'TRIS', {"pos": verts, "color": np.tile(cols, (len(c), 1))},
+                                 indices=ind).draw(sh)
+            else:
+                tris = (c[:, None, :] + disc[None, :, :] * radius).reshape(-1, 2)
+                sh.uniform_float("color", color)
+                batch_for_shader(sh, 'TRIS', {"pos": tris}).draw(sh)
 
 
 def project_many(region, rv3d, pts):
@@ -359,7 +411,7 @@ def _draw_path_runs(st, cache, editable, cur, lo, hi, us):
            tuple(st.color), round(st.jitter_threshold, 5), editable, lo, hi, st.show_repeats,
            cur if st.color_mode == 'TIME' else None)
     kept = getattr(cache, "_run_batches", None)
-    sh = gpu.shader.from_builtin('POLYLINE_SMOOTH_COLOR')
+    sh = _aa(gpu.shader.from_builtin('POLYLINE_SMOOTH_COLOR'))
     if kept is None or kept[0] != key:
         made = []
         for pts, cols, kind in _path_colors(st, cache, editable, cur, lo, hi):
@@ -677,7 +729,7 @@ def _draw_rot_ribbon(st, cache, lo, hi, editable, us):
         return
     sh = gpu.shader.from_builtin('SMOOTH_COLOR')
     kept[1][0].draw(sh)
-    lsh = gpu.shader.from_builtin('POLYLINE_SMOOTH_COLOR')
+    lsh = _aa(gpu.shader.from_builtin('POLYLINE_SMOOTH_COLOR'))
     region = bpy.context.region
     lsh.uniform_float("viewportSize", (region.width, region.height))
     lsh.uniform_float("lineWidth", 1.0 * us)
@@ -1060,7 +1112,7 @@ def _flat(pts, color, kind='LINES', width=None):
             pts = list(pts) + [pts[0]]
             kind = 'LINE_STRIP'
         region = bpy.context.region
-        sh = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+        sh = _aa(gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR'))
         sh.uniform_float("viewportSize", (region.width, region.height) if region else (1.0, 1.0))
         sh.uniform_float("lineWidth", max(width or gpu.state.line_width_get(), 1.0))
     else:

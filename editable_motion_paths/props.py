@@ -310,21 +310,21 @@ class EMP_Settings(bpy.types.PropertyGroup):
         default='AUTO', description="Center of mass: where the floor is (the plumb line ends there, the "
                                     "support is what touches it)")
     com_limb_share: FloatProperty(
-        name="With What It Carries", subtype='PERCENTAGE', min=0.1, max=95.0, precision=1, get=_get_limb,
+        name="Limb Weight", subtype='PERCENTAGE', min=0.1, max=95.0, precision=1, get=_get_limb,
         set=_set_limb,
         description="Center of mass: how much of the body's mass the active bone and what hangs on it are (the "
                     "whole arm on the shoulder). Worked out from the meshes; set it where it's off and the other "
                     "bones make up for it - the part keeps this weight also when a smaller part inside it gets "
                     "its own. It lights up while it changes; the arrow: worked out again")
     com_own_share: FloatProperty(
-        name="Just This Bone", subtype='PERCENTAGE', min=0.1, max=95.0, precision=1, get=_get_own, set=_set_own,
+        name="Bone Weight", subtype='PERCENTAGE', min=0.1, max=95.0, precision=1, get=_get_own, set=_set_own,
         description="Center of mass: how much of the body's mass the active bone alone is, without its child "
                     "bones (a hand without the fingers). The rest of the part it carries makes up for it")
     com_own_mass: FloatProperty(
-        name="Just This Bone", min=0.0, soft_max=200.0, precision=2, get=_get_own_mass, set=_set_own_mass,
+        name="Bone Weight", min=0.0, soft_max=200.0, precision=2, get=_get_own_mass, set=_set_own_mass,
         description="Center of mass: the mass of the active bone alone (in the unit set in the preferences)")
     com_limb_mass: FloatProperty(
-        name="With What It Carries", min=0.0, soft_max=200.0, precision=2, get=_get_limb_mass, set=_set_limb_mass,
+        name="Limb Weight", min=0.0, soft_max=200.0, precision=2, get=_get_limb_mass, set=_set_limb_mass,
         description="Center of mass: the mass of the limb this controller moves (its share of the Body Mass, in "
                     "the unit set in the preferences)")
     com_body_mass: FloatProperty(
@@ -409,10 +409,9 @@ class EMP_Settings(bpy.types.PropertyGroup):
     easing_blend: FloatProperty(name="Blend", default=0.0, min=0.0, max=0.5, subtype='FACTOR', update=_redraw,
                                 description="Keep the Path: how softly the easing joins the timing left as it "
                                             "is before From and after To (share of the part)")
-    easing_fit: BoolProperty(name="Fit to Part", default=False, update=_redraw,
-                             description="Keep the Path: the whole easing is fitted into From - To (Out from 60%: "
-                                         "only the end slows down, the speed carries on into it). Off: the easing "
-                                         "is the one of the whole selection, From / To only say where it applies")
+    easing_invert: BoolProperty(name="Invert", default=False, update=_redraw,
+                                description="Keep the Path: the easing goes on outside From - To, the timing between "
+                                            "them stays as it is")
     easing_from: FloatProperty(name="From", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_redraw,
                                description="Keep the Path: where in the selected part the easing begins "
                                            "(before it the timing stays; e.g. Out from 60%: only the end "
@@ -540,6 +539,10 @@ class EMP_Preferences(bpy.types.AddonPreferences):
     rot_ribbon_width: FloatProperty(name="Ribbon Width", default=1.0, min=0.05, soft_max=4.0,
                                     update=_redraw, description="Rotation ribbon: how wide it is")
     scale_box_size: FloatProperty(name="Box Size", default=1.0, min=0.05, soft_max=5.0, update=_redraw)
+    smooth_display: BoolProperty(
+        name="Smooth Display", default=True, update=_redraw,
+        description="Anti-aliased lines and dots (paths, keys, handles, ribbons, charts): softer edges, a "
+                    "little more drawing work")
     scale_y_display: EnumProperty(
         name="Scale Y", update=_redraw,
         items=[('RIBBON', "Ribbon", "The Y scale is a third ribbon beside the other two, as wide as it; drag "
@@ -640,6 +643,7 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         col.prop(self, "ribbon_width", text="Scale Ribbon Width")
         col.prop(self, "scale_box_size", text="Scale Box Size")
         col.prop(self, "scale_y_display")
+        col.prop(self, "smooth_display")
         layout.separator()
         col = layout.column()
         col.label(text="Onion Skin")
@@ -702,6 +706,7 @@ def _pref_property(name):
 
 PREF_NAMES = ("color", "jitter_threshold", "show_ghost", "show_spokes", "show_repeats", "on_top", "line_width",
               "key_size", "rot_length", "ribbon_width", "rot_ribbon_width", "scale_box_size", "scale_y_display",
+              "smooth_display",
               "onion_color_before", "onion_color_after",
               "onion_other_display", "graph_corner", "graph_margin_x", "graph_margin_y", "graph_width",
               "chart_height", "speed_height", "graph_text_size", "graph_bg", "speed_curve_color", "speed_fill_opacity",

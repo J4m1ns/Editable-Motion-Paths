@@ -244,7 +244,19 @@ def set_limb_share(arm, bone, share, part='zone'):
         return False
     if part == 'zone' and limb_share(arm, bone, 'zone') > WHOLE:
         return False            # it moves the whole body: its weight can't move the center
-    pb[WEIGHT_PROPS[part]] = min(max(share, 0.001), 0.95)
+    share = min(max(share, 0.001), 0.95)
+    # the weight worked out without this one: set to that (a drag cancelled with a right click puts
+    # the value it began with back), nothing is stored - the reset arrow stays off
+    others = tuple(item for item in _limbs(arm) if not (item[0] == bone and item[1] == part))
+    probe = dict(d)
+    _apply_limbs(arm, probe, others)
+    sel = _sets(arm, d, bone)[0 if part == 'zone' else 1]
+    natural = float(probe["m"][sel].sum()) / max(float(probe["m"].sum()), 1e-12)
+    if abs(share - natural) < 5e-4:
+        if WEIGHT_PROPS[part] in pb:
+            del pb[WEIGHT_PROPS[part]]
+    else:
+        pb[WEIGHT_PROPS[part]] = share
     _apply_limbs(arm, d, _limbs(arm))
     changed_all(arm)
     flash_limb(arm, bone, part)

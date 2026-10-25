@@ -760,7 +760,7 @@ def _draw_com(layout, st):
     draw_limb_weight(layout, st)
 
 
-def draw_limb_weight(layout, st):
+def draw_limb_weight(layout, st, body_mass=True):
     """The weights of the active bone (center of mass): with what it carries, and just itself - or
     why there are none. (Several bones selected: the active one, the last clicked.)"""
     from . import com
@@ -783,12 +783,13 @@ def draw_limb_weight(layout, st):
     else:
         col.label(text="Weight of %s" % pb.name)
     unit = weight_unit()
-    if unit != 'PERCENT':
+    if unit != 'PERCENT' and body_mass:
+        # (the center's panel; the right-click popup is for the weights alone)
         layout.prop(st, "com_body_mass", text="Body Mass, kg")
     suffix = "" if unit == 'PERCENT' else (", kg" if unit == 'KG' else ", lb")
     for part, share_prop, mass_prop, text in (
-            ('zone', "com_limb_share", "com_limb_mass", "With What It Carries"),
-            ('own', "com_own_share", "com_own_mass", "Just This Bone")):
+            ('zone', "com_limb_share", "com_limb_mass", "Limb Weight"),
+            ('own', "com_own_share", "com_own_mass", "Bone Weight")):
         share = zone if part == 'zone' else own
         stored = com.WEIGHT_PROPS[part] in pb
         if part == 'own' and (own is None or zone is None or abs(own - zone) < 1e-6) and not stored:

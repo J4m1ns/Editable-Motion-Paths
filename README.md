@@ -230,14 +230,13 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   on), like in the Graph Editor. *Bounce* has *Bounces* and *Bounciness*, *Elastic* its
   amplitude and period. *From* / *To* (Keep the Path): the easing of the whole selection is put on
   between them only - before and after them the timing stays as it was, and *Blend* (at least two
-  frames) is how softly the two join. **Fit to Part** fits the whole easing into From - To instead:
-  *Out* from 60% then slows down only the end (the speed carries on smoothly into the slow-down;
-  with the keys on their frames, the part in between goes a bit faster to make up for it). **P** opens them as a gallery under the mouse: a
+  frames) is how softly the two join. **Invert** turns the mask around: the easing goes on outside
+  From - To, and the timing between them stays. **P** opens them as a gallery under the mouse: a
   **preview** of the selected part's speed (now in gray, with the easing in blue) shows what a
   picture does as soon as the mouse is on it; click a picture to pick it, tune *Strength*,
-  *From*, *To*, *Blend*, *Fit* while watching the preview (drag a slider, or Ctrl+click it to type a
-  value), then **Apply** (or Enter, or double-click the picture). The redo panel has all the
-  settings after that.
+  *From*, *To*, *Blend*, *Invert* while watching the preview (drag a slider, or Ctrl+click it to type a
+  value), then **Apply** (or Enter, or double-click the picture). Resting the mouse on anything in
+  the gallery shows what it does. The redo panel has all the settings after that.
 
 ## Shape tools
 
@@ -393,9 +392,9 @@ for the edited armature or the active one, with or without a path:
 The mass of every deform bone is worked out once from its vertex weights (with a *Preparing
 center of mass* note): each vertex counts its area times its distance from the bone, about the
 volume around it, so a torso weighs more than a hand. **Weights** (the center's settings): the
-active bone in Pose Mode (the last one clicked) shows two weights - **With What It Carries** (the
+active bone in Pose Mode (the last one clicked) shows two weights - **Limb Weight** (the
 bone and what hangs on it: the shoulder carries the whole arm; for a controller, everything it
-moves) and **Just This Bone** (without its child bones: a hand without the fingers). Set them
+moves) and **Bone Weight** (without its child bones: a hand without the fingers). Set them
 where they're off (a heavy boot, a prop in the hand) and the other bones make up for it: a part
 keeps its weight also when a smaller part inside it gets its own (set the arm to 6%, then the hand
 to 1%: the arm stays 6%, the rest of it shares the other 5%), and the bones in no part share the
@@ -421,7 +420,7 @@ moves along with the parent when the frame changes.
 The color button in the tool header (or **U**) opens the display settings you change while
 animating, only those of the current mode (1-4); the sidebar's *Display* panel has all of them.
 The ones you set once - colors, line width, key size, ribbon widths, the rotation path length,
-Scale Y as color or ribbon, In Front, Ghost While Editing, Loop Repeats, Bone Lines - are in the
+Scale Y as color or ribbon, Smooth Display, In Front, Ghost While Editing, Loop Repeats, Bone Lines - are in the
 add-on's preferences (*Colors, Sizes, Keys...* at the bottom of the sidebar's Display panel),
 the same in every file.
 
@@ -435,6 +434,9 @@ the same in every file.
   color, in the display settings) sets the sensitivity.
 * Baked keys (a key every frame or two) are drawn as small dots, so dense motion stays
   readable.
+* **Smooth Display** (the add-on's preferences, on by default) draws the lines and dots
+  anti-aliased. It costs about 0.2 ms a redraw on a usual scene (some 7% with 60 paths and all
+  their keys selected); turn it off for crisp pixel edges or the last bit of speed.
 * Turning off **Show Overlays** hides the paths, and viewport hotkeys then work as in plain
   Blender.
 * A key with a dark center is keyed on only some channels. *Pin Partial Keys* keeps such keys

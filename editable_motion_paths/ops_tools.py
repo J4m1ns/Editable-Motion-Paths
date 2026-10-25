@@ -262,7 +262,8 @@ class EMP_OT_com_limb_reset(bpy.types.Operator):
     bl_label = "Worked Out Weight"
     bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
 
-    part: EnumProperty(items=[('zone', "With What It Carries", ""), ('own', "Just This Bone", "")],
+    part: EnumProperty(name="Part", items=[('zone', "Limb Weight", "The bone with what hangs on it"),
+                                           ('own', "Bone Weight", "The bone alone")],
                        default='zone')
 
     def execute(self, context):
@@ -296,7 +297,7 @@ class EMP_OT_edit_limb_weight(bpy.types.Operator):
 
     def draw(self, context):
         from .ui import draw_limb_weight
-        draw_limb_weight(self.layout, state.settings(context.scene))
+        draw_limb_weight(self.layout, state.settings(context.scene), body_mass=False)
 
     def execute(self, context):
         return {'FINISHED'}
