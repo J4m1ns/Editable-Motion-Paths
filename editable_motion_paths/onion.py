@@ -634,11 +634,17 @@ def changed():
 
 def all_frames(scene, st, limit=250):
     """Every frame a ghost can be on (to capture ahead of time): the keys (spaced like the ghosts),
-    or every step frames, within the scene's (preview) range."""
+    or every step frames, within the scene's (preview) range - and only so many frames around the
+    current one (the preferences: Ghosts Ahead), not the whole timeline."""
     if scene.use_preview_range:
         f0, f1 = scene.frame_preview_start, scene.frame_preview_end
     else:
         f0, f1 = scene.frame_start, scene.frame_end
+    from .props import prefs
+    p = prefs()
+    ahead = p.onion_cache_range if p is not None else 10
+    cur = scene.frame_current
+    f0, f1 = max(f0, cur - ahead), min(f1, cur + ahead)
     if st.onion_step > 0:
         return [f for f in range(f0, f1 + 1)][:limit]
     keys = _key_frames(scene)
@@ -1107,8 +1113,13 @@ def draw(scene, st, us):
         clear()
         _sig = sig
     if _previewed and scene.frame_current != _previewed_at[0]:
-        # ghosts of a pose that wasn't keyed: another frame now, that pose is gone
-        _stale.update(f for f in _previewed if f in _frames)
+        # ghosts of a pose that wasn't keyed: another frame now, that pose is gone - they go at
+        # once (not drawn on until each is captured again)
+        for f in _previewed:
+            _frames.pop(f, None)
+            _stale.discard(f)
+        for key in [k for k in _batches if k[0] in _previewed]:
+            del _batches[key]
         _previewed.clear()
         _schedule()
     shows = frames_to_show(scene, st)

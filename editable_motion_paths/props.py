@@ -483,6 +483,10 @@ class EMP_Preferences(bpy.types.AddonPreferences):
                                             default=(1.0, 0.35, 0.3), update=_redraw)
     onion_color_after: FloatVectorProperty(name="After", subtype='COLOR', size=3, min=0.0, max=1.0,
                                            default=(0.3, 0.75, 1.0), update=_redraw)
+    onion_cache_range: IntProperty(
+        name="Ghosts Ahead", default=10, min=0, soft_max=100, update=_redraw,
+        description="Onion skin: the ghosts are captured ahead of time this many frames before and after the "
+                    "current frame (the ones shown always are); more: smoother playback, more work")
     onion_other_display: EnumProperty(
         name="Other Objects", update=_redraw,
         description="Onion skin: how objects without a shape of their own (speakers, light probes, force "
@@ -575,6 +579,7 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         col.prop(self, "onion_color_before", text="Before")
         col.prop(self, "onion_color_after", text="After")
         col.prop(self, "onion_other_display")
+        col.prop(self, "onion_cache_range")
         layout.separator()
         col = layout.column()
         col.label(text="Center of Mass")
