@@ -764,11 +764,6 @@ def draw_brushes(layout, context):
     col = layout.column(heading="Dissolve", align=True)
     col.prop(bs, "dissolve_tolerance")
     col.prop(bs, "dissolve_keep_timing")
-    col = layout.column(align=True)
-    for line in ("F: radius    Shift+F: strength", "Ctrl: the opposite effect",
-                 "Shift: Smooth    Ctrl+Shift: Even    Alt: Dissolve", "Right click: these settings",
-                 "Selected keys mask the path (only that part changes)", "Alt+A: clear the mask"):
-        col.label(text=line)
 
 
 class EMP_PT_sculpt_brushes(bpy.types.Panel):

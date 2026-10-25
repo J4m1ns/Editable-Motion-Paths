@@ -46,7 +46,9 @@ def busy():
 def _edited(scene):
     """{armature name: {edited bone names}} and [edited objects that aren't armatures]."""
     arms, objs = {}, []
-    for c in state.editable_caches(scene):
+    for c in state.visible_caches(scene):
+        if not c.owner_selected():
+            continue
         obj = bpy.data.objects.get(c.obj_name)
         if obj is None:
             continue
@@ -90,8 +92,14 @@ def _key_frames(scene):
                     continue
                 frames.update(round(kp.co[0]) for kp in fc.keyframe_points)
         for ob in objs:
-            for fc in compat.get_fcurves(ob) or []:
-                frames.update(round(kp.co[0]) for kp in fc.keyframe_points)
+            # its own keys, or (no keys: a child of something animated) its parents'
+            o = ob
+            while o is not None:
+                for fc in compat.get_fcurves(o) or []:
+                    frames.update(round(kp.co[0]) for kp in fc.keyframe_points)
+                if frames:
+                    break
+                o = o.parent
         return frames
     # the selected bones' keys; with fewer than two (a mechanism bone), the whole rig's
     sel = collect(True)
@@ -142,18 +150,75 @@ def _targets(scene):
     for name in arms:
         arm = bpy.data.objects[name]
         for o in scene.objects:
-            if o.type != 'MESH' or not o.visible_get():
+            if not o.visible_get():
                 continue
-            if any(m.type == 'ARMATURE' and m.object == arm and m.show_viewport for m in o.modifiers):
+            if o.type == 'MESH' and any(m.type == 'ARMATURE' and m.object == arm and m.show_viewport
+                                        for m in o.modifiers):
                 add(o, arm, 'DEFORM')
-            elif o.parent == arm:
-                add(o, arm, 'RIGID')
+            elif o.parent == arm and _how(o):
+                add(o, arm, _how(o))
     for obj in objs:
-        add(obj, None, 'RIGID' if obj.type in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'} else 'LINES')
+        if _how(obj):
+            add(obj, None, _how(obj))
         for o in obj.children_recursive:
-            if o.visible_get():
-                add(o, None, 'RIGID' if o.type in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'} else 'LINES')
+            if o.visible_get() and _how(o):
+                add(o, None, _how(o))
     return out
+
+
+def _how(o):
+    """How an object is ghosted: 'RIGID' (its mesh, or a curve / text / surface turned into one),
+    'LINES' (a shape of lines: camera, light, empty...), None (metaballs: their shape changes
+    all the time)."""
+    if o.type in {'MESH', 'CURVE', 'SURFACE', 'FONT'}:
+        return 'RIGID'
+    if o.type == 'META':
+        return None
+    return 'LINES'
+
+
+def _has_faces(o):
+    """A ghost of it can be a silhouette: a mesh with faces, a curve with thickness, a text..."""
+    if o.type == 'MESH':
+        return len(o.data.polygons) > 0
+    if o.type == 'CURVE':
+        cu = o.data
+        return cu.bevel_depth > 0.0 or cu.extrude > 0.0 or \
+            (cu.bevel_mode == 'OBJECT' and cu.bevel_object is not None) or \
+            (cu.dimensions == '2D' and cu.fill_mode != 'NONE' and any(sp.use_cyclic_u for sp in cu.splines))
+    return o.type in {'SURFACE', 'FONT'}
+
+
+_modes_cache = [None, 0.0, None]
+
+
+def modes(scene):
+    """The onion modes that show something for what is ghosted now: Silhouette (something with
+    faces), Wire and Points (meshes), Bones (armatures); only shapes of lines (cameras, lights,
+    empties): Wire. (Worked out again when the edited set changes, else twice a second.)"""
+    arms, objs = _edited(scene)
+    key = (tuple(sorted(arms)), tuple(o.name for o in objs))
+    now = time.time()
+    if _modes_cache[0] == key and now - _modes_cache[1] < 0.5:
+        return _modes_cache[2]
+    targets = _targets(scene)
+    out = []
+    if any(how != 'LINES' and _has_faces(o) for o, _a, how in targets):
+        out.append('SILHOUETTE')
+    if targets or not arms:
+        out.append('WIRE')
+    if any(how != 'LINES' for _o, _a, how in targets):
+        out.append('POINTS')
+    if arms:
+        out.append('BONES')
+    _modes_cache[:] = [key, now, out]
+    return out
+
+
+def mode_used(scene, st):
+    """The onion mode drawn: the chosen one, or (it shows nothing here) the first that does."""
+    ms = modes(scene)
+    return st.onion_mode if st.onion_mode in ms else ms[0]
 
 
 def _bone_shown(pb, st):
@@ -169,7 +234,7 @@ def _bone_shown(pb, st):
 
 def _bone_state(scene, st):
     """Which bones the Bones mode shows (it changes with the selection / visibility)."""
-    if st.onion_mode != 'BONES':
+    if st.onion_mode != 'BONES' and mode_used(scene, st) != 'BONES':
         return None
     out = []
     for name in _edited(scene)[0]:
@@ -256,14 +321,77 @@ def _mesh_sig(o):
     return (o.type, n, mods)
 
 
+def _circle(r, n=24, axis=2, z=0.0):
+    import math
+    out = []
+    for i in range(n):
+        p = [0.0, 0.0, 0.0]
+        u, v = [(1, 2), (0, 2), (0, 1)][axis]
+        p[u], p[v], p[axis] = math.cos(i * 2 * math.pi / n) * r, math.sin(i * 2 * math.pi / n) * r, z
+        out.append(tuple(p))
+    return out
+
+
+def _empty_shape(kind, s, seg):
+    """The lines of an empty of this display type, size s."""
+    import math
+    if kind == 'ARROWS':
+        for i in range(3):
+            b = [0.0, 0.0, 0.0]
+            b[i] = s
+            seg((0.0, 0.0, 0.0), tuple(b))
+            # a little letter-like tick at the end of each axis
+            t = [0.0, 0.0, 0.0]
+            t[i] = s * 0.85
+            t[(i + 1) % 3] = s * 0.08
+            seg(tuple(b), tuple(t))
+    elif kind == 'SINGLE_ARROW':
+        seg((0.0, 0.0, 0.0), (0.0, 0.0, s))
+        for d in ((0.06, 0.0), (-0.06, 0.0), (0.0, 0.06), (0.0, -0.06)):
+            seg((0.0, 0.0, s), (d[0] * s, d[1] * s, s * 0.82))
+    elif kind == 'CIRCLE':
+        ring = _circle(s, 32, axis=2)
+        for i in range(32):
+            seg(ring[i], ring[(i + 1) % 32])
+    elif kind == 'CUBE':
+        c = [(x, y, z) for x in (-s, s) for y in (-s, s) for z in (-s, s)]
+        for i, p in enumerate(c):
+            for q in c[i + 1:]:
+                if sum(1 for a, b in zip(p, q) if a != b) == 1:
+                    seg(p, q)
+    elif kind == 'SPHERE':
+        for axis in range(3):
+            ring = _circle(s, 32, axis=axis)
+            for i in range(32):
+                seg(ring[i], ring[(i + 1) % 32])
+    elif kind == 'CONE':
+        ring = _circle(s, 16, axis=1)
+        for i in range(16):
+            seg(ring[i], ring[(i + 1) % 16])
+            if i % 4 == 0:
+                seg(ring[i], (0.0, 2.0 * s, 0.0))
+    else:   # PLAIN_AXES (and images: their frame isn't worth it)
+        for i in range(3):
+            a = [0.0, 0.0, 0.0]
+            b = [0.0, 0.0, 0.0]
+            a[i], b[i] = -s, s
+            seg(tuple(a), tuple(b))
+
+
 def _lines_shape(o):
-    """Object-space line pairs for things without a mesh: a camera's frame, a light, an empty."""
+    """Object-space line pairs for things without a mesh: a camera's frame, a light like Blender
+    draws it, an empty of its own display type; anything else as the empty type chosen in the
+    preferences."""
     import math
     import numpy as np
     pts = []
 
     def seg(a, b):
         pts.extend((a, b))
+
+    def loop(ring):
+        for i in range(len(ring)):
+            seg(ring[i], ring[(i + 1) % len(ring)])
     if o.type == 'CAMERA':
         try:
             frame = [tuple(v) for v in o.data.view_frame(scene=bpy.context.scene)]
@@ -272,43 +400,48 @@ def _lines_shape(o):
         for i in range(4):
             seg(frame[i], frame[(i + 1) % 4])
             seg((0.0, 0.0, 0.0), frame[i])
-        top = (frame[0][0] * 0.0, frame[0][1] * 1.35, frame[0][2])
+        top = (0.0, frame[0][1] * 1.35, frame[0][2])
         seg((frame[0][0] * 0.5, frame[0][1] * 1.1, frame[0][2]), top)
         seg((frame[3][0] * 0.5, frame[3][1] * 1.1, frame[3][2]), top)
     elif o.type == 'LIGHT':
-        r = 0.2
-        ring = [(math.cos(a * math.pi / 8) * r, math.sin(a * math.pi / 8) * r, 0.0) for a in range(16)]
-        for i in range(16):
-            seg(ring[i], ring[(i + 1) % 16])
         kind = o.data.type
-        if kind == 'SUN':
+        # the light itself: two circles (like Blender's), seen from any side as rings
+        for axis in range(3):
+            loop(_circle(0.05, 16, axis))
+        loop(_circle(0.12, 24, 2))
+        if kind == 'POINT':
+            r = max(getattr(o.data, "shadow_soft_size", 0.25), 0.05)
+            dashes = _circle(r, 32, 2)
+            for i in range(0, 32, 2):
+                seg(dashes[i], dashes[i + 1])
+        elif kind == 'SUN':
+            for a in range(8):
+                x, y = math.cos(a * math.pi / 4), math.sin(a * math.pi / 4)
+                seg((x * 0.16, y * 0.16, 0.0), (x * 0.26, y * 0.26, 0.0))
             seg((0.0, 0.0, 0.0), (0.0, 0.0, -1.0))
         elif kind == 'SPOT':
             ang = min(getattr(o.data, "spot_size", 0.8), 3.0) * 0.5
             d = 1.0
             rr = math.tan(ang) * d
-            cone = [(math.cos(a * math.pi / 4) * rr, math.sin(a * math.pi / 4) * rr, -d) for a in range(8)]
-            for i in range(8):
+            cone = [(math.cos(a * math.pi / 8) * rr, math.sin(a * math.pi / 8) * rr, -d) for a in range(16)]
+            loop(cone)
+            for i in range(0, 16, 4):
                 seg((0.0, 0.0, 0.0), cone[i])
-                seg(cone[i], cone[(i + 1) % 8])
         elif kind == 'AREA':
-            s = getattr(o.data, "size", 1.0) * 0.5
-            sy = getattr(o.data, "size_y", o.data.size) * 0.5 if o.data.shape in {'RECTANGLE', 'ELLIPSE'} else s
-            c = [(-s, -sy, 0.0), (s, -sy, 0.0), (s, sy, 0.0), (-s, sy, 0.0)]
-            for i in range(4):
-                seg(c[i], c[(i + 1) % 4])
+            sx = getattr(o.data, "size", 1.0) * 0.5
+            shape = getattr(o.data, "shape", 'SQUARE')
+            sy = getattr(o.data, "size_y", o.data.size) * 0.5 if shape in {'RECTANGLE', 'ELLIPSE'} else sx
+            if shape in {'DISK', 'ELLIPSE'}:
+                loop([(math.cos(a * math.pi / 16) * sx, math.sin(a * math.pi / 16) * sy, 0.0) for a in range(32)])
+            else:
+                loop([(-sx, -sy, 0.0), (sx, -sy, 0.0), (sx, sy, 0.0), (-sx, sy, 0.0)])
             seg((0.0, 0.0, 0.0), (0.0, 0.0, -0.5))
-        else:
-            for a in range(8):
-                x, y = math.cos(a * math.pi / 4), math.sin(a * math.pi / 4)
-                seg((x * r * 1.4, y * r * 1.4, 0.0), (x * r * 2.2, y * r * 2.2, 0.0))
+    elif o.type == 'EMPTY':
+        _empty_shape(o.empty_display_type, getattr(o, "empty_display_size", 1.0) or 1.0, seg)
     else:
-        s = getattr(o, "empty_display_size", 1.0) or 1.0
-        for i in range(3):
-            a = [0.0, 0.0, 0.0]
-            b = [0.0, 0.0, 0.0]
-            a[i], b[i] = -s, s
-            seg(tuple(a), tuple(b))
+        from .props import prefs
+        p = prefs()
+        _empty_shape(p.onion_other_display if p is not None else 'PLAIN_AXES', 0.5, seg)
     co = np.array(pts, dtype=np.float32).reshape(-1, 3)
     return co, np.arange(len(co)).reshape(-1, 2)
 
@@ -485,6 +618,25 @@ def changed():
         _schedule(0.01)
 
 
+def all_frames(scene, st, limit=250):
+    """Every frame a ghost can be on (to capture ahead of time): the keys (spaced like the ghosts),
+    or every step frames, within the scene's (preview) range."""
+    if scene.use_preview_range:
+        f0, f1 = scene.frame_preview_start, scene.frame_preview_end
+    else:
+        f0, f1 = scene.frame_start, scene.frame_end
+    if st.onion_step > 0:
+        return [f for f in range(f0, f1 + 1)][:limit]
+    keys = [k for k in _key_frames(scene) if f0 <= k <= f1]
+    return keys[:limit]
+
+
+def ready(scene, st):
+    """(frames shown that are ready, frames shown in all), for the note in the timeline."""
+    shows = [f for f, _i in frames_to_show(scene, st)]
+    return [f for f in shows if f in _frames and f not in _stale], shows
+
+
 def frames_to_show(scene, st):
     """Ghost frames around the current one: every `onion_step` frames, or the keys."""
     cur = scene.frame_current
@@ -572,8 +724,7 @@ def _tick():
             _timer_on = False
             return None
         screen = bpy.context.screen
-        if screen is not None and screen.is_animation_playing:
-            return 0.3
+        playing = screen is not None and screen.is_animation_playing
         if state.modal_running and _cost > 0.03 and time.time() - _changed_at < 0.15:
             return 0.05
         sig = _signature(scene, st)
@@ -597,9 +748,17 @@ def _tick():
         status = ""
         shows = sorted(frames_to_show(scene, st), key=lambda x: abs(x[1]))
         want = [f for f, _i in shows if f not in _frames] + [f for f, _i in shows if f in _stale]
-        if not want:            # (stale frames not shown now are renewed when they show again)
+        if not want and not state.modal_running:
+            # ahead of time: every frame a ghost can be on (playback then finds them ready),
+            # the nearest first
+            cur_f = scene.frame_current
+            want = sorted((f for f in all_frames(scene, st) if f not in _frames or f in _stale),
+                          key=lambda f: abs(f - cur_f))
+        if not want:
             _timer_on = False
             return None
+        if playing:
+            want = want[:1]         # (while playing: a frame per tick, the fps drops a little)
         cur, sub = scene.frame_current, scene.frame_subframe
         t0 = time.time()
         _busy = True
@@ -623,6 +782,8 @@ def _tick():
         state.tag_redraw()
         if len(done) < len(want) or time.time() - t0 > 0.04:
             return 0.01
+        if not state.modal_running and any(f not in _frames or f in _stale for f in all_frames(scene, st)):
+            return 0.02             # the ghosts shown are ready: on with the rest, ahead of time
         _timer_on = False
         return None
     except Exception as ex:   # never let the timer die with a traceback storm
@@ -761,7 +922,8 @@ def draw(scene, st, us):
     shows = frames_to_show(scene, st)
     if any(f not in _frames for f, _i in shows) or status:
         _schedule()
-    kind = {'SILHOUETTE': "tris", 'WIRE': "edges", 'POINTS': "points", 'BONES': "bones"}[st.onion_mode]
+    mode = mode_used(scene, st)
+    kind = {'SILHOUETTE': "tris", 'WIRE': "edges", 'POINTS': "points", 'BONES': "bones"}[mode]
     sh = _point_shader() if kind == "points" else gpu.shader.from_builtin('UNIFORM_COLOR')
     keep, left_out = _filters(scene, st) if kind != "bones" else ({}, set())
     prev_test = gpu.state.depth_test_get()
@@ -799,7 +961,7 @@ def draw(scene, st, us):
             p = _proxies.get(name)
             if p is None:
                 continue
-            pkind = "edges" if p.how == 'LINES' else kind
+            pkind = "edges" if p.how == 'LINES' or (kind == "tris" and not len(p.tri)) else kind
             b = _part_batch(f if pos is not None else None, pkind, name, pos, sh if pkind == kind else
                             gpu.shader.from_builtin('UNIFORM_COLOR'), keep.get(name))
             if b is not None:

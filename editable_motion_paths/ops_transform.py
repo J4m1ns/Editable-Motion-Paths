@@ -426,6 +426,15 @@ class EMP_OT_transform(bpy.types.Operator):
         keys = [(c, e.k) for c, es in self.groups for e in es if e.part == 'KEY' and e.src is None]
         handles = [(c, e.k) for c, es in self.groups for e in es if e.part != 'KEY' and e.src is None]
         self.n_elems = len(keys) + len(handles)
+        try:
+            # Blender's Continuous Acceleration re-solves a whole curve's auto handles when one
+            # key changes: say so, the path will move beyond the edited key
+            from .ops_tools import cont_accel_curves
+            if cont_accel_curves(context):
+                state.flash_message("Continuous Acceleration is on for these curves: the whole curve re-solves "
+                                    "(sidebar > Curve Smoothing > Smoothing: None)", 4.0)
+        except Exception:
+            pass
         self.pivot, individual = space.pivot_point(context, keys, handles)
         self.median = space.median([k.co for _c, k in keys + handles]) if keys or handles \
             else self.pivot

@@ -260,7 +260,7 @@ COL_SCALE_HIGH = (1.0, 0.25, 0.35)
 GIZMO_COLORS = {'GX': (1.0, 0.25, 0.3, 1.0), 'GY': (0.45, 0.9, 0.2, 1.0), 'GZ': (0.25, 0.5, 1.0, 1.0),
                 'GU': (1.0, 1.0, 1.0, 1.0)}
 GIZMO_COLORS['GXn'] = GIZMO_COLORS['GX']
-GIZMO_COLORS['GYn'] = GIZMO_COLORS['GY']
+GIZMO_COLORS['GYb'] = GIZMO_COLORS['GY']
 GIZMO_COLORS['GZn'] = GIZMO_COLORS['GZ']
 COL_Y_RIBBON = (0.45, 0.9, 0.3)
 
@@ -276,13 +276,40 @@ def ribbon_half(st, cache):
     return cache.vgain * 0.12 * st.ribbon_width
 
 
-def y_ribbon(st, cache, tg, t, vals=None):
-    """Scale Y shown as a ribbon (preferences): (middle line point, across direction) of the Y
-    ribbon at frame t - beside the X ribbon, in its plane."""
+def y_inner(st, cache):
+    """Scale Y as a ribbon: how far its fixed inner edge is from the path (just past the widest X
+    ribbon, so it stays put while the X scale changes)."""
     half = ribbon_half(st, cache)
-    v = vals if vals is not None else tg.scale.values(t)
-    ax = cache.axes(tg, t)
-    return cache.head(tg, t) + ax[0] * (half * (abs(v[0]) + abs(v[1]) + 0.35)), ax[0]
+    sv = cache.sample_vals
+    key = (id(sv), len(sv), half)
+    if getattr(cache, "_y_inner", (None,))[0] != key:
+        widest = max((abs(v[0]) for v in sv if len(v) > 1), default=1.0)
+        cache._y_inner = (key, half * (widest + 0.35))
+    return cache._y_inner[1]
+
+
+def y_side(st, cache):
+    """Scale Y as a ribbon: on which side of the X ribbon it is (+1: the target's +X, -1: -X),
+    the chosen Side (outside: away from the inside of the path's curves, on the whole). On the
+    circle always outside (its X is outward there)."""
+    if cache.circle is not None:
+        return 1.0
+    sv, pts = cache.sample_axes, cache.points
+    key = (id(sv), len(sv), len(pts), cache.value_side)
+    if getattr(cache, "_y_side", (None,))[0] != key:
+        score = 0.0         # > 0: +X points to the inside of the curves
+        if len(pts) > 2 and len(sv) == len(pts):
+            score = sum(sv[i][0].dot(pts[i - 1] + pts[i + 1] - 2.0 * pts[i]) for i in range(1, len(pts) - 1))
+        cache._y_side = (key, -1.0 if (score > 0.0) == (cache.value_side == 'OUTSIDE') else 1.0)
+    return cache._y_side[1]
+
+
+def y_ribbon(st, cache, tg, t, vals=None):
+    """Scale Y shown as a ribbon (preferences): (fixed inner edge point, outward direction, world
+    length per unit of Y) at frame t - beside the X ribbon, in its plane, on the chosen side; it
+    grows outward from the inner edge like a graph."""
+    out = cache.axes(tg, t)[0] * y_side(st, cache)
+    return cache.head(tg, t) + out * y_inner(st, cache), out, 2.0 * ribbon_half(st, cache)
 
 
 def _draw_ribbon(st, cache, rv3d, lo, hi, editable, us):
@@ -303,12 +330,11 @@ def _draw_ribbon(st, cache, rv3d, lo, hi, editable, us):
         runs = []
         for i, t in enumerate(cache.times):
             if axis == 1 and vis[i] and _in(t, lo, hi):
-                # the Y ribbon: beside the X one, as wide as the Y scale
+                # the Y ribbon: beside the X one, from a fixed inner edge outward, as wide as Y
                 v = cache.sample_vals[i]
-                ax0 = cache.sample_axes[i][0]
-                mid = pts[i] + ax0 * (half * (abs(v[0]) + abs(v[1]) + 0.35))
-                d = ax0 * (half * abs(v[1]))
-                run.append((mid + d, mid - d, COL_Y_RIBBON))
+                ax0 = cache.sample_axes[i][0] * y_side(st, cache)
+                inner = pts[i] + ax0 * y_inner(st, cache)
+                run.append((inner + ax0 * (2.0 * half * abs(v[1])), inner, COL_Y_RIBBON))
                 continue
             if not _in(t, lo, hi) or not vis[i]:
                 if len(run) > 1:
@@ -362,6 +388,31 @@ def _draw_scale_box(st, cache, us):
             if q > (i, j, k):
                 lines += [p, corners[q]]
     _lines(lines, [(1.0, 1.0, 1.0, 0.7)] * len(lines), 1.3 * us)
+    if st.show_scale_box_values:
+        # the current scale, written next to the box (drawn in the 2D pass: _draw_box_values)
+        state.scale_box_label = (list(corners.values()), "%.2f  %.2f  %.2f" % tuple(s[:3]),
+                                 bpy.context.area.as_pointer() if bpy.context.area else 0)
+
+
+def _draw_box_values(ctx, us):
+    """The Scale Box's values, right of the box on the screen (never over it)."""
+    lab = state.scale_box_label
+    state.scale_box_label = None
+    if lab is None or ctx.area is None or lab[2] != ctx.area.as_pointer():
+        return
+    pts = [location_3d_to_region_2d(ctx.region, ctx.region_data, p) for p in lab[0]]
+    pts = [p for p in pts if p is not None]
+    if not pts:
+        return
+    x = max(p.x for p in pts) + 8 * us
+    y = (max(p.y for p in pts) + min(p.y for p in pts)) * 0.5
+    blf.size(0, 11 * us)
+    blf.enable(0, blf.SHADOW)
+    blf.shadow(0, 3, 0.0, 0.0, 0.0, 0.9)
+    blf.color(0, 1.0, 1.0, 1.0, 0.95)
+    blf.position(0, x, y - 4 * us, 0)
+    blf.draw(0, lab[1])
+    blf.disable(0, blf.SHADOW)
 
 
 def scale_gizmo_points(st, cache, k, region=None, rv3d=None):
@@ -382,10 +433,11 @@ def scale_gizmo_points(st, cache, k, region=None, rv3d=None):
     for i, part in enumerate(('GX', 'GY', 'GZ')):
         ln = max(h * abs(k.vals[i]), mn)
         if part == 'GY' and y_rib:
-            # on the edges of the Y ribbon (beside the X one)
-            mid = k.co + ax[0] * (h * (abs(k.vals[0]) + abs(k.vals[1]) + 0.35))
-            out['GY'] = mid + ax[0] * ln
-            out['GYn'] = mid - ax[0] * ln
+            # on the outer edge of the Y ribbon; its inner edge stays (one handle, like a graph)
+            ys = ax[0] * y_side(st, cache)
+            inner = k.co + ys * y_inner(st, cache)
+            out['GY'] = inner + ys * max(2.0 * h * abs(k.vals[1]), mn)
+            out['GYb'] = inner
             continue
         out[part] = k.co + ax[i] * ln
         if part != 'GY':
@@ -416,7 +468,7 @@ def scale_whiskers(st, cache, k):
         if abs(dt) < 1e-6:
             continue
         y_rib = c == 1 and st.scale_y_display == 'RIBBON'
-        signs = (1.0, -1.0) if c != 1 or y_rib else (1.0,)
+        signs = (1.0, -1.0) if c != 1 else (1.0,)
         for s in signs:
             pts = []
             for i in range(WHISKER_STEPS + 1):
@@ -425,8 +477,8 @@ def scale_whiskers(st, cache, k):
                 v = y + (h[1] - y) * f
                 ax = cache.axes(tg, t)
                 if y_rib:
-                    mid, across = y_ribbon(st, cache, tg, t)
-                    pts.append(mid + across * (s * half * abs(v)))
+                    inner, across, unit = y_ribbon(st, cache, tg, t)
+                    pts.append(inner + across * (unit * abs(v)))
                 elif c == 1:
                     pts.append(cache.head(tg, t) + ax[2] * (half * (v - y)))
                 else:
@@ -490,15 +542,16 @@ def _draw_rot_ribbon(st, cache, lo, hi, editable, us):
 def _draw_scale_gizmos(st, cache, keys, us):
     lines, cols = [], []
     picked_sel = state.whisker_sel()
+    gk = gizmo_key(cache)
     for k in keys:
-        if not k.sel:
+        if k is not gk:
             continue
         g = scale_gizmo_points(st, cache, k)
-        for a, b in (('GXn', 'GX'), ('GZn', 'GZ'), ('GYn', 'GY')):
+        for a, b in (('GXn', 'GX'), ('GZn', 'GZ'), ('GYb', 'GY')):
             if a in g:
                 lines += [g[a], g[b]]       # across the ribbon: its width at this key
                 cols += [GIZMO_COLORS[b]] * 2
-        if 'GY' in g and 'GYn' not in g:
+        if 'GY' in g and 'GYb' not in g:
             lines += [k.co, g['GY']]
             cols += [GIZMO_COLORS['GY']] * 2
         part = {'X': 'GX', 'Y': 'GY', 'Z': 'GZ'}.get(st.scale_channel)
@@ -528,12 +581,28 @@ def _draw_value_base(cache, lo, hi, us):
 RING_COLORS = {'RX': (1.0, 0.3, 0.35), 'RY': (0.45, 0.9, 0.3), 'RZ': (0.3, 0.55, 1.0)}
 
 
+def gizmo_key(cache):
+    """The key that shows the rotation rings / the scale gizmo: the selected one; with several
+    selected, the active one (white ring), else the first - one gizmo, not one per key (they
+    still act on all the selected keys)."""
+    sel = [k for k in cache.keys if k.sel and not k.hidden]
+    if len(sel) <= 1:
+        return sel[0] if sel else None
+    act = state.get_active()
+    if act is not None and tuple(act[0]) == tuple(cache.key):
+        for k in sel:
+            if abs(k.t - act[1]) < 1e-3:
+                return k
+    return sel[0]
+
+
 def _draw_rot_rings(st, cache, tg, keys, rv3d, us):
     from . import space
     if not (st.show_rot_rings or st.show_reach):
         return
+    gk = gizmo_key(cache)
     for k in keys:
-        if not k.sel:
+        if k is not gk:
             continue
         rings, center, r = space.rot_rings(cache, tg, k)
         if st.show_reach:
@@ -751,7 +820,7 @@ def _draw_points(ctx, st, us):
                     discs.add_outlined(s, kr, col)
             else:
                 discs.add_outlined(s, kr * 0.7, COL_KEY_LOCKED, 1.0)
-            show_val = cache.ptype in (core.SCALE, core.VALUE) and editable
+            show_val = editable and (cache.ptype == core.VALUE or (cache.ptype == core.SCALE and st.show_key_values))
             if (st.show_frame_numbers or state.force_numbers or show_val) and s is not None and \
                     (last_label is None or (s - last_label).length > 22.0 * us):
                 txt = ""
@@ -792,17 +861,25 @@ def _draw_prop_circle(ctx, us):
     r = (e - c).length
     pts = [(c.x + math.cos(a * 2 * math.pi / 64) * r, c.y + math.sin(a * 2 * math.pi / 64) * r)
            for a in range(64)]
-    sh = gpu.shader.from_builtin('UNIFORM_COLOR')
-    gpu.state.blend_set('ALPHA')
-    sh.uniform_float("color", (1.0, 1.0, 1.0, 0.7))
-    batch_for_shader(sh, 'LINE_LOOP', {"pos": pts}).draw(sh)
+    _flat(pts, (1.0, 1.0, 1.0, 0.7), 'LINE_LOOP', 1.5)
 
 
-def _flat(pts, color, kind='LINES'):
+def _flat(pts, color, kind='LINES', width=None):
+    """One color. Lines go through the polyline shader (their joins close up, so a thick ring
+    has no gaps on Vulkan / Metal); width: the line width (default: the one set now)."""
     if len(pts) < 2:
         return
-    sh = gpu.shader.from_builtin('UNIFORM_COLOR')
     gpu.state.blend_set('ALPHA')
+    if kind in {'LINES', 'LINE_STRIP', 'LINE_LOOP'}:
+        if kind == 'LINE_LOOP':
+            pts = list(pts) + [pts[0]]
+            kind = 'LINE_STRIP'
+        region = bpy.context.region
+        sh = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+        sh.uniform_float("viewportSize", (region.width, region.height) if region else (1.0, 1.0))
+        sh.uniform_float("lineWidth", max(width or gpu.state.line_width_get(), 1.0))
+    else:
+        sh = gpu.shader.from_builtin('UNIFORM_COLOR')
     sh.uniform_float("color", color)
     batch_for_shader(sh, kind, {"pos": pts}).draw(sh)
 
@@ -829,6 +906,12 @@ def speed_window(scene, st, cache):
         if scene.use_preview_range:
             return float(scene.frame_preview_start), float(scene.frame_preview_end)
         return float(scene.frame_start), float(scene.frame_end)
+    return segment_window(scene, cache)
+
+
+def segment_window(scene, cache):
+    """The selected keys; one selected key: the segments on both sides of it; none: the keys
+    around the current frame (the timing chart, and the speed graph's Segment)."""
     sel = [k.t for k in cache.keys if k.sel]
     if len(sel) >= 2:
         return min(sel), max(sel)
@@ -850,10 +933,12 @@ def speed_window(scene, st, cache):
 
 
 def _chart_cache(ctx, st):
-    """The path the timing chart shows (2+ selected keys), or None."""
+    """The path the timing chart shows (like the speed graph: the one with selected keys, else
+    the first editable one), or None."""
     if not st.show_timing_chart or ctx.area is None:
         return None
-    return next((c for c in state.editable_caches(ctx.scene) if sum(1 for k in c.keys if k.sel) >= 2), None)
+    caches = [c for c in state.editable_caches(ctx.scene) if len(c.keys) >= 2]
+    return next((c for c in caches if any(k.sel for k in c.keys)), None) or next(iter(caches), None)
 
 
 def _speed_shown(ctx, st):
@@ -893,8 +978,11 @@ def _draw_chart(ctx, st, us):
     cache = _chart_cache(ctx, st)
     if cache is None:
         return
-    sel = [k.t for k in cache.keys if k.sel]
-    r0, r1 = min(sel), max(sel)
+    # the selected keys; one key: the segments around it; none: the keys around the current frame
+    win = segment_window(ctx.scene, cache)
+    if win is None:
+        return
+    r0, r1 = win
     pts = [(t, p) for t, p in zip(cache.times, cache.points) if r0 - 1e-6 <= t <= r1 + 1e-6]
     if len(pts) < 2:
         return
@@ -1046,6 +1134,7 @@ def _rounded_rect(x, y, w, h, r, col):
 def _smooth(pts, cols, kind):
     if not pts:
         return
+    gpu.state.blend_set('ALPHA')        # (text drawn before may have left blending off: a flat color)
     sh = gpu.shader.from_builtin('SMOOTH_COLOR')
     batch_for_shader(sh, kind, {"pos": pts, "color": cols}).draw(sh)
 
@@ -1154,12 +1243,7 @@ def _draw_snap_point(ctx, us):
     r = 7 * us
     pts = [(s.x + math.cos(a * 2 * math.pi / 24) * r, s.y + math.sin(a * 2 * math.pi / 24) * r)
            for a in range(24)]
-    sh = gpu.shader.from_builtin('UNIFORM_COLOR')
-    gpu.state.blend_set('ALPHA')
-    gpu.state.line_width_set(2.0)
-    sh.uniform_float("color", (1.0, 1.0, 1.0, 0.95))
-    batch_for_shader(sh, 'LINE_LOOP', {"pos": pts}).draw(sh)
-    gpu.state.line_width_set(1.0)
+    _flat(pts, (1.0, 1.0, 1.0, 0.95), 'LINE_LOOP', 2.0)
 
 
 def _draw_slide_marker(ctx, us):
@@ -1212,6 +1296,13 @@ def _draw_mode_indicator(ctx, st, us):
         if cache.locked and cache.owner_selected():
             hint = cache.lock_reason
             break
+        if not cache.keys and not hint and cache.owner_selected():
+            # (a child without keys of its own, added for its ghosts)
+            tg = cache.target()
+            bare = tg is not None and not (tg.loc.any() or tg.rot.any() or tg.scale.any())
+            hint = "%s has %s: no path to edit here (Onion Skin and the other displays still work)" % (
+                cache.bone_name or cache.obj_name,
+                "no keys of its own" if bare else "no %s keys" % cache.ptype.title())
         if cache.ptype == core.ROTATION and st.show_rot_rings and cache.owner_selected() and \
                 any(k.sel for k in cache.keys):
             hint = "Drag a ring: turn around that axis (green: twist)   drag the key: turn freely   " \
@@ -1255,6 +1346,7 @@ def _draw_pixel():
         _draw_sculpt(ctx, us)       # the brush strip and circle show even before there's a path
     if st is not None and st.paths and not state.overlays_hidden():
         _draw_points(ctx, st, us)
+        _draw_box_values(ctx, us)
         _draw_chart_blocks(ctx, st, us)
         _draw_chart(ctx, st, us)
         _draw_speed_graph(ctx, st, us)
@@ -1270,8 +1362,7 @@ def _draw_pixel():
         coords = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
         sh.uniform_float("color", (1.0, 1.0, 1.0, 0.06))
         batch_for_shader(sh, 'TRI_FAN', {"pos": coords}).draw(sh)
-        sh.uniform_float("color", (1.0, 1.0, 1.0, 0.8) if mode != 'SUB' else (1.0, 0.4, 0.4, 0.8))
-        batch_for_shader(sh, 'LINE_LOOP', {"pos": coords}).draw(sh)
+        _flat(coords, (1.0, 1.0, 1.0, 0.8) if mode != 'SUB' else (1.0, 0.4, 0.4, 0.8), 'LINE_LOOP', 1.0)
 
     if state.knife is not None and ctx.area is not None and ctx.area.as_pointer() == state.knife[1]:
         _draw_knife(ctx, us)
@@ -1294,10 +1385,7 @@ def _draw_pixel():
         cx, cy, r, _a = state.circle
         pts = [(cx + math.cos(a * 2 * math.pi / 48) * r, cy + math.sin(a * 2 * math.pi / 48) * r)
                for a in range(48)]
-        sh = gpu.shader.from_builtin('UNIFORM_COLOR')
-        gpu.state.blend_set('ALPHA')
-        sh.uniform_float("color", (1.0, 1.0, 1.0, 0.8))
-        batch_for_shader(sh, 'LINE_LOOP', {"pos": pts}).draw(sh)
+        _flat(pts, (1.0, 1.0, 1.0, 0.8), 'LINE_LOOP', 1.5)
 
     if state.hud is not None and ctx.area is not None and ctx.area.as_pointer() == state.hud_area:
         text, (x, y) = state.hud
@@ -1335,12 +1423,67 @@ def _draw_pixel():
     gpu.state.blend_set('NONE')
 
 
+_tl_handles = []
+
+
+def v2d_px(v2d):
+    """Pixels per frame in a 2D view."""
+    a, _y = v2d.view_to_region(0, 0, clip=False)
+    b, _y = v2d.view_to_region(1, 0, clip=False)
+    return abs(b - a)
+
+
+def draw_timeline():
+    """Timeline / Dope Sheet: the onion ghosts' frames along the bottom - a filled mark when the
+    ghost is ready, a hollow one while it is being captured."""
+    try:
+        ctx = bpy.context
+        st = state.settings(ctx.scene)
+        if st is None or not st.show_onion or ctx.region is None:
+            return
+        from . import onion
+        done, shows = onion.ready(ctx.scene, st)
+        if not shows:
+            return
+        v2d = ctx.region.view2d
+        us = compat.ui_scale()
+        y = 6 * us
+        gpu.state.blend_set('ALPHA')
+        col_b = tuple(st.onion_color_before) + (1.0,)
+        col_a = tuple(st.onion_color_after) + (1.0,)
+        cur = ctx.scene.frame_current
+        # every captured frame (ready for playback): a thin bar along the bottom
+        ticks = []
+        for f in onion._frames:
+            if f in onion._stale:
+                continue
+            x, _y = v2d.view_to_region(f, 0, clip=False)
+            ticks += [(x - 0.5 * v2d_px(v2d), 2 * us), (x + 0.5 * v2d_px(v2d), 2 * us)]
+        if ticks:
+            _flat(ticks, (1.0, 1.0, 1.0, 0.35), 'LINES', 3.0 * us)
+        for f in shows:
+            x, _y = v2d.view_to_region(f, 0, clip=False)
+            col = col_b if f < cur else col_a
+            r = 4.0 * us
+            ring = [(x + math.cos(a * math.pi / 8) * r, y + r + math.sin(a * math.pi / 8) * r) for a in range(16)]
+            if f in done:
+                _flat([(x, y + r)] + ring + ring[:1], col, 'TRI_FAN')
+            else:
+                _flat(ring, (col[0], col[1], col[2], 0.7), 'LINE_LOOP', 1.5 * us)
+    except Exception:
+        pass
+
+
 def register():
     _handles.append(bpy.types.SpaceView3D.draw_handler_add(draw_view, (), 'WINDOW', 'POST_VIEW'))
     _handles.append(bpy.types.SpaceView3D.draw_handler_add(draw_pixel, (), 'WINDOW', 'POST_PIXEL'))
+    _tl_handles.append(bpy.types.SpaceDopeSheetEditor.draw_handler_add(draw_timeline, (), 'WINDOW', 'POST_PIXEL'))
 
 
 def unregister():
     for h in _handles:
         bpy.types.SpaceView3D.draw_handler_remove(h, 'WINDOW')
     _handles.clear()
+    for h in _tl_handles:
+        bpy.types.SpaceDopeSheetEditor.draw_handler_remove(h, 'WINDOW')
+    _tl_handles.clear()

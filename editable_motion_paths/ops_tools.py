@@ -285,10 +285,7 @@ def _anim_curves(context):
 
 def cont_accel_curves(context):
     """How many of them use Blender's Continuous Acceleration smoothing."""
-    try:
-        return sum(1 for fc in _anim_curves(context) if fc.auto_smoothing != 'NONE')
-    except Exception:
-        return 0
+    return sum(1 for fc in _anim_curves(context) if getattr(fc, "auto_smoothing", 'NONE') != 'NONE')
 
 
 class EMP_OT_onion_update(bpy.types.Operator):
@@ -304,10 +301,30 @@ class EMP_OT_onion_update(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class EMP_OT_onion_mode(bpy.types.Operator):
+    """How the ghosts are drawn"""
+    bl_idname = "emp.onion_mode"
+    bl_label = "Onion Mode"
+    bl_options = {'INTERNAL', 'UNDO'}
+
+    mode: EnumProperty(items=[('SILHOUETTE', "Silhouette", ""), ('WIRE', "Wire", ""),
+                              ('POINTS', "Points", ""), ('BONES', "Bones", "")])
+
+    @classmethod
+    def description(cls, context, properties):
+        st = state.settings(context.scene)
+        return st.bl_rna.properties["onion_mode"].enum_items[properties.mode].description
+
+    def execute(self, context):
+        state.settings(context.scene).onion_mode = self.mode
+        return {'FINISHED'}
+
+
 class EMP_OT_smoothing_none(bpy.types.Operator):
     """Turn off Blender's Continuous Acceleration smoothing on every curve of the selected bones """ \
         """/ objects (Auto Handle Smoothing: None): editing a key then changes only its own """ \
-        """segments, not the auto handles a few keys away"""
+        """segments, not the auto handles a few keys away. (The auto handles are solved once more """ \
+        """the plain way, so the path may shift a little right now)"""
     bl_idname = "emp.smoothing_none"
     bl_label = "Smoothing: None"
     bl_options = {'REGISTER', 'UNDO'}
@@ -876,9 +893,10 @@ class EMP_OT_smooth(_AdjustOp, bpy.types.Operator):
         ('TIME', "Time", "Pull keys toward the in-between of their neighbors in time (also "
                          "evens out the spacing, but flattens arcs)"),
     ], default='SHAPE')
-    fix_corners: BoolProperty(name="Fix Corners", default=True,
-                              description="Shape: make broken (Free / Vector) handles of the "
-                                          "smoothed keys aligned")
+    fix_corners: BoolProperty(name="Smooth Handles", default=True,
+                              description="Shape: also turn the handles of the smoothed keys along the "
+                                          "path (from the key before to the key after), like the Smooth "
+                                          "brush; auto handles do that by themselves")
 
     def _label(self):
         return "Smooth (%s, T: %s)" % ("Shape" if self.method == 'SHAPE' else "Time",
@@ -912,13 +930,16 @@ class EMP_OT_smooth(_AdjustOp, bpy.types.Operator):
             core.write_key(ch, k, vals, True, touched)
             if self.method != 'SHAPE' or not self.fix_corners or self.factor <= 0.0 or not (0 < i < n - 1):
                 continue
-            if k.type_l not in {'FREE', 'VECTOR'} and k.type_r not in {'FREE', 'VECTOR'}:
+            if k.type_l not in {'FREE', 'VECTOR', 'ALIGNED'} and k.type_r not in {'FREE', 'VECTOR', 'ALIGNED'}:
                 continue
             if k.hl is None or k.hr is None:
                 continue
-            # align broken handles along the path direction, keeping their lengths
+            # turn the handles along the path (from the key before to the key after), keeping
+            # their lengths
             vl, vr = k.hl - k.co, k.hr - k.co
-            tng = vr - vl
+            tng = job.keys[i + 1].co - job.keys[i - 1].co
+            if tng.length < 1e-12:
+                tng = vr - vl
             if tng.length < 1e-12:
                 continue
             tng = tng.normalized()
@@ -1076,11 +1097,6 @@ class EMP_OT_cleanup(bpy.types.Operator):
     bl_label = "Clean Up Path"
     bl_options = {'REGISTER', 'UNDO'}
 
-    keep_timing: BoolProperty(
-        name="Keep Timing", default=True,
-        description="Where the bone is on every frame stays (within the tolerance). Off: only the shape "
-                    "of the path counts - keys go as long as the path keeps its shape, and the timing "
-                    "along it may change (fewer keys, a cleaner path)")
     method: EnumProperty(name="Method", items=[
         ('CLEAN', "Clean", "Remove keys that are not needed and refit the handles of the rest"),
         ('ADAPTIVE', "Adaptive", "Rebuild the keys from scratch: as few as possible, on the frames "
@@ -1090,6 +1106,11 @@ class EMP_OT_cleanup(bpy.types.Operator):
         name="Tolerance", subtype='PERCENTAGE', default=1.0, min=0.01, soft_max=10.0, precision=2,
         description="How far the cleaned path may move away from the original, in percent of "
                     "the path size (lower keeps more keys)")
+    keep_timing: BoolProperty(
+        name="Keep Timing", default=True,
+        description="Where the bone is on every frame stays (within the tolerance). Off: only the shape "
+                    "of the path counts - keys go as long as the path keeps its shape, and the timing "
+                    "along it may change (fewer keys, a cleaner path)")
     keep_holds: BoolProperty(
         name="Keep Holds", default=True,
         description="The first and last key of a hold (the motion standing still) stay as they are")
@@ -1258,14 +1279,19 @@ def _clean_shape(cache, tg, inside, fixed, tolerance):
     """Clean Up without Keep Timing: dissolve the keys the shape of the path doesn't need (the
     least needed first), each only if the path stays within the tolerance of its old shape (both
     ways: no point of either path farther than that from the other). The timing may change.
+    A key only changes the path between its two neighbors, so only that part is measured, right
+    from the curves (no rebuilding of the whole path per try).
     Returns (keys before, keys after, worst deviation in percent of the path size)."""
     from . import keys as _keys
     r0, r1 = inside[0], inside[-1]
-    old = [p.copy() for t, p in zip(cache.times, cache.points) if r0 - 1e-6 <= t <= r1 + 1e-6]
-    lo = [min(p[i] for p in old) for i in range(3)]
-    hi = [max(p[i] for p in old) for i in range(3)]
+    old_t = [t for t in cache.times if r0 - 1e-6 <= t <= r1 + 1e-6]
+    old_by = {t: p.copy() for t, p in zip(cache.times, cache.points)}
+    pts = [old_by[t] for t in old_t]
+    lo = [min(p[i] for p in pts) for i in range(3)]
+    hi = [max(p[i] for p in pts) for i in range(3)]
     size = max(sum((h - l) ** 2 for h, l in zip(hi, lo)) ** 0.5, 1e-6)
     ch = tg.channels(cache.ptype)
+    alive = sorted(inside)
 
     def dissolve(t):
         n = 0
@@ -1274,43 +1300,45 @@ def _clean_shape(cache, tg, inside, fixed, tolerance):
                 n += _keys.dissolve_channel(fc, [t])
         if n:
             core.update_fcurves([fc for fc in ch.fcurves if fc is not None])
-            cache.dirty = True
-            cache.refresh(force=True)
         return n
 
-    def deviation():
-        new = [p for t, p in zip(cache.times, cache.points) if r0 - 1e-6 <= t <= r1 + 1e-6]
-        if len(new) < 2:
-            return 1e18
-        a = max(_poly_dist(p, old) for p in new)
-        b = max(_poly_dist(p, new) for p in old[::2])
-        return max(a, b) / size * 100.0
+    def deviation(t):
+        """How far the path between t's neighbors is from its old shape there (percent)."""
+        i = alive.index(t)
+        a, b = alive[max(i - 1, 0)], alive[min(i + 1, len(alive) - 1)]
+        ts = [x for x in old_t if a - 1e-6 <= x <= b + 1e-6]
+        if len(ts) < 2:
+            return 0.0
+        tg2 = cache.target()
+        new = [cache.point(tg2, x) for x in ts]
+        old = [old_by[x] for x in ts]
+        d1 = max(_poly_dist(p, old) for p in new)
+        d2 = max(_poly_dist(q, new) for q in old)
+        return max(d1, d2) / size * 100.0
 
     cands = [t for t in inside if t not in fixed]
-    # how much each key is needed on its own (the path without just that key)
     need = []
     for t in cands:
         snap = core.FCurveSnapshot(tg, ch)
         if dissolve(t):
-            need.append((deviation(), t))
+            need.append((deviation(t), t))
         snap.restore()
-        cache.dirty = True
-        cache.refresh(force=True)
     removed, worst = 0, 0.0
     for d, t in sorted(need):
         if d > tolerance:
             break
         snap = core.FCurveSnapshot(tg, ch)
-        if not dissolve(t):
+        dev = deviation(t) if dissolve(t) else None
+        if dev is None:
             continue
-        dev = deviation()
         if dev > tolerance:
             snap.restore()
-            cache.dirty = True
-            cache.refresh(force=True)
         else:
+            alive.remove(t)
             removed += 1
             worst = max(worst, dev)
+    cache.dirty = True
+    cache.refresh(force=True)
     return len(inside), len(inside) - removed, worst
 
 
@@ -1725,7 +1753,7 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
 
 
 classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
-           EMP_OT_smoothing_none, EMP_OT_onion_update, EMP_OT_path_update,
+           EMP_OT_smoothing_none, EMP_OT_onion_mode, EMP_OT_onion_update, EMP_OT_path_update,
            EMP_OT_edit_tool,
            EMP_OT_handle_type, EMP_OT_interpolation,
            EMP_OT_smooth, EMP_OT_exaggerate, EMP_OT_ease, EMP_OT_scale_handles,

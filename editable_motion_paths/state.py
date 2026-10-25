@@ -24,6 +24,7 @@ sculpt_preview = None  # ([world points], area pointer) frame dots while a timin
 sculpt_hide = set()    # paths whose own frame dots are hidden meanwhile
 sculpt_strip_hover = None   # (brush, area pointer) under the mouse on the brush strip
 sculpt_radial = None   # F / Shift+F: what the radial control shows
+scale_box_label = None  # (box corners, text, area) the Scale Box's values, for the 2D pass
 gallery = None        # the easing gallery under the mouse (P): its place, what the mouse is over
 knife = None         # ([cut lines of world points], area pointer, cursor or None, snap) knife
 markers = None       # ([world points], area pointer[, labels]) previews of keys about to be added
@@ -70,7 +71,7 @@ def tag_redraw():
         return
     for win in wm.windows:
         for area in win.screen.areas:
-            if area.type == 'VIEW_3D':
+            if area.type in {'VIEW_3D', 'DOPESHEET_EDITOR'}:     # (the timeline: the ghosts' frames)
                 area.tag_redraw()
 
 
@@ -380,6 +381,9 @@ def _bake_timer():
     return None
 
 
+_dg_frame = None
+
+
 @persistent
 def _on_depsgraph(scene, depsgraph):
     from . import onion
@@ -389,6 +393,17 @@ def _on_depsgraph(scene, depsgraph):
     st = settings(scene)
     if st is None:
         return
+    if st.show_onion or st.show_com:
+        global _dg_frame
+        f = scene.frame_current
+        playing = bpy.context.screen is not None and bpy.context.screen.is_animation_playing
+        if not playing and f == _dg_frame and not modal_running:
+            # (a frame change also updates the objects: only changes on the same frame count)
+            if any(isinstance(u.id, bpy.types.Object) and (u.is_updated_transform or u.is_updated_geometry)
+                   for u in depsgraph.updates):
+                onion.changed()
+                com.changed()
+        _dg_frame = f
     if not caches or not st.auto_update:
         # no path: the ghosts and the center of mass still follow the animation
         if st.show_onion or st.show_com:

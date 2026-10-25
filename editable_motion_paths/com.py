@@ -326,6 +326,7 @@ def state_now(scene, arm):
 def draw(scene, st, us):
     import math
     import numpy as np
+    from . import draw as _draw
     if not st.show_com or _busy or onion.busy():
         return
     arms = armatures(scene)
@@ -354,9 +355,7 @@ def draw(scene, st, us):
             tr = _track.get(arm.name) or {}
             pts = [tuple(tr[f][0]) for f in sorted(tr) if tr[f] is not None]
             if len(pts) > 1:
-                gpu.state.line_width_set(1.5 * us)
-                sh.uniform_float("color", (1.0, 0.65, 0.2, 0.8))
-                batch_for_shader(sh, 'LINE_STRIP', {"pos": pts}).draw(sh)
+                _draw._flat(pts, (1.0, 0.65, 0.2, 0.8), 'LINE_STRIP', 1.5 * us)
                 gpu.state.point_size_set(3.0 * us)
                 psh.uniform_float("color", (1.0, 0.75, 0.35, 0.9))
                 batch_for_shader(psh, 'POINTS', {"pos": pts}).draw(psh)
@@ -367,21 +366,21 @@ def draw(scene, st, us):
             batch_for_shader(sh, 'TRI_FAN', {"pos": [(sum(p[0] for p in ring) / len(ring),
                                                        sum(p[1] for p in ring) / len(ring), floor)] + ring +
                                               ring[:1]}).draw(sh)
-            gpu.state.line_width_set(2.0 * us)
-            sh.uniform_float("color", (col[0], col[1], col[2], 0.8))
-            batch_for_shader(sh, 'LINE_LOOP', {"pos": ring}).draw(sh)
+            _draw._flat(ring, (col[0], col[1], col[2], 0.8), 'LINE_LOOP', 2.0 * us)
         # the plumb line and where it meets the floor
-        gpu.state.line_width_set(1.5 * us)
-        sh.uniform_float("color", (1.0, 1.0, 1.0, 0.55))
-        batch_for_shader(sh, 'LINES', {"pos": [tuple(g), foot]}).draw(sh)
+        _draw._flat([tuple(g), foot], (1.0, 1.0, 1.0, 0.55), 'LINES', 1.5 * us)
         r = 0.04 * d["height"]
         circ = [(foot[0] + math.cos(a * math.pi / 12) * r, foot[1] + math.sin(a * math.pi / 12) * r, floor)
                 for a in range(24)]
-        gpu.state.line_width_set(2.5 * us)
-        sh.uniform_float("color", col)
-        batch_for_shader(sh, 'LINE_LOOP', {"pos": circ}).draw(sh)
+        _draw._flat(circ, col, 'LINE_LOOP', 2.5 * us)
         if st.com_velocity and vel is not None and float(np.linalg.norm(vel)) > 1e-6:
-            tip = g + vel * 8.0             # where it gets in about 8 frames
+            unit = vel / float(np.linalg.norm(vel))
+            if st.com_velocity_mode == 'FIXED':
+                tip = g + unit * st.com_velocity_length
+            elif st.com_velocity_mode == 'BOTH':
+                tip = g + vel * 8.0 + unit * st.com_velocity_length
+            else:
+                tip = g + vel * 8.0             # where it gets in about 8 frames
             v = tip - g
             n = float(np.linalg.norm(v))
             side = np.cross(v, (0.0, 0.0, 1.0))
@@ -389,9 +388,7 @@ def draw(scene, st, us):
                 side = np.cross(v, (1.0, 0.0, 0.0))
             side = side / float(np.linalg.norm(side)) * n * 0.12
             head = [tuple(tip), tuple(tip - v * 0.2 + side), tuple(tip), tuple(tip - v * 0.2 - side)]
-            gpu.state.line_width_set(3.0 * us)
-            sh.uniform_float("color", (1.0, 0.85, 0.2, 0.95))
-            batch_for_shader(sh, 'LINES', {"pos": [tuple(g), tuple(tip)] + head}).draw(sh)
+            _draw._flat([tuple(g), tuple(tip)] + head, (1.0, 0.85, 0.2, 0.95), 'LINES', 3.0 * us)
     gpu.state.line_width_set(1.0)
     gpu.state.point_size_set(1.0)
     gpu.state.depth_test_set(prev)

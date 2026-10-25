@@ -34,9 +34,9 @@ to Blender's normal bone / object behaviour.
 | Mode | What is drawn | What editing changes |
 |---|---|---|
 | **1 Location** | Trajectory of the bone head / object origin | Location keys |
-| **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. A selected key shows the bone's **X, Y and Z rings**, like Blender's rotate gizmo: drag a ring to turn around that axis only (it follows the mouse steadily even when the ring is seen edge-on); the green Y ring around the bone twists it around its own axis (like Ctrl+T). Dragging the key itself turns the tip freely, like a **trackball**. The faint circle shows how far the tip can reach; drag it to turn around the view axis (like R). A purple **ribbon** along the path, turned like the bone's X axis, shows the twist (only shown: the rings edit it; Display: width and side). **Ctrl+T** twists the bone around its own axis |
-| **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale; their color shows the Y scale (blue below 1, red above) - or, in the preferences (*Scale Y: Ribbon*), a third green ribbon beside them, as wide as the Y scale, with its own gizmo handles on its edges. A box at the current frame shows the current scale | Scale keys: a selected key shows a **scale gizmo** whose X and Z handles sit on the ribbon edges (drag an edge to make that ribbon wider; Y along the bone; the white one scales all). **Click** a gizmo handle to show that channel's handles as **whiskers** along the ribbon (time along the path, value across it) and pick both of them; drag a whisker to edit it. **V** and **T** (handle type, interpolation) work on the selected keys of that channel only, like on one curve in the Graph Editor. Clicking a whisker picks that handle (Shift: add another; undo brings the picking back). **Alt+S** makes the picked handles longer or shorter, **Alt+Shift+S** moves them up or down (both handles of a smooth key tilt together; one handle: the other one follows in line); with none picked, the channel's handles of the selected keys; I / O / B: before the key, after it, both. So the handles can be shaped from the keyboard alone. **S** scales all axes (X / Y / Z: one) |
-| **4 Value** | A **track** for one animated value (IK/FK switch, custom property, constraint influence…), *above the path* or *beside the path* (follows its shape in the plane of the motion, *outside* or *inside* its curves, and stays put when the view turns) | That value: move its keys away from / toward the path. Pick the value in the sidebar or tool header |
+| **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. A selected key (with several selected: the active one) shows the bone's **X, Y and Z rings**, like Blender's rotate gizmo: drag a ring to turn around that axis only (it follows the mouse steadily even when the ring is seen edge-on); the green Y ring around the bone twists it around its own axis (like Ctrl+T). Dragging the key itself turns the tip freely, like a **trackball**. The faint circle shows how far the tip can reach; drag it to turn around the view axis (like R). A purple **ribbon** along the path, turned like the bone's X axis, shows the twist (only shown: the rings edit it; Display: width and side). **Ctrl+T** twists the bone around its own axis |
+| **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale; their color shows the Y scale (blue below 1, red above) - or, in the preferences (*Scale Y: Ribbon*), a third green ribbon beside them (*outside* or *inside* the path's curves, like the Value track; on a circle always outside) that grows from a fixed inner edge like a graph, as wide as the Y scale, with one handle on its outer edge. A box at the current frame shows the current scale, its values written next to it (Display: *Box Values*; *Values at Keys* writes them at the keys) | Scale keys: a selected key shows a **scale gizmo** whose X and Z handles sit on the ribbon edges (drag an edge to make that ribbon wider; Y along the bone; the white one scales all). **Click** a gizmo handle to show that channel's handles as **whiskers** along the ribbon (time along the path, value across it) and pick both of them; drag a whisker to edit it. **V** and **T** (handle type, interpolation) work on the selected keys of that channel only, like on one curve in the Graph Editor. Clicking a whisker picks that handle (Shift: add another; undo brings the picking back). **Alt+S** makes the picked handles longer or shorter, **Alt+Shift+S** moves them up or down (both handles of a smooth key tilt together; one handle: the other one follows in line); with none picked, the channel's handles of the selected keys; I / O / B: before the key, after it, both. So the handles can be shaped from the keyboard alone. **S** scales all axes (X / Y / Z: one) |
+| **4 Value** | A **track** for one animated value (IK/FK switch, custom property, constraint influence…), *above the path* or *beside the path* (follows its shape in the plane of the motion, *outside* or *inside* its curves, and stays put when the view turns; on a circle a bigger value is always farther out) | That value: move its keys away from / toward the path. Pick the value in the sidebar or tool header |
 
 Scale and Value paths of something that stays in place are drawn around a **circle** like a
 clock face, lying flat around the world Z axis (it stays put when the view turns): the frame
@@ -119,7 +119,7 @@ The tool uses the settings you know from modeling, in the header and with the us
 
 | Input | Action |
 |---|---|
-| **Alt+S** | smooth (T: Shape / Time; in Scale mode: the handles of the picked channel) |
+| **Alt+S** | smooth (T: Shape / Time; Shape also turns the handles along the path, *Smooth Handles*; in Scale mode: the handles of the picked channel) |
 | **Alt+E** | exaggerate |
 | **Shift+E** | ease (I / O / B while dragging: slow in, slow out, both; drag left for the opposite: faster through the key) |
 | **Shift+T** | timing menu (see Timing and speed) |
@@ -152,9 +152,13 @@ That is Blender's own behaviour. To keep edits local, turn it off:
 
 1. For new animation: *Edit > Preferences > Animation > F-Curves > Default Smoothing*: **None**.
 2. For curves that already exist (it is a setting of each curve): the **Smoothing: None**
-   button in the sidebar (*Motion Paths > Display*) sets it on every curve of the selected
-   bones / objects; it says how many of them still use Continuous Acceleration (grayed out when
-   none do), and whether new curves will get it. By hand: Graph Editor sidebar > *F-Curve* tab > *Auto Handle Smoothing*,
+   button at the bottom of the sidebar (*Motion Paths > Curve Smoothing*) sets it on every curve
+   of the selected bones / objects; it says how many of them still use Continuous Acceleration
+   (grayed out when none do), and whether new curves will get it. Pressing it re-solves the auto
+   handles once the plain way, so the path may shift a little at that moment. Dragging a key or
+   a handle on a curve that still uses it shows a note at the bottom. (Measured: with it on,
+   even putting a handle back where it is moves the path by ~3%, because the whole curve
+   re-solves; with it off, nothing moves.) By hand: Graph Editor sidebar > *F-Curve* tab > *Auto Handle Smoothing*,
    one curve at a time.
 
 ## Timing and speed
@@ -162,7 +166,8 @@ That is Blender's own behaviour. To keep edits local, turn it off:
 * **Frame dots** are handles for the spacing: drag one along the path. The **timing chart** in
   the bottom right corner of the viewport (a dark block like the speed graph's; with both on,
   one block) shows where every frame lies between the selected
-  keys, like an animator's chart; drag its ticks the same way. An optional **speed graph** sits
+  keys (one key: the segments around it; none: the keys around the current frame), like an
+  animator's chart; drag its ticks the same way. An optional **speed graph** sits
   right above it, as wide as the chart: for the selected keys, the segments on both sides of a
   single selected key, or the keys around the current frame (*Segment*), a set frame range
   (*Range*) or the scene's frame range (*Timeline*). Keys are marked on it with their frame
@@ -303,8 +308,14 @@ bones, or only the selected ones). The farther a ghost is from the current frame
 *Show*: the **Whole** character, only the part the edited bones move (**By Weight**: their
 vertex weights, and of the bones that follow them - children, IK chains), or only the objects
 they move (**By Object**, for characters made of separate parts: a part with no weight from
-them isn't shown). Cameras, lights and empties get ghosts too, drawn as lines (only a picture:
-a ghost light lights nothing).
+them isn't shown). Curves and texts ghost like meshes (a curve without thickness as its line),
+empties as their own display type (cube, sphere, arrows...), cameras and lights like Blender
+draws them (an area light with its shape), other objects as the empty type chosen in the
+preferences (*Other Objects*); metaballs don't (their shape changes all the time). A ghost light
+lights nothing. A child without keys of its own (on an animated empty) can be added to the
+path list to get ghosts (it has no path to edit: a note at the bottom says so). Only the modes
+that show something are offered: *Silhouette* for something with faces, *Points* for meshes, *Bones*
+where there are bones (a light or an empty alone: *Wire* only, so there's nothing to choose).
 
 Heavy characters stay fast: once, with a *Preparing ghosts* note at the bottom, every mesh the
 armature deforms is simplified like Decimate (no holes) down to *Detail*, keeping its bone
@@ -314,8 +325,15 @@ cameras, lights) are one shape drawn with a different matrix per ghost (instance
 ghosts follow the edits live, the nearest ones first, also while a key is dragged, and the old
 ghost stays until its new one is ready (nothing blinks). Back faces are skipped, *Wire* and
 *Points* use the same simplified mesh (the wire stays connected), and ghosts show in X-ray
-too. After editing a mesh's shape, *Update Motion Paths* builds its ghost again (a change in
-the number of vertices or in the modifiers does that by itself).
+too. After editing a mesh's shape, *Update Ghosts* builds its ghost again (a change in the
+number of vertices or in the modifiers does that by itself).
+
+The ghosts are captured ahead of time for every frame they can be on (the keys, or every step
+frames, in the scene's range), the nearest first, so playback shows them all; while playing,
+the missing ones are captured a frame at a time (the fps drops a little until they are all
+there). The Timeline / Dope Sheet shows it: a thin bar under every ready frame, and a dot at
+the ghosts shown now (filled: ready, hollow: being captured). Changes renew them: the
+animation, and also an object changed on the same frame (a reset scale, a moved child).
 
 ## Center of mass
 
@@ -328,7 +346,8 @@ for the edited armature or the active one, with or without a path:
 * the **support** (on by default): the outline of what touches the floor; where the plumb line
   meets the floor turns green inside it (a stable pose), red outside (falling, or moving), gray
   when nothing touches the floor (in the air);
-* the **velocity** (on by default): an arrow where the body is going, about 8 frames ahead;
+* the **velocity** (on by default): an arrow where the body is going - *Adaptive* (as far as it
+  gets in about 8 frames), *Fixed* (a set length: only the direction) or *Adaptive + Length*;
 * the **trajectory** (off by default): the center's path over the frames - a jump's arc should
   be a parabola;
 * the **floor**: *Auto* (the character's lowest point over the animation), a *Height* (a

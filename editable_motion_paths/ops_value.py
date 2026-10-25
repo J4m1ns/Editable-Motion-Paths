@@ -266,8 +266,8 @@ class EMP_OT_scale_whisker(bpy.types.Operator):
         ax = c.axes(tg, t)
         y_rib = self.ch == 1 and st.scale_y_display == 'RIBBON'
         if y_rib:
-            base, across = draw.y_ribbon(st, c, tg, t)
-            a3 = across * self.sign
+            base, across, unit = draw.y_ribbon(st, c, tg, t)
+            a3 = across * (unit / half)
         else:
             a3 = ax[2] if self.ch == 1 else ax[self.ch] * self.sign
         s0 = proj(region, rv3d, base)

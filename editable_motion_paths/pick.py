@@ -85,11 +85,12 @@ def hit_test(context, mx, my, radius=None):
             continue
         editable = cache.owner_selected()
         lo, hi = draw.path_window(context.scene, st, cache)
+        gk = draw.gizmo_key(cache)
         for k in cache.keys:
             if k.hidden or not (lo - 1e-4 <= k.t <= hi + 1e-4):
                 continue
             cands = [('KEY', k.co, 0.0)]
-            if editable and cache.ptype == core.ROTATION and k.sel and (st.show_rot_rings or st.show_reach):
+            if editable and cache.ptype == core.ROTATION and k is gk and (st.show_rot_rings or st.show_reach):
                 rings, _c, _r = space.rot_rings(cache, cache.target(), k, 32)
                 for part, pts in (rings.items() if st.show_rot_rings else ()):
                     d = _polyline_distance(region, rv3d, pts, m)
@@ -100,9 +101,9 @@ def hit_test(context, mx, my, radius=None):
                     d = _polyline_distance(region, rv3d, space.reach_circle(_c, _r, rv3d, 48), m)
                     if d is not None and d <= radius * 0.8:
                         cands.append(('RV', None, d + 1.2))
-            if editable and cache.ptype == core.SCALE and k.sel:
+            if editable and cache.ptype == core.SCALE and k is gk:
                 cands += [(part, p, 0.3) for part, p in
-                          draw.scale_gizmo_points(st, cache, k, region, rv3d).items()]
+                          draw.scale_gizmo_points(st, cache, k, region, rv3d).items() if part != 'GYb']
                 cands += [(part, end, 0.2) for part, _pts, end in draw.scale_whiskers(st, cache, k)]
             if draw.handles_shown(st, cache, editable, k):
                 mw = handle_min_world(region, rv3d, k.co)

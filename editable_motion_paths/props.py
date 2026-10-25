@@ -205,6 +205,17 @@ class EMP_Settings(bpy.types.PropertyGroup):
     com_support: BoolProperty(name="Support", default=True, update=_redraw,
                               description="Center of mass: the outline of what touches the floor; the plumb "
                                           "point is green inside it (stable), red outside, gray in the air")
+    com_velocity_mode: EnumProperty(
+        name="Velocity Length", update=_redraw,
+        items=[('ADAPTIVE', "Adaptive", "As long as the way the body goes in about 8 frames (slow: short)"),
+               ('FIXED', "Fixed", "Always the length below: only the direction"),
+               ('BOTH', "Adaptive + Length", "The way in about 8 frames, plus the length below (a slow motion "
+                                             "still shows its direction)")],
+        default='ADAPTIVE')
+    com_velocity_length: FloatProperty(name="Length", default=0.3, min=0.0, soft_max=2.0, subtype='DISTANCE',
+                                       unit='LENGTH', update=_redraw,
+                                       description="Center of mass: the arrow's length (Fixed) or what is added "
+                                                   "to it (Adaptive + Length)")
     com_floor: EnumProperty(
         name="Floor", update=_redraw,
         items=[('AUTO', "Auto", "The lowest point of the character over the whole animation"),
@@ -285,7 +296,8 @@ class EMP_Settings(bpy.types.PropertyGroup):
         default='UP', update=_refresh)
     value_side: EnumProperty(
         name="Side",
-        description="Value track beside the path: on which side of the path it is drawn",
+        description="The Value track / the Scale Y ribbon beside the path: on which side of the path "
+                    "it is drawn (around a circle always outside)",
         items=[('OUTSIDE', "Outside", "Away from the middle of the motion (around the outside of "
                                       "its curves)"),
                ('INSIDE', "Inside", "Toward the middle of the motion")],
@@ -313,6 +325,10 @@ class EMP_Settings(bpy.types.PropertyGroup):
                ('CIRCLE', "Circle", "The frame range goes once around a circle; the current frame "
                                     "runs around it like on a clock")],
         default='AUTO', update=_refresh)
+    show_key_values: BoolProperty(name="Values at Keys", default=False, update=_redraw,
+                                  description="Scale paths: the scale values next to the keys")
+    show_scale_box_values: BoolProperty(name="Box Values", default=True, update=_redraw,
+                                        description="Scale paths: the current scale next to the Scale Box")
     show_scale_box: BoolProperty(name="Scale Box", default=True,
                                  description="Scale paths: a box at the current frame, as big as the "
                                              "current scale", update=_redraw)
@@ -386,6 +402,13 @@ class EMP_Preferences(bpy.types.AddonPreferences):
                                             default=(1.0, 0.35, 0.3), update=_redraw)
     onion_color_after: FloatVectorProperty(name="After", subtype='COLOR', size=3, min=0.0, max=1.0,
                                            default=(0.3, 0.75, 1.0), update=_redraw)
+    onion_other_display: EnumProperty(
+        name="Other Objects", update=_redraw,
+        description="Onion skin: how objects without a shape of their own (speakers, light probes, force "
+                    "fields...) are drawn",
+        items=[('PLAIN_AXES', "Plain Axes", ""), ('ARROWS', "Arrows", ""), ('SINGLE_ARROW', "Single Arrow", ""),
+               ('CIRCLE', "Circle", ""), ('CUBE', "Cube", ""), ('SPHERE', "Sphere", ""), ('CONE', "Cone", "")],
+        default='PLAIN_AXES')
     hotkey_priority: BoolProperty(
         name="Hotkey Priority", default=True, update=_hotkeys_changed,
         description="The path tools' keys win over other add-ons' keys in the 3D view. Off: where "
@@ -422,6 +445,7 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         col.label(text="Onion Skin")
         col.prop(self, "onion_color_before", text="Before")
         col.prop(self, "onion_color_after", text="After")
+        col.prop(self, "onion_other_display")
 
 
 def prefs():
@@ -449,7 +473,8 @@ def _pref_property(name):
 
 PREF_NAMES = ("color", "jitter_threshold", "show_ghost", "show_spokes", "show_repeats", "on_top", "line_width",
               "key_size", "rot_length", "ribbon_width", "rot_ribbon_width", "scale_box_size", "scale_y_display",
-              "onion_color_before", "onion_color_after")
+              "onion_color_before", "onion_color_after",
+              "onion_other_display")
 for _n in PREF_NAMES:
     setattr(EMP_Settings, _n, _pref_property(_n))
 

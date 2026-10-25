@@ -163,8 +163,10 @@ class EMP_OT_easing_preset(bpy.types.Operator):
             st.easing_strength = min(1.0, max(0.0, st.easing_strength + (0.05 if t == 'WHEELUPMOUSE' else -0.05)))
         elif t in {'ESC', 'RIGHTMOUSE', 'P'} and v == 'PRESS':
             return self._close(context, {'CANCELLED'})
-        elif t in {'MIDDLEMOUSE', 'TRACKPADPAN', 'TRACKPADZOOM'}:
-            return {'PASS_THROUGH'}
+        elif t in {'MIDDLEMOUSE', 'TRACKPADPAN', 'TRACKPADZOOM', 'NDOF_MOTION'}:
+            # turning the view: the gallery goes (it would hang in front of the new view)
+            self._close(context, None)
+            return {'CANCELLED', 'PASS_THROUGH'}
         state.tag_redraw()
         return {'RUNNING_MODAL'}
 

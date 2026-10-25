@@ -133,7 +133,36 @@ HELP = (
         ("P", "easing presets under the mouse"),
         ("Ctrl+H / Ctrl+Shift+H", "show / hide the handles / the frame dots"),
     )),
+    ("Sculpt Motion Path tool", (
+        ("Drag", "paint with the brush"),
+        ("Ctrl+drag", "the opposite effect"),
+        ("Shift+drag", "Smooth"),
+        ("Ctrl+Shift+drag", "Even"),
+        ("Alt+drag", "Dissolve"),
+        ("F / Shift+F", "brush radius / strength"),
+        ("Right-click", "brushes and their settings"),
+        ("Selected keys", "mask the path: only that part changes"),
+        ("A / Alt+A", "select all / clear the mask"),
+    )),
 )
+
+
+def side_applies(scene, st, mode=None):
+    """The Side setting (inside / outside) matters: a Value track or a Scale Y ribbon beside the
+    path - not on the circle, where it is always outward."""
+    mode = mode or st.edit_mode
+    if mode == 'VALUE':
+        beside = st.value_track == 'PATH'
+    elif mode == 'SCALE':
+        beside = st.scale_y_display == 'RIBBON'
+    else:
+        return False
+    if not beside or st.layout == 'CIRCLE':
+        return False
+    if st.layout == 'PATH':
+        return True
+    cs = [c for c in state.visible_caches(scene) if c.ptype == mode]
+    return not cs or any(c.circle is None for c in cs)
 
 
 def _draw_tool_settings(context, layout, tool):
@@ -145,8 +174,8 @@ def _draw_tool_settings(context, layout, tool):
     if st.edit_mode == 'VALUE':
         _draw_value_picker(layout, context)
         layout.prop(st, "value_track", text="")
-        if st.value_track == 'PATH':
-            layout.prop(st, "value_side", text="")
+    if side_applies(context.scene, st):
+        layout.prop(st, "value_side", text="")
     layout.separator()
     _draw_proportional(layout, st, compact=True)
     layout.separator()
@@ -533,8 +562,8 @@ class EMP_PT_main(_Panel, bpy.types.Panel):
             row = layout.row(align=True)
             _draw_value_picker(row, context)
             row.prop(st, "value_track", text="")
-            if st.value_track == 'PATH':
-                layout.row().prop(st, "value_side", expand=True)
+        if side_applies(context.scene, st):
+            layout.row().prop(st, "value_side", expand=True)
 
         row = layout.row()
         row.template_list("EMP_UL_paths", "", st, "paths", st, "active_index", rows=3)
@@ -647,22 +676,39 @@ class EMP_PT_display(_Panel, bpy.types.Panel):
 
 def _draw_onion(layout, st):
     layout.use_property_split = False
-    row = layout.row(align=True)
-    row.prop(st, "onion_mode", text="")
-    if st.onion_mode != 'BONES':
-        row.prop(st, "onion_show", text="")
+    from . import onion
+    scene = bpy.context.scene
+    ms = onion.modes(scene)
+    used = onion.mode_used(scene, st)
+    has_bones = 'BONES' in ms
+    meshes = 'POINTS' in ms
+    if len(ms) > 1:
+        # only the modes that show something here (a light: no silhouette, no bones)
+        row = layout.row(align=True)
+        names = {it.identifier: it.name for it in st.bl_rna.properties["onion_mode"].enum_items}
+        for m in ms:
+            if used == st.onion_mode:
+                row.prop_enum(st, "onion_mode", m)
+            else:
+                # (the chosen mode shows nothing here: the one drawn instead is pressed)
+                row.operator("emp.onion_mode", text=names[m], depress=m == used).mode = m
+    if used != 'BONES' and has_bones and meshes:
+        layout.prop(st, "onion_show", text="Show")
     row = layout.row(align=True)
     row.prop(st, "onion_before")
     row.prop(st, "onion_after")
     layout.prop(st, "onion_step", text="Step (0: on keys)")
     layout.prop(st, "onion_opacity", slider=True)
-    if st.onion_mode == 'BONES':
+    if used == 'BONES':
         layout.prop(st, "onion_bones", text="")
-    if st.onion_mode in {'POINTS', 'BONES', 'WIRE'}:
+    if used in {'POINTS', 'BONES', 'WIRE'}:
         layout.prop(st, "onion_size")
     row = layout.row(align=True)
-    row.prop(st, "onion_max_tris")
-    row.prop(st, "onion_in_front", text="", icon='XRAY')
+    if meshes and used != 'BONES':
+        row.prop(st, "onion_max_tris")
+        row.prop(st, "onion_in_front", text="", icon='XRAY')
+    else:
+        row.prop(st, "onion_in_front", icon='XRAY')
     layout.operator("emp.onion_update", icon='FILE_REFRESH')
 
 
@@ -672,6 +718,11 @@ def _draw_com(layout, st):
     row.prop(st, "com_velocity", toggle=True)
     row.prop(st, "com_support", toggle=True)
     row.prop(st, "com_trail", toggle=True)
+    if st.com_velocity:
+        row = layout.row(align=True)
+        row.prop(st, "com_velocity_mode", text="")
+        if st.com_velocity_mode != 'ADAPTIVE':
+            row.prop(st, "com_velocity_length", text="")
     row = layout.row(align=True)
     row.prop(st, "com_floor", text="Floor")
     if st.com_floor == 'HEIGHT':
@@ -716,7 +767,10 @@ def _draw_display(layout, st, popover=False, context=None):
         if st.show_rot_ribbon:
             col.prop(st, "rot_ribbon_side", text="Side")
     if every or m == 'SCALE':
+        col.prop(st, "show_key_values")
         col.prop(st, "show_scale_box")
+        if st.show_scale_box:
+            col.prop(st, "show_scale_box_values")
     col.prop(st, "show_timing_chart")
     col.prop(st, "show_speed_graph")
     if st.show_speed_graph:
@@ -734,8 +788,8 @@ def _draw_display(layout, st, popover=False, context=None):
             _draw_onion(col.box(), st)
     if every or m == 'VALUE':
         layout.prop(st, "value_track")
-        if st.value_track == 'PATH':
-            layout.prop(st, "value_side")
+    if any(side_applies(bpy.context.scene, st, mm) for mm in (('VALUE', 'SCALE') if every else (m,))):
+        layout.prop(st, "value_side")
     if every or m in {'SCALE', 'VALUE'}:
         layout.prop(st, "layout", text="Scale / Value Layout")
         if st.layout != 'PATH':
@@ -749,10 +803,22 @@ def _draw_display(layout, st, popover=False, context=None):
     layout.prop(st, "pin_partial")
     if every:
         layout.separator()
-        _draw_smoothing(layout, context or bpy.context)
         # colors, sizes and the like are set once: in the add-on's preferences
         op = layout.operator("preferences.addon_show", text="Colors, Sizes, Keys...", icon='PREFERENCES')
         op.module = __package__
+
+
+def overlay_entry(self, context):
+    """Blender's Overlays popover: the ghosts and the center of mass, whatever tool is active."""
+    st = state.settings(context.scene)
+    if st is None or context.mode not in {'POSE', 'OBJECT'}:
+        return
+    layout = self.layout
+    layout.separator()
+    layout.label(text="Motion Paths")
+    row = layout.row(align=True)
+    row.prop(st, "show_onion", text="Onion Skin", icon='ONIONSKIN_ON')
+    row.prop(st, "show_com", text="Center of Mass", icon_value=ops_easing.icon_id("com"))
 
 
 class EMP_PT_onion_popover(bpy.types.Panel):
@@ -788,6 +854,18 @@ class EMP_PT_display_popover(bpy.types.Panel):
         _draw_display(self.layout, state.settings(context.scene), popover=True)
 
 
+class EMP_PT_smoothing(_Panel, bpy.types.Panel):
+    """Blender's Continuous Acceleration on the curves of the selection (the last panel: a
+    one-time fix, not something to keep at hand)"""
+    bl_label = "Curve Smoothing"
+    bl_parent_id = "EMP_PT_main"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 100
+
+    def draw(self, context):
+        _draw_smoothing(self.layout, context)
+
+
 class EMP_PT_help(_Panel, bpy.types.Panel):
     bl_label = "Shortcuts"
     bl_parent_id = "EMP_PT_main"
@@ -797,8 +875,16 @@ class EMP_PT_help(_Panel, bpy.types.Panel):
         col = self.layout.column(align=True)
         col.label(text="With the Edit Motion Path tool:")
         for title, rows in HELP:
+            # a section: its name in the middle of a line across the panel
             col.separator()
-            col.label(text=title, icon='DOT')
+            row = col.row()
+            split = row.split(factor=0.2)
+            split.column().separator(factor=1.2, type='LINE')
+            split = split.split(factor=0.75)
+            sub = split.row()
+            sub.alignment = 'CENTER'
+            sub.label(text=title)
+            split.column().separator(factor=1.2, type='LINE')
             for a, b in rows:
                 split = col.row().split(factor=0.45)
                 split.label(text=a)
@@ -814,7 +900,7 @@ classes = (EMP_MT_handle_type, EMP_MT_interpolation, EMP_MT_value_channel, EMP_O
            ops_fmods.EMP_PT_modifiers,
            EMP_PT_range, EMP_PT_display, EMP_PT_display_popover, EMP_PT_onion_popover, EMP_PT_com_popover, ops_fmods.EMP_PT_modifiers_popover,
            ops_easing.EMP_PT_easing_presets,
-           EMP_PT_help)
+           EMP_PT_help, EMP_PT_smoothing)
 
 _addon_keymaps = []
 
@@ -841,6 +927,7 @@ def register():
     if not hasattr(bpy.types, "WM_MT_button_context"):
         bpy.utils.register_class(_ButtonContext)
     bpy.types.WM_MT_button_context.append(ops_tools.button_context_entry)
+    bpy.types.VIEW3D_PT_overlay.append(overlay_entry)
     # Ctrl+T picks the tool in Pose Mode (also shown in the Shift+Space tool menu); in Object
     # Mode Ctrl+T stays Blender's Track menu
     kc = bpy.context.window_manager.keyconfigs.addon
@@ -864,6 +951,7 @@ def unregister():
     bpy.types.VIEW3D_MT_object_context_menu.remove(_context_menu_entry)
     if hasattr(bpy.types, "WM_MT_button_context"):
         bpy.types.WM_MT_button_context.remove(ops_tools.button_context_entry)
+    bpy.types.VIEW3D_PT_overlay.remove(overlay_entry)
     bpy.utils.unregister_tool(EMP_ObjectTool)
     bpy.utils.unregister_tool(EMP_PoseTool)
     for c in reversed(classes):
