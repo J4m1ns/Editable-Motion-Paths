@@ -173,14 +173,16 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   (*Range*) or the scene's frame range (*Timeline*). Keys are marked on it with their frame
   numbers (the selected ones orange), the current frame in green. The speed graph can be
   dragged: on empty space the **current frame** follows the mouse; a **key's line** (it lights up
-  under the mouse) moves that key in **time** (the whole pose; Ctrl: subframes); the **curve** of a
-  segment, dragged up, makes a stronger **slow in / slow out** (a higher peak in the middle),
-  down a more even speed or faster through the keys - the path keeps its shape (keys are added
-  where needed, like *Ease*). While you drag, the graph keeps its frames and height.
+  under the mouse) moves that key in **time** (the whole pose; Ctrl: subframes); the **curve**:
+  the part of it you grab goes up (faster there) or down (slower), the rest of the segment makes
+  up for it - grab it on the left to change the start of the segment, on the right for its end.
+  The path keeps its shape and the keys their frames (keys are added where needed, like *Ease*;
+  they are selected, so the graph keeps showing the same keys). While you drag, the graph keeps
+  its frames and height.
 * Where the chart and the graph are and how they look - the **corner**, margins, width, heights,
   text size, background, curve and key colors - is in the add-on's preferences (*Timing Chart and
   Speed Graph*); the 3D view shows each change right away, and *Reset the Charts' Look* puts it
-  back.
+  back. In the top corners they leave room for the navigation gizmo and the view's name.
 * **Timing menu (Shift+T**, also in the right-click menu and the Timing & Speed panel), all
   dragged left / right:
   * *Breakdown*: blend the selected keys between the poses of their neighbors, favoring one
@@ -279,7 +281,8 @@ path follows every change of a modifier's settings right away.
 
 A second tool in the toolbar (under Edit Motion Path) paints on the paths with brushes, like
 sculpt mode. Pick a brush in the strip of pictures next to the toolbar (the name shows under
-the mouse), in the tool header, or with a **right click** (brushes, radius, strength, falloff):
+the mouse), in the tool header, or with a **right click** (brushes, radius, strength, falloff).
+Its header also has the onion skin, center of mass, display and modifier buttons of the edit tool:
 
 * timing brushes - the shape of the path stays, only where the bone is on each frame changes:
   **Push** (drag the frames along the path), **Slow Down** (the frames gather under the brush),
@@ -376,7 +379,10 @@ volume around it, so a torso weighs more than a hand. **Limb Weight** (the cente
 select a controller in Pose Mode - an IK hand, a foot, an FK bone - and it shows how much of the
 body the limb it moves is (worked out from the meshes); set another share if it's off (a heavy
 boot, a prop in the hand). The limb lights up while it changes; the arrow next to it goes back to
-the worked out share. (It is kept on the controller bone as the custom property `com_limb`; a
+the worked out share. With the center shown, the right-click menu has **Edit Limb Weight...** (a
+small popup under the mouse). A controller that moves the whole body (the root, the torso) has
+no weight of its own - pick the chest, the hips or a limb. Space switches that are off (a head
+that could follow the hand, influence 0) don't make a bone part of a limb. (It is kept on the controller bone as the custom property `com_limb`; a
 deform bone's `com_mass` still scales that one bone, e.g. 0 for a cape.) The velocity, the floor
 level and the trajectory are worked out in the background frame by frame (only the bones are
 evaluated, like the onion ghosts) and follow your edits.
@@ -397,7 +403,9 @@ the same in every file.
 
 * **Color**: *Speed* (blue slow, red fast), **Jitter**, *Before / After* and *Solid*. Jitter
   is a heat map of roughness. Smooth motion stays gray (fast smooth motion too: roughness is
-  measured against the local speed); hitches, pops and noisy wobbles glow yellow to red. Select
+  measured against the speed around it, so a slow, smooth turn next to faster motion stays calm
+  too); hitches, pops (a key where the speed jumps, e.g. a Linear segment after a flat Bezier
+  handle) and noisy wobbles glow yellow to red. Select
   the red part and smooth it. *Threshold* sets the sensitivity.
 * Baked keys (a key every frame or two) are drawn as small dots, so dense motion stays
   readable.

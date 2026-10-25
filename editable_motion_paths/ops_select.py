@@ -40,7 +40,7 @@ class EMP_OT_click(bpy.types.Operator):
                 kind, val = sp
                 props = dict(mode=kind, obj_name=c.obj_name, bone_name=c.bone_name)
                 if kind == 'EASE':
-                    props.update(frame=val[0], frame_b=val[1])
+                    props.update(frame=val[0], frame_b=val[1], grab=val[2])
                 else:
                     props.update(frame=val)
                 bpy.ops.emp.speed_drag('INVOKE_DEFAULT', **props)

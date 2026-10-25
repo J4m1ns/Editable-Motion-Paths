@@ -63,9 +63,10 @@ def _jitter_color(x):
 
 def jitter_values(cache):
     """Roughness at every sample of the path: |4th difference| of the per-frame positions
-    (zero for any smooth cubic motion) relative to the LOCAL speed, so fast but smooth parts
-    (big spacing) stay calm. Near holds the speed used never drops below a tenth of the
-    average, so tiny wobbles there don't light up."""
+    (zero for any smooth cubic motion) relative to the speed AROUND it (the fastest of the 4
+    frames on each side), so fast but smooth parts (big spacing) stay calm, and so does a slow,
+    smooth turn next to faster motion (a foot peeling off the floor). The speed used never
+    drops below a quarter of the average, so tiny wobbles near holds don't light up."""
     cached = getattr(cache, "_jitter", None)
     if cached is not None and cached[0] is cache.sig:
         return cached[1]
@@ -77,11 +78,11 @@ def jitter_values(cache):
         d4[i] = (P[i - 2] - 4.0 * P[i - 1] + 6.0 * P[i] - 4.0 * P[i + 1] + P[i + 2]).length
     steps = [(b - a).length for a, b in zip(P, P[1:])]
     speed = sum(steps) / max(1, n - 1)
-    floor = max(speed * 0.1, 1e-9)
+    floor = max(speed * 0.25, 1e-9)
 
     def local(i):
-        s = steps[max(0, i - 2):i + 2]
-        return max(sum(s) / len(s), floor) if s else floor
+        s = steps[max(0, i - 4):i + 4]
+        return max(max(s), floor) if s else floor
     rough = [max(d4[max(0, i - 1):i + 2]) / local(i) for i in range(n)]
     at = {round(t): r for (t, _p), r in zip(frames, rough)}
     out = [at.get(round(t), 0.0) for t in cache.times]
@@ -907,9 +908,16 @@ def graph_layout(region, us, area, st, chart=True, speed=True):
     dict(x0, x1, lo, hi, chart=(lo, hi) or None, speed=(lo, hi) or None, div=y or None); the
     speed graph is above the chart, one block when both show."""
     left, right, top = _view_box(region, area, us)
+    corner = st.graph_corner
+    sp = area.spaces.active if area is not None else None
+    if corner == 'TOP_RIGHT' and getattr(sp, "show_gizmo", False) and getattr(sp, "show_gizmo_navigate", False):
+        # the navigation gizmo and the buttons under it
+        right -= (bpy.context.preferences.view.gizmo_size_navigate_v3d + 40.0) * us
+    if corner == 'TOP_LEFT' and sp is not None and getattr(sp, "overlay", None) is not None and \
+            sp.overlay.show_overlays and sp.overlay.show_text:
+        top -= 50.0 * us        # the view's name and the object's
     mx, my = st.graph_margin_x * us, st.graph_margin_y * us
     w = st.graph_width * us
-    corner = st.graph_corner
     if corner.endswith('RIGHT'):
         x1 = right - mx
         x0 = max(x1 - w, left + 10.0 * us)
@@ -1168,7 +1176,7 @@ def _draw_speed_graph(ctx, st, us):
         _flat(hot_lines, sc + (0.8,), 'LINES', 2.0 * us)
     width = 2.5 * us if hot is not None and hot[1] == 'EASE' else None
     if width is not None:
-        a, b = hot[2]
+        a, b = hot[2][:2]
         seg = [(X(t), Y(s)) for t, s in pts if a - 1e-6 <= t <= b + 1e-6]
         if len(seg) > 1:
             _flat(seg, cc + (1.0,), 'LINE_STRIP', width)
@@ -1198,7 +1206,8 @@ def _draw_speed_graph(ctx, st, us):
 
 def speed_hit(area, mx, my):
     """What the mouse is on in the speed graph: ('KEY', frame), ('EASE', (first, last frame of
-    the segment)) near the curve, ('SCRUB', frame) elsewhere on it; None off the graph."""
+    the segment, the frame under the mouse)) near the curve, ('SCRUB', frame) elsewhere on it;
+    None off the graph."""
     sg = state.speed_graph
     if sg is None or area is None or sg["area"] != area.as_pointer():
         return None
@@ -1219,7 +1228,7 @@ def speed_hit(area, mx, my):
         a = max((k for k in ks if k <= t), default=None)
         b = min((k for k in ks if k > t), default=None)
         if a is not None and b is not None:
-            return ('EASE', (a, b))
+            return ('EASE', (a, b, t))
     return ('SCRUB', min(max(t, t0), t1))
 
 

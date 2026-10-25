@@ -652,9 +652,9 @@ class EMP_OT_timing_menu(bpy.types.Operator):
 
 class EMP_OT_speed_drag(bpy.types.Operator):
     """Drag on the speed graph: on empty space the current frame follows; a key's line moves """ \
-        """that key in time (the whole pose; Ctrl: subframes); the curve of a segment, up: a """ \
-        """stronger slow in / slow out (higher peak), down: more even or faster at the keys (the """ \
-        """path keeps its shape). Esc / right click: cancel"""
+        """that key in time (the whole pose; Ctrl: subframes); the curve: the part of it under the """ \
+        """mouse goes up (faster there) or down (slower), the rest of the segment makes up for it """ \
+        """(the path keeps its shape, the keys their frames). Esc / right click: cancel"""
     bl_idname = "emp.speed_drag"
     bl_label = "Speed Graph"
     bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
@@ -666,8 +666,10 @@ class EMP_OT_speed_drag(bpy.types.Operator):
     obj_name: StringProperty(options={'HIDDEN'})
     bone_name: StringProperty(options={'HIDDEN'})
     new_frame: FloatProperty(name="New Frame", description="Key Time: where the key goes")
-    amount: FloatProperty(name="Ease", default=0.0, min=-1.0, max=1.0,
-                          description="Ease: 1 - the bone comes to rest at both keys, -1 - faster through them")
+    grab: FloatProperty(name="At Frame", description="Ease: where the curve was grabbed")
+    amount: FloatProperty(name="Speed Change", default=0.0,
+                          description="Ease: how much faster (or slower, below 0) the motion is where the curve "
+                                      "was grabbed, in the graph's units (distance per frame)")
 
     def _cache(self, context):
         for c in state.editable_caches(context.scene):
@@ -704,12 +706,13 @@ class EMP_OT_speed_drag(bpy.types.Operator):
             if abs(self.new_frame - self.frame) > 1e-6:
                 move_keys_in_time(c, {self.frame: self.new_frame}, select=self.sel)
         elif self.mode == 'EASE':
-            from .ops_tools import ease_target
             self.snapshot.restore()
             c.refresh(force=True)
             tg = c.target()
-            if abs(self.amount) > 1e-6:
-                refit(self.job, tg, ease_target(self.job, tg, True, True, self.amount), self.sel)
+            if abs(self.amount) > 1e-9:
+                u0 = (self.grab - self.frame) / max(self.frame_b - self.frame, 1e-6)
+                # (the segment's keys and the new ones are selected: the graph keeps its frames)
+                refit(self.job, tg, bump_target(self.job, tg, u0, self.amount), True)
             c.refresh(force=True)
 
     def execute(self, context):
@@ -758,9 +761,9 @@ class EMP_OT_speed_drag(bpy.types.Operator):
             self.new_frame = t
             text = "Key %g -> %g   (Ctrl: subframes)" % (self.frame, t)
         else:
-            self.amount = min(1.0, max(-1.0, (my - self.my0) / (150.0 * compat.ui_scale())))
-            text = "Ease %g-%g: %+.2f   up: slower at the keys, down: faster" % (self.frame, self.frame_b,
-                                                                            self.amount)
+            sg = self.sg
+            self.amount = (my - self.my0) / max(sg["gh"], 1.0) * sg["vmax"] * 1.2
+            text = "Speed at frame %.1f: %+.4f   up: faster there, down: slower" % (self.grab, self.amount)
         self._apply()
         self.area.header_text_set(text + "   click / release: confirm   Esc: cancel")
         pick.tag_anim_editors()
@@ -789,9 +792,48 @@ class EMP_OT_speed_drag(bpy.types.Operator):
             self.snapshot.restore()
             self.c.dirty = True
             self.c.refresh(force=True)
+        elif self.mode == 'KEY' and state.settings(context.scene).speed_range == 'SEGMENT':
+            # the graph's ends stay selected, so it keeps showing the same keys
+            ends = {round(self.new_frame if abs(t - self.frame) < 1e-3 else t, 3) for t in (self.sg["lo"],
+                                                                                           self.sg["hi"])}
+            self.c.refresh(force=True)
+            for k in self.c.keys:
+                if round(k.t, 3) in ends or round(k.t, 3) in self.sel or abs(k.t - self.new_frame) < 1e-3 and \
+                        round(self.frame, 3) in self.sel:
+                    pick.select_part(self.c, k, 'KEY', True)
         pick.tag_anim_editors()
         state.tag_redraw()
         return {'FINISHED'} if ok else {'CANCELLED'}
+
+
+def bump_target(job, tg, u0, dv):
+    """Target motion of one segment: the same path, its speed changed by dv around u0 (0..1 of
+    the segment, a smooth bump), the rest of the segment slower / faster so it still takes the
+    same frames."""
+    cache = job.cache
+    r0, r1 = job.r0, job.r1
+    total = job.arc[-1]
+    n = 200
+    dt = (r1 - r0) / n
+    s0 = [job._at(job.arc, r0 + dt * i) for i in range(n + 1)]
+    v0 = [max(b - a, 0.0) for a, b in zip(s0, s0[1:])]
+    sig = 0.16
+    v = []
+    for i, a in enumerate(v0):
+        k = math.exp(-0.5 * (((i + 0.5) / n - u0) / sig) ** 2)
+        v.append(max(a + dv * dt * k, a * 0.05))
+    scale = total / (sum(v) or 1.0)
+    S = [0.0]
+    for x in v:
+        S.append(S[-1] + x * scale)
+
+    def fn(t):
+        u = min(max((t - r0) / dt, 0.0), float(n))
+        i = min(int(u), n - 1)
+        s = S[i] + (S[i + 1] - S[i]) * (u - i)
+        tt = job._time_at_arc(s)
+        return cache.solve(tg, t, job._at(job.pts, tt), job._at(job.vals, tt))
+    return fn
 
 
 class EMP_OT_graph_hover(bpy.types.Operator):

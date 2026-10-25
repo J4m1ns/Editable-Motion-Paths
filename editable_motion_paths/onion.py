@@ -108,7 +108,8 @@ def _key_frames(scene):
 
 def affected_bones(arm, edited):
     """The bones the edited ones move: their children, and bones constrained to them (an IK
-    chain to its controller, Copy Transforms...) with their own children."""
+    chain to its controller, Copy Transforms...) with their own children. Constraints that are
+    off now (muted, no influence) don't count."""
     bones = arm.data.bones
     out = set()
     for b in bones:
@@ -120,6 +121,8 @@ def affected_bones(arm, edited):
             if pb.name in out:
                 continue
             for con in pb.constraints:
+                if con.mute or not getattr(con, "enabled", True) or con.influence < 1e-3:
+                    continue        # (a space switch that is off now: the head doesn't follow the hand)
                 if getattr(con, "target", None) == arm and getattr(con, "subtarget", "") in out:
                     chain = [pb.name]
                     if con.type == 'IK':

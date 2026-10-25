@@ -148,6 +148,7 @@ def _apply_limbs(arm, d, limbs):
     m = d["m_base"].copy()
     idx = {n: i for i, n in enumerate(d["names"])}
     for name, f in limbs:
+        f = min(max(f, 0.02), 50.0)         # (never no mass at all: the center would be gone)
         for b in onion.affected_bones(arm, {name}):
             i = idx.get(b)
             if i is not None:
@@ -187,6 +188,8 @@ def set_limb_share(arm, bone, share):
     now = limb_share(arm, bone)
     if d is None or pb is None or not now:
         return False
+    if now > WHOLE:
+        return False            # it moves the whole body: its weight can't move the center
     share = min(max(share, 0.001), 0.95)
     total = float(d["m"].sum())
     m = now * total
@@ -201,6 +204,9 @@ def set_limb_share(arm, bone, share):
     changed_all(arm)
     flash_limb(arm, bone)
     return True
+
+
+WHOLE = 0.97       # a controller moving more of the body than this moves all of it
 
 
 _flash = [None, 0.0, False]     # (armature, controller) lit up, when, its fade timer runs

@@ -741,6 +741,9 @@ def _draw_settings(context, layout, tool):
     if bs.brush in {'GRAB', 'SMOOTH', 'PINCH'}:
         layout.prop(bs, "insert_keys")
     layout.prop(st, "edit_mode", text="")
+    layout.separator()
+    from .ui import draw_header_buttons
+    draw_header_buttons(layout, st)
 
 
 def draw_brushes(layout, context):

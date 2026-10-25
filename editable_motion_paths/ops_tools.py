@@ -277,6 +277,34 @@ class EMP_OT_com_limb_reset(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class EMP_OT_edit_limb_weight(bpy.types.Operator):
+    """Center of mass: how much of the body the limb the active controller moves is - set it """ \
+        """in a small popup under the mouse (the limb lights up)"""
+    bl_idname = "emp.edit_limb_weight"
+    bl_label = "Edit Limb Weight"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        st = state.settings(context.scene)
+        return st is not None and st.show_com and context.mode == 'POSE'
+
+    def invoke(self, context, event):
+        from . import com
+        from .props import _limb_target
+        arm, pb = _limb_target(context)
+        if arm is not None and com.limb_share(arm, pb.name):
+            com.flash_limb(arm, pb.name)
+        return context.window_manager.invoke_popup(self, width=260)
+
+    def draw(self, context):
+        from .ui import draw_limb_weight
+        draw_limb_weight(self.layout, state.settings(context.scene))
+
+    def execute(self, context):
+        return {'FINISHED'}
+
+
 class EMP_OT_reset_graph_look(bpy.types.Operator):
     """Set the look of the timing chart and the speed graph (place, size, colors, text) back to """ \
         """the defaults"""
@@ -1792,7 +1820,7 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
 
 
 classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
-           EMP_OT_reset_graph_look, EMP_OT_com_limb_reset,
+           EMP_OT_reset_graph_look, EMP_OT_com_limb_reset, EMP_OT_edit_limb_weight,
            EMP_OT_smoothing_none, EMP_OT_onion_mode, EMP_OT_onion_update, EMP_OT_path_update,
            EMP_OT_edit_tool,
            EMP_OT_handle_type, EMP_OT_interpolation,

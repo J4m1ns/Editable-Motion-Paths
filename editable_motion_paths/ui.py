@@ -182,6 +182,11 @@ def _draw_tool_settings(context, layout, tool):
     layout.separator()
     layout.operator("emp.path_add", text="Add Path", icon='ADD')
     layout.prop(st, "show_all_handles")
+    draw_header_buttons(layout, st)
+
+
+def draw_header_buttons(layout, st):
+    """Onion skin, center of mass, display, modifiers: in the header of both tools."""
     row = layout.row(align=True)
     row.prop(st, "show_onion", text="", icon='ONIONSKIN_ON')
     row.popover("EMP_PT_onion_popover", text="")
@@ -465,6 +470,8 @@ class EMP_MT_context(bpy.types.Menu):
         layout = self.layout
         layout.operator_context = 'INVOKE_REGION_WIN'
         layout.operator("emp.edit_value", text="Edit Value...", icon='GREASEPENCIL')
+        if getattr(state.settings(context.scene), "show_com", False):
+            layout.operator("emp.edit_limb_weight", text="Edit Limb Weight...", icon_value=ops_easing.icon_id("com"))
         layout.separator()
         layout.operator("emp.subdivide", icon='SNAP_EDGE')
         layout.operator("emp.extrude", text="Extrude", icon='EXPORT')
@@ -729,17 +736,34 @@ def _draw_com(layout, st):
     row.prop(st, "com_floor", text="Floor")
     if st.com_floor == 'HEIGHT':
         row.prop(st, "com_floor_height", text="")
+    draw_limb_weight(layout, st)
+
+
+def draw_limb_weight(layout, st):
+    """The Limb Weight of the active controller (center of mass), or why there is none."""
     from . import com
     from .props import _limb_target
     arm, pb = _limb_target()
     if arm is None:
-        layout.label(text="Limb Weight: select a controller (Pose Mode)", icon='INFO')
-    elif com.limb_share(arm, pb.name) is None:
-        layout.label(text="%s moves no part with weight" % pb.name, icon='INFO')
+        layout.label(text="Limb Weight: select a controller", icon='INFO')
+        layout.label(text="(Pose Mode)")
+        return
+    share = com.limb_share(arm, pb.name)
+    col = layout.column(align=True)
+    if share is None:
+        col.label(text=pb.name, icon='INFO')
+        col.label(text="moves no part with weight")
+    elif share > com.WHOLE:
+        col.label(text=pb.name, icon='INFO')
+        col.label(text="moves the whole body: pick the")
+        col.label(text="chest, the hips or a limb")
     else:
-        layout.label(text="Limb Weight: what %s moves" % pb.name)
+        col.label(text="Limb Weight: what %s moves" % pb.name)
+    if share is not None and share <= com.WHOLE or "com_limb" in pb:
         row = layout.row(align=True)
-        row.prop(st, "com_limb_share", text="Of the Body")
+        sub = row.row(align=True)
+        sub.enabled = share is not None and share <= com.WHOLE
+        sub.prop(st, "com_limb_share", text="Of the Body")
         sub = row.row(align=True)
         sub.enabled = "com_limb" in pb
         sub.operator("emp.com_limb_reset", text="", icon='LOOP_BACK')
