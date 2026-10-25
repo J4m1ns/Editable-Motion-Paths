@@ -84,8 +84,12 @@ class EMP_OT_easing_preset(bpy.types.Operator):
                        description="Keep the Path: where in the selected part the easing ends (after it "
                                    "the timing stays)")
     blend: FloatProperty(name="Blend", default=0.0, min=0.0, max=0.5, subtype='FACTOR',
-                         description="Keep the Path: how softly the easing fades in at From and out at To "
-                                     "(share of the part; 0: it starts right there, still without a jolt)")
+                         description="Keep the Path: how softly the easing joins the timing left as it is "
+                                     "before From and after To (share of the part)")
+    fit: BoolProperty(name="Fit to Part", default=False,
+                      description="Keep the Path: the whole easing fitted into From - To (Out from 60%: only the "
+                                  "end slows down). Off: the easing of the whole selection, applied between "
+                                  "From and To only")
     back: FloatProperty(name="Overshoot", default=1.70158, min=0.0, soft_max=5.0,
                         description="Back: how far it goes past the end")
     amplitude: FloatProperty(name="Amplitude", default=1.0, min=0.0, soft_max=3.0,
@@ -149,6 +153,7 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         self.channels = st.easing_channels
         self.strength = st.easing_strength
         self.start, self.end, self.blend = st.easing_from, st.easing_to, st.easing_blend
+        self.fit = st.easing_fit
         return self.execute(context)
 
     def _typing(self, context, st, event):
@@ -219,6 +224,8 @@ class EMP_OT_easing_preset(bpy.types.Operator):
                     _slider_from_mouse(context, st, g, hit[1], mx)
             elif hit[0] == 'ease':
                 st.easing_type = hit[1]                 # picked: the preview shows it, Apply puts it on
+            elif hit[0] == 'fit' and st.easing_mode == 'TIMING':
+                st.easing_fit = not st.easing_fit
             elif hit[0] == 'apply':
                 return self._apply(context)
         elif t in {'RET', 'NUMPAD_ENTER', 'SPACE'} and v == 'PRESS':
@@ -247,6 +254,7 @@ class EMP_OT_easing_preset(bpy.types.Operator):
             col.prop(self, "start", slider=True)
             col.prop(self, "end", slider=True)
             col.prop(self, "blend", slider=True)
+            col.prop(self, "fit")
         else:
             labels = channel_labels(context) or ["1", "2", "3", "4"]
             row = layout.row(align=True, heading="Channels")
@@ -309,7 +317,7 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         d0 = (pts[1] - pts[0]).normalized() if len(pts) > 1 else None
         d1 = (pts[-1] - pts[-2]).normalized() if len(pts) > 1 else None
         # (the easing on the From / To part; outside it the timing stays - see eased_arc)
-        S, A, B = eased_arc(job, self._fn(), self.strength, self.start, self.end, self.blend)
+        S, A, B = eased_arc(job, self._fn(), self.strength, self.start, self.end, self.blend, self.fit)
 
         def target(t):
             if t <= A or t >= B:
@@ -400,11 +408,14 @@ def window_easing(fn, frames, dist, v_in=None, v_out=None):
     return G
 
 
-def eased_arc(job, fn, strength, start, end, blend):
+def eased_arc(job, fn, strength, start, end, blend, fit=False):
     """S(t): how far along the path the motion is on frame t after the easing (the arc length of
-    the part, from 0 to its length) - the easing on the From / To part of it, blended in over
-    `blend` of that part where the motion goes on past it, `strength` of it. Applying it and the
-    preview use the same."""
+    the part, from 0 to its length), `strength` of it. Applying it and the preview use the same.
+
+    The easing of the whole selection, applied between From and To only: before / after them the
+    timing stays, and it joins the eased one over `blend` of the part (at least two frames, or the
+    path would jump). fit: the whole easing fitted into From - To instead, starting / ending with the
+    speed the motion has there (see window_easing), faded in over `blend`."""
     r0, r1 = job.r0, job.r1
     lo, hi = sorted((start, end))
     if hi - lo < 0.02:
@@ -412,12 +423,27 @@ def eased_arc(job, fn, strength, start, end, blend):
     A, B = r0 + (r1 - r0) * lo, r0 + (r1 - r0) * hi
     sA, sB = job._at(job.arc, A), job._at(job.arc, B)
     inside_lo, inside_hi = lo > 1e-3, hi < 1.0 - 1e-3
-    G = window_easing(fn, B - A, sB - sA, _speed(job, A) if inside_lo else None,
-                      _speed(job, B) if inside_hi else None)
 
     def smooth(x):
         x = min(max(x, 0.0), 1.0)
         return x * x * (3.0 - 2.0 * x)
+    if not fit:
+        total = job.arc[-1]
+        ramp = min(max(blend * (B - A), 2.0), (B - A) * 0.5)
+
+        def M(t):
+            s0 = job._at(job.arc, t)
+            if t <= A or t >= B:
+                return s0
+            k = strength
+            if inside_lo:
+                k *= smooth((t - A) / ramp)
+            if inside_hi:
+                k *= smooth((B - t) / ramp)
+            return s0 + (total * fn((t - r0) / (r1 - r0)) - s0) * k
+        return M, A, B
+    G = window_easing(fn, B - A, sB - sA, _speed(job, A) if inside_lo else None,
+                      _speed(job, B) if inside_hi else None)
 
     def S(t):
         s0 = job._at(job.arc, t)
@@ -483,9 +509,11 @@ def gallery_items(context, g, us):
     y -= _PREVIEW * us + gap
     out.append(('preview', None, x0 + pad, y, inner, _PREVIEW * us, ""))
     y -= row + gap
-    sw = (inner - 3 * 4 * us) / 4
+    fw = 46.0 * us                          # (the Fit to Part switch at the end of the row)
+    sw = (inner - fw - 4 * 4 * us) / 4
     for i, (key, label, _prop) in enumerate(SLIDERS):
         out.append(('slider', key, x0 + pad + i * (sw + 4 * us), y, sw, row, label))
+    out.append(('fit', None, x0 + pad + inner - fw, y, fw, row, "Fit"))
     y -= _WIDE * us + gap
     out.append(('ease', 'LINEAR', x0 + pad, y, inner, _WIDE * us, "Linear"))
     tile = _TILE * us
@@ -599,7 +627,8 @@ def preview_speeds(context, st, kind, n=64):
         return easing.ease(kind, direction, u, *p) if kind != 'LINEAR' else u
     timing = st.easing_mode == 'TIMING'
     S, _A, _B = eased_arc(job, fn, st.easing_strength if timing else 1.0, st.easing_from if timing else 0.0,
-                          st.easing_to if timing else 1.0, st.easing_blend if timing else 0.0)
+                          st.easing_to if timing else 1.0, st.easing_blend if timing else 0.0,
+                          st.easing_fit and timing)
     ts = [r0 + (r1 - r0) * i / n for i in range(n + 1)]
     h = (r1 - r0) / n * 0.5
     before = [abs(job._at(job.arc, min(t + h, r1)) - job._at(job.arc, max(t - h, r0))) /
@@ -674,6 +703,10 @@ def draw_gallery(ctx, us):
                 text("%s: %s|" % (label, g['edit']['text']), x + bw * 0.5, y + bh * 0.5, col=(1.0, 0.85, 0.4, 1.0))
             else:
                 text("%s %d%%" % (label, round(value * 100)), x + bw * 0.5, y + bh * 0.5, col=col)
+        elif kind == 'fit':
+            on = timing and st.easing_fit
+            draw._rounded_rect(x, y, bw, bh, 4.0 * us, blue if on else (lit if over and timing else dark))
+            text(label, x + bw * 0.5, y + bh * 0.5, col=(1.0, 1.0, 1.0, 0.92 if timing else 0.35))
         elif kind == 'apply':
             draw._rounded_rect(x, y, bw, bh, 5.0 * us, (0.32, 0.55, 0.9, 0.98) if over else blue)
             name = dict([('LINEAR', "Linear")] + list(easing.TYPES)).get(st.easing_type, "")
@@ -773,6 +806,7 @@ def draw_presets(layout, context):
         row.prop(st, "easing_from", slider=True)
         row.prop(st, "easing_to", slider=True)
         col.prop(st, "easing_blend", slider=True)
+        col.prop(st, "easing_fit")
 
     def setup(op, kind):
         op.easing = kind
@@ -781,6 +815,7 @@ def draw_presets(layout, context):
         op.channels = st.easing_channels
         op.strength = st.easing_strength
         op.start, op.end, op.blend = st.easing_from, st.easing_to, st.easing_blend
+        op.fit = st.easing_fit
     setup(layout.operator("emp.easing_preset", text="Linear", icon_value=icon_id("ease_LINEAR")), 'LINEAR')
     grid = layout.grid_flow(row_major=True, columns=5, even_columns=True, even_rows=True, align=False)
     for kind, name in easing.TYPES:

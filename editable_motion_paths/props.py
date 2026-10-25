@@ -407,8 +407,12 @@ class EMP_Settings(bpy.types.PropertyGroup):
             ('BOUNCE', "Bounce"), ('ELASTIC', "Elastic"))],
         default='SINE', description="The easing picked in the gallery (P), put on with Apply")
     easing_blend: FloatProperty(name="Blend", default=0.0, min=0.0, max=0.5, subtype='FACTOR', update=_redraw,
-                                description="Keep the Path: how softly the easing fades in at From and out "
-                                            "at To (share of the part)")
+                                description="Keep the Path: how softly the easing joins the timing left as it "
+                                            "is before From and after To (share of the part)")
+    easing_fit: BoolProperty(name="Fit to Part", default=False, update=_redraw,
+                             description="Keep the Path: the whole easing is fitted into From - To (Out from 60%: "
+                                         "only the end slows down, the speed carries on into it). Off: the easing "
+                                         "is the one of the whole selection, From / To only say where it applies")
     easing_from: FloatProperty(name="From", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_redraw,
                                description="Keep the Path: where in the selected part the easing begins "
                                            "(before it the timing stays; e.g. Out from 60%: only the end "

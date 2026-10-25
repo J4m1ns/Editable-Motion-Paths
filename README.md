@@ -228,14 +228,14 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   Elastic overshoot along the direction of the motion); *Channels* sets Blender's easing
   interpolation on the channels you pick (drag across them to switch several; one always stays
   on), like in the Graph Editor. *Bounce* has *Bounces* and *Bounciness*, *Elastic* its
-  amplitude and period. *From* / *To* (Keep the Path): the easing works on that part of the
-  selection only, the timing before and after it stays - *Out* from 60% slows down only the end
-  (the speed carries on smoothly into the slow-down; with the keys on their frames, the part in
-  between goes a bit faster to make up for it); *Blend* fades it in and out over that much of the
-  part, for an even softer start and end. **P** opens them as a gallery under the mouse: a
+  amplitude and period. *From* / *To* (Keep the Path): the easing of the whole selection is put on
+  between them only - before and after them the timing stays as it was, and *Blend* (at least two
+  frames) is how softly the two join. **Fit to Part** fits the whole easing into From - To instead:
+  *Out* from 60% then slows down only the end (the speed carries on smoothly into the slow-down;
+  with the keys on their frames, the part in between goes a bit faster to make up for it). **P** opens them as a gallery under the mouse: a
   **preview** of the selected part's speed (now in gray, with the easing in blue) shows what a
   picture does as soon as the mouse is on it; click a picture to pick it, tune *Strength*,
-  *From*, *To*, *Blend* while watching the preview (drag a slider, or Ctrl+click it to type a
+  *From*, *To*, *Blend*, *Fit* while watching the preview (drag a slider, or Ctrl+click it to type a
   value), then **Apply** (or Enter, or double-click the picture). The redo panel has all the
   settings after that.
 
