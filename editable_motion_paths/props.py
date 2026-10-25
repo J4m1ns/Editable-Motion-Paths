@@ -9,6 +9,30 @@ def _redraw(self, context):
     state.tag_redraw()
 
 
+def _limb_target(context=None):
+    """(armature, active pose bone) for the Limb Weight, or (None, None)."""
+    context = context or bpy.context
+    ob = getattr(context, "active_object", None)
+    if ob is None or ob.type != 'ARMATURE' or ob.mode != 'POSE':
+        return None, None
+    pb = getattr(context, "active_pose_bone", None) or ob.pose.bones.get(getattr(ob.data.bones.active, "name", ""))
+    return (ob, pb) if pb is not None else (None, None)
+
+
+def _get_limb(self):
+    from . import com
+    arm, pb = _limb_target()
+    share = com.limb_share(arm, pb.name) if arm is not None else None
+    return 100.0 * share if share else 0.0
+
+
+def _set_limb(self, value):
+    from . import com
+    arm, pb = _limb_target()
+    if arm is not None:
+        com.set_limb_share(arm, pb.name, value / 100.0)
+
+
 def _rebake(self, context):
     for c in state.caches.values():
         c.B = []
@@ -223,6 +247,11 @@ class EMP_Settings(bpy.types.PropertyGroup):
                ('CURSOR', "3D Cursor", "A floor at the height of the 3D cursor")],
         default='AUTO', description="Center of mass: where the floor is (the plumb line ends there, the "
                                     "support is what touches it)")
+    com_limb_share: FloatProperty(
+        name="Limb Weight", subtype='PERCENTAGE', min=0.1, max=95.0, precision=1, get=_get_limb, set=_set_limb,
+        description="Center of mass: how much of the body's mass the limb this controller moves is (worked out "
+                    "from the meshes; set it by hand if it's off - a heavy boot, a prop in the hand). The limb "
+                    "lights up while it changes; the arrow sets it back to the worked out value")
     com_floor_height: FloatProperty(name="Floor Height", default=0.0, subtype='DISTANCE', unit='LENGTH',
                                     update=_redraw)
     onion_show: EnumProperty(
@@ -235,6 +264,11 @@ class EMP_Settings(bpy.types.PropertyGroup):
         default='WHOLE')
     onion_size: FloatProperty(name="Size", default=3.0, min=1.0, soft_max=12.0, update=_redraw,
                               description="Points / lines of the ghosts: how thick they are")
+    onion_preview_pose: BoolProperty(
+        name="Preview Unkeyed Pose", default=False, update=_redraw,
+        description="The ghosts show the neighboring frames as if the pose you are changing were keyed "
+                    "on this frame (during G / R / S and after it, until you change the frame). With Auto "
+                    "Keying on, this happens during G / R / S anyway")
     onion_in_front: BoolProperty(name="In Front", default=False, update=_redraw,
                                  description="Draw the ghosts over everything (X-ray)")
     show_rot_ribbon: BoolProperty(name="Rotation Ribbon", default=True, update=_redraw,
@@ -409,6 +443,39 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         items=[('PLAIN_AXES', "Plain Axes", ""), ('ARROWS', "Arrows", ""), ('SINGLE_ARROW', "Single Arrow", ""),
                ('CIRCLE', "Circle", ""), ('CUBE', "Cube", ""), ('SPHERE', "Sphere", ""), ('CONE', "Cone", "")],
         default='PLAIN_AXES')
+    graph_corner: EnumProperty(
+        name="Corner", update=_redraw,
+        description="Timing chart and speed graph: the corner of the 3D view they are in",
+        items=[('BOTTOM_RIGHT', "Bottom Right", ""), ('BOTTOM_LEFT', "Bottom Left", ""),
+               ('TOP_RIGHT', "Top Right", ""), ('TOP_LEFT', "Top Left", "")],
+        default='BOTTOM_RIGHT')
+    graph_margin_x: IntProperty(name="Margin X", default=40, min=0, soft_max=600, subtype='PIXEL', update=_redraw,
+                                description="Distance from the side of the view")
+    graph_margin_y: IntProperty(name="Margin Y", default=46, min=0, soft_max=600, subtype='PIXEL', update=_redraw,
+                                description="Distance from the bottom / top of the view")
+    graph_width: IntProperty(name="Width", default=560, min=200, soft_max=1600, subtype='PIXEL', update=_redraw)
+    chart_height: IntProperty(name="Timing Chart Height", default=66, min=40, soft_max=200, subtype='PIXEL',
+                              update=_redraw)
+    speed_height: IntProperty(name="Speed Graph Height", default=60, min=40, soft_max=400, subtype='PIXEL',
+                              update=_redraw)
+    graph_text_size: FloatProperty(name="Text Size", default=1.0, min=0.6, max=2.5, update=_redraw,
+                                   description="The labels and frame numbers (1: the usual size)")
+    graph_bg: FloatVectorProperty(name="Background", subtype='COLOR', size=4, min=0.0, max=1.0,
+                                  default=(0.08, 0.08, 0.1, 0.62), update=_redraw)
+    speed_curve_color: FloatVectorProperty(name="Speed Curve", subtype='COLOR', size=3, min=0.0, max=1.0,
+                                           default=(0.55, 0.85, 1.0), update=_redraw)
+    speed_fill_opacity: FloatProperty(name="Fill Opacity", default=0.32, min=0.0, max=1.0, subtype='FACTOR',
+                                      update=_redraw, description="The soft fill under the speed curve")
+    graph_key_color: FloatVectorProperty(name="Keys", subtype='COLOR', size=3, min=0.0, max=1.0,
+                                         default=(0.92, 0.92, 0.92), update=_redraw)
+    graph_sel_color: FloatVectorProperty(name="Selected Keys", subtype='COLOR', size=3, min=0.0, max=1.0,
+                                         default=(1.0, 0.62, 0.2), update=_redraw)
+    graph_frame_color: FloatVectorProperty(name="Current Frame", subtype='COLOR', size=3, min=0.0, max=1.0,
+                                           default=(0.35, 1.0, 0.5), update=_redraw)
+    chart_tick_color: FloatVectorProperty(name="Frame Ticks", subtype='COLOR', size=4, min=0.0, max=1.0,
+                                          default=(1.0, 1.0, 1.0, 0.75), update=_redraw)
+    chart_key_color: FloatVectorProperty(name="Key Ticks", subtype='COLOR', size=3, min=0.0, max=1.0,
+                                         default=(1.0, 0.6, 0.15), update=_redraw)
     hotkey_priority: BoolProperty(
         name="Hotkey Priority", default=True, update=_hotkeys_changed,
         description="The path tools' keys win over other add-ons' keys in the 3D view. Off: where "
@@ -446,6 +513,27 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         col.prop(self, "onion_color_before", text="Before")
         col.prop(self, "onion_color_after", text="After")
         col.prop(self, "onion_other_display")
+        layout.separator()
+        col = layout.column()
+        col.label(text="Timing Chart and Speed Graph (the 3D view shows changes right away)")
+        col.prop(self, "graph_corner")
+        sub = col.column(align=True)
+        sub.prop(self, "graph_margin_x")
+        sub.prop(self, "graph_margin_y")
+        sub = col.column(align=True)
+        sub.prop(self, "graph_width")
+        sub.prop(self, "chart_height")
+        sub.prop(self, "speed_height")
+        col.prop(self, "graph_text_size")
+        col.prop(self, "graph_bg")
+        col.prop(self, "speed_curve_color")
+        col.prop(self, "speed_fill_opacity")
+        col.prop(self, "graph_key_color")
+        col.prop(self, "graph_sel_color")
+        col.prop(self, "graph_frame_color")
+        col.prop(self, "chart_tick_color")
+        col.prop(self, "chart_key_color")
+        col.operator("emp.reset_graph_look", icon='LOOP_BACK')
 
 
 def prefs():
@@ -474,7 +562,10 @@ def _pref_property(name):
 PREF_NAMES = ("color", "jitter_threshold", "show_ghost", "show_spokes", "show_repeats", "on_top", "line_width",
               "key_size", "rot_length", "ribbon_width", "rot_ribbon_width", "scale_box_size", "scale_y_display",
               "onion_color_before", "onion_color_after",
-              "onion_other_display")
+              "onion_other_display", "graph_corner", "graph_margin_x", "graph_margin_y", "graph_width",
+              "chart_height", "speed_height", "graph_text_size", "graph_bg", "speed_curve_color", "speed_fill_opacity",
+              "graph_key_color", "graph_sel_color", "graph_frame_color", "chart_tick_color", "chart_key_color")
+GRAPH_LOOK = PREF_NAMES[-15:]
 for _n in PREF_NAMES:
     setattr(EMP_Settings, _n, _pref_property(_n))
 

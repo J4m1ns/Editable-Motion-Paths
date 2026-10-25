@@ -884,22 +884,64 @@ def _flat(pts, color, kind='LINES', width=None):
     batch_for_shader(sh, kind, {"pos": pts}).draw(sh)
 
 
-def chart_span(region, us, area=None):
-    """Left and right end of the timing chart, in the bottom right corner of the view (left of
-    the sidebar when it overlaps the view); the speed graph above it is as wide."""
-    right = region.width
+def _view_box(region, area, us):
+    """(left, right, top) of the part of the view the toolbar, the sidebar and the header don't
+    cover (they can overlap the view)."""
+    left, right, top = 0.0, float(region.width), float(region.height)
     if area is not None:
         for r in area.regions:
-            # an overlapping sidebar covers the right part of the view
-            if r.type == 'UI' and r.width > 1 and region.x < r.x < region.x + region.width:
+            if r.width <= 1 or r.height <= 1 or r == region:
+                continue
+            inside_x = region.x <= r.x < region.x + region.width
+            if r.type == 'UI' and inside_x and r.x > region.x + region.width * 0.5:
                 right = min(right, r.x - region.x)
-    x1 = right - 40.0 * us
-    return max(x1 - 560.0 * us, 40.0 * us), x1
+            elif r.type == 'TOOLS' and inside_x and r.x < region.x + region.width * 0.5:
+                left = max(left, r.x + r.width - region.x)
+            elif r.type in {'HEADER', 'TOOL_HEADER'} and region.y <= r.y < region.y + region.height:
+                top = min(top, r.y - region.y)
+    return left, right, top
+
+
+def graph_layout(region, us, area, st, chart=True, speed=True):
+    """Where the timing chart and the speed graph go (the preferences: corner, margins, size):
+    dict(x0, x1, lo, hi, chart=(lo, hi) or None, speed=(lo, hi) or None, div=y or None); the
+    speed graph is above the chart, one block when both show."""
+    left, right, top = _view_box(region, area, us)
+    mx, my = st.graph_margin_x * us, st.graph_margin_y * us
+    w = st.graph_width * us
+    corner = st.graph_corner
+    if corner.endswith('RIGHT'):
+        x1 = right - mx
+        x0 = max(x1 - w, left + 10.0 * us)
+    else:
+        x0 = left + mx
+        x1 = min(x0 + w, right - 10.0 * us)
+    ch = st.chart_height * us if chart else 0.0
+    sh = st.speed_height * us if speed else 0.0
+    gap = 6.0 * us if chart and speed else 0.0
+    total = ch + gap + sh
+    # (on top: room for the speed graph's title above its block)
+    lo = my if corner.startswith('BOTTOM') else top - my - total - (16.0 * us if speed else 0.0)
+    return dict(x0=x0, x1=x1, lo=lo, hi=lo + total,
+                chart=(lo, lo + ch) if chart else None,
+                speed=(lo + ch + gap, lo + total) if speed else None,
+                div=lo + ch + gap * 0.5 if chart and speed else None)
+
+
+def chart_span(region, us, area=None):
+    """Left and right end of the timing chart / the speed graph."""
+    st = state.settings()
+    lay = graph_layout(region, us, area, st)
+    return lay["x0"], lay["x1"]
 
 
 def speed_window(scene, st, cache):
     """Frames the speed graph shows: the selected keys or the keys around the current frame
-    (Segment), the set frames (Range) or the scene's frame range (Timeline)."""
+    (Segment), the set frames (Range) or the scene's frame range (Timeline). While the graph is
+    being dragged, the frames it showed when the drag began."""
+    hold = state.speed_hold
+    if hold is not None and hold["cache"] == cache.key:
+        return hold["lo"], hold["hi"]
     if st.speed_range == 'RANGE':
         return float(st.speed_start), float(max(st.speed_end, st.speed_start + 1))
     if st.speed_range == 'AUTO':
@@ -941,34 +983,43 @@ def _chart_cache(ctx, st):
     return next((c for c in caches if any(k.sel for k in c.keys)), None) or next(iter(caches), None)
 
 
+def _speed_cache(ctx):
+    """The path the speed graph shows: the one being dragged on the graph, the one with two or
+    more selected keys, else the first editable one."""
+    caches = state.editable_caches(ctx.scene)
+    hold = state.speed_hold
+    if hold is not None:
+        c = next((c for c in caches if c.key == hold["cache"]), None)
+        if c is not None:
+            return c
+    return next((c for c in caches if sum(1 for k in c.keys if k.sel) >= 2), None) or next(iter(caches), None)
+
+
 def _speed_shown(ctx, st):
     """Whether the speed graph has something to show."""
     if not st.show_speed_graph:
         return False
-    caches = state.editable_caches(ctx.scene)
-    cache = next((c for c in caches if sum(1 for k in c.keys if k.sel) >= 2), None) or next(iter(caches), None)
+    cache = _speed_cache(ctx)
     if cache is None or not cache.speeds:
         return False
     win = speed_window(ctx.scene, st, cache)
     return win is not None and sum(1 for t in cache.times if win[0] - 1e-6 <= t <= win[1] + 1e-6) >= 2
 
 
-CHART_BOTTOM, CHART_TOP, SPEED_TOP = 46.0, 112.0, 178.0
+def _layout_now(ctx, st, us):
+    return graph_layout(ctx.region, us, ctx.area, st, _chart_cache(ctx, st) is not None, _speed_shown(ctx, st))
 
 
 def _draw_chart_blocks(ctx, st, us):
     """The dark blocks behind the timing chart and the speed graph, in one style; one block when
     both show."""
-    chart = _chart_cache(ctx, st) is not None
-    speed = _speed_shown(ctx, st)
-    if not chart and not speed:
+    lay = _layout_now(ctx, st, us)
+    if lay["chart"] is None and lay["speed"] is None:
         return
-    x0, x1 = chart_span(ctx.region, us, ctx.area)
-    lo = CHART_BOTTOM if chart else 118.0
-    hi = SPEED_TOP if speed else CHART_TOP
-    _rounded_rect(x0, lo * us, x1 - x0, (hi - lo) * us, 7.0 * us, (0.08, 0.08, 0.1, 0.62))
-    if chart and speed:
-        _flat([(x0 + 8 * us, 115.0 * us), (x1 - 8 * us, 115.0 * us)], (1.0, 1.0, 1.0, 0.08))
+    x0, x1 = lay["x0"], lay["x1"]
+    _rounded_rect(x0, lay["lo"], x1 - x0, lay["hi"] - lay["lo"], 7.0 * us, tuple(st.graph_bg))
+    if lay["div"] is not None:
+        _flat([(x0 + 8 * us, lay["div"]), (x1 - 8 * us, lay["div"])], (1.0, 1.0, 1.0, 0.08))
 
 
 def _draw_chart(ctx, st, us):
@@ -990,18 +1041,20 @@ def _draw_chart(ctx, st, us):
     for (_a, p), (_b, q) in zip(pts, pts[1:]):
         arc.append(arc[-1] + (q - p).length)
     total = arc[-1] or 1.0
-    region = ctx.region
-    x0, x1 = chart_span(region, us, ctx.area)
+    lay = _layout_now(ctx, st, us)
+    lo, hi = lay["chart"]
     pad = 12.0 * us                     # inside its block, like the speed graph
-    x0, x1 = x0 + pad, x1 - pad
-    y = 84.0 * us
+    x0, x1 = lay["x0"] + pad, lay["x1"] - pad
+    y = lo + (hi - lo) * 0.58
+    fs = st.graph_text_size
     keys = {round(k.t, 3) for k in cache.keys}
     ticks = []
     lines = [(x0, y), (x1, y)]
     key_lines = []
     font = 0
-    blf.size(font, 10 * us)
+    blf.size(font, 10 * us * fs)
     blf.color(font, 1.0, 1.0, 1.0, 0.85)
+    last_label = -1e9
     for (t, _p), s in zip(pts, arc):
         if abs(t - round(t)) > 1e-4:
             continue
@@ -1010,29 +1063,31 @@ def _draw_chart(ctx, st, us):
         ticks.append((x, float(round(t)), is_key))
         if is_key:
             key_lines += [(x, y - 9 * us), (x, y + 9 * us)]
-            blf.position(font, x - 6 * us, y + 12 * us, 0)
-            blf.draw(font, "%d" % round(t))
+            label = "%d" % round(t)
+            if x - 6 * us > last_label + 3 * us:        # (keys close together: no numbers on top of each other)
+                blf.position(font, x - 6 * us, y + 12 * us, 0)
+                blf.draw(font, label)
+                last_label = x - 6 * us + blf.dimensions(font, label)[0]
         else:
             lines += [(x, y - 5 * us), (x, y + 5 * us)]
-    _flat(lines, (1.0, 1.0, 1.0, 0.75))
-    _flat(key_lines, (1.0, 0.6, 0.15, 1.0))
-    blf.size(font, 9 * us)
+    _flat(lines, tuple(st.chart_tick_color))
+    _flat(key_lines, tuple(st.chart_key_color) + (1.0,))
+    blf.size(font, 9 * us * fs)
     blf.color(font, 1.0, 1.0, 1.0, 0.55)
-    blf.position(font, x0, CHART_BOTTOM * us + 8 * us, 0)
-    blf.draw(font, "Timing  \u00b7  %s   (drag a tick: move that frame along the path)" % cache.label)
+    blf.position(font, x0, lo + 8 * us, 0)
+    blf.draw(font, "Timing  ·  %s   (drag a tick: move that frame along the path)" % cache.label)
     state.chart = {"area": ctx.area.as_pointer(), "cache": cache.key, "r0": r0, "r1": r1,
                    "x0": x0, "x1": x1, "y": y, "ticks": ticks}
 
 
 def _draw_speed_graph(ctx, st, us):
     """Speed of the active path (the one the timing chart shows, else the first editable one),
-    right above the timing chart and as wide."""
+    right above the timing chart and as wide. It can be dragged (see ops_timetools): empty
+    space - the current frame, a key's line - the key in time, the curve - the segment's ease."""
     state.speed_graph = None
     if not st.show_speed_graph:
         return
-    caches = state.editable_caches(ctx.scene)
-    cache = next((c for c in caches if sum(1 for k in c.keys if k.sel) >= 2), None) or \
-        next(iter(caches), None)
+    cache = _speed_cache(ctx)
     if cache is None or not cache.speeds:
         return
     win = speed_window(ctx.scene, st, cache)
@@ -1042,15 +1097,20 @@ def _draw_speed_graph(ctx, st, us):
     data = [(t, s) for t, s in zip(cache.times, cache.speeds) if lo - 1e-6 <= t <= hi + 1e-6]
     if len(data) < 2:
         return
-    vmax = max(s for _t, s in data) or 1.0
-    x0, x1 = chart_span(ctx.region, us, ctx.area)
-    y0 = 118.0 * us
-    state.speed_graph = (cache.key, lo, hi)
-    w, h = x1 - x0, 60.0 * us
+    hold = state.speed_hold
+    vmax = hold["vmax"] if hold is not None and hold["cache"] == cache.key else \
+        (max(s for _t, s in data) or 1.0)
+    lay = _layout_now(ctx, st, us)
+    if lay["speed"] is None:
+        return
+    x0, x1 = lay["x0"], lay["x1"]
+    y0, ytop = lay["speed"]
+    w, h = x1 - x0, ytop - y0
     t0, t1 = data[0][0], data[-1][0]
+    fs = st.graph_text_size
 
     pad = 8.0 * us                      # room for the key frame numbers at the bottom
-    gy0, gh = y0 + 14.0 * us, h - 18.0 * us
+    gy0, gh = y0 + 14.0 * us * fs, h - 18.0 * us * fs
 
     def X(t):
         return x0 + pad + (w - 2 * pad) * (t - t0) / max(t1 - t0, 1e-6)
@@ -1060,10 +1120,16 @@ def _draw_speed_graph(ctx, st, us):
     # speed of a step, drawn in the middle of it
     pts = [((t + tn) * 0.5, s) for (t, s), (tn, _s) in zip(data, data[1:])]
     pts = [(t0, pts[0][1])] + pts + [(t1, pts[-1][1])]     # the curve reaches the end keys
+    state.speed_graph = {"area": ctx.area.as_pointer(), "cache": cache.key, "lo": lo, "hi": hi,
+                         "x0": x0 + pad, "x1": x1 - pad, "y0": y0, "y1": ytop, "gy0": gy0, "gh": gh,
+                         "t0": t0, "t1": t1, "vmax": vmax, "pts": pts,
+                         "keys": [k.t for k in cache.keys if t0 - 1e-6 <= k.t <= t1 + 1e-6]}
     # (its block is drawn with the timing chart's: _draw_chart_blocks)
     # soft fill under the curve, fading out at the bottom
+    cc = tuple(st.speed_curve_color)
+    fo = st.speed_fill_opacity
     tris, cols = [], []
-    top, bottom = (0.45, 0.8, 1.0, 0.32), (0.45, 0.8, 1.0, 0.03)
+    top, bottom = cc + (fo,), cc + (fo * 0.1,)
     for (ta, sa), (tb, sb) in zip(pts, pts[1:]):
         a0, a1, b0, b1 = (X(ta), gy0), (X(ta), Y(sa)), (X(tb), gy0), (X(tb), Y(sb))
         tris += [a0, a1, b1, a0, b1, b0]
@@ -1071,40 +1137,90 @@ def _draw_speed_graph(ctx, st, us):
     _smooth(tris, cols, 'TRIS')
     # keys: a faint line through the graph, a diamond on the curve, the frame below
     lines, diamonds, sel_diamonds = [], [], []
+    hot = state.speed_hot if state.speed_hot is not None and state.speed_hot[0] == cache.key else None
+    hot_lines = []
     font = 0
-    blf.size(font, 9 * us)
+    blf.size(font, 9 * us * fs)
+    kc, sc = tuple(st.graph_key_color), tuple(st.graph_sel_color)
+    last_label = -1e9
     for k in cache.keys:
         if not t0 - 1e-6 <= k.t <= t1 + 1e-6:
             continue
         x = X(k.t)
-        lines += [(x, gy0), (x, gy0 + gh)]
+        if hot is not None and hot[1] == 'KEY' and abs(hot[2] - k.t) < 1e-3:
+            hot_lines += [(x, gy0), (x, gy0 + gh)]
+        else:
+            lines += [(x, gy0), (x, gy0 + gh)]
         s = _speed_at(pts, k.t)
         d = 4.0 * us
         y = Y(s)
         quad = [(x, y - d), (x + d, y), (x, y + d), (x - d, y)]
         (sel_diamonds if k.sel else diamonds).append(quad)
-        blf.color(font, *((1.0, 0.75, 0.4, 0.9) if k.sel else (0.85, 0.85, 0.85, 0.7)))
+        blf.color(font, *((sc + (0.9,)) if k.sel else (kc + (0.7,))))
         label = "%d" % round(k.t)
         tw = blf.dimensions(font, label)[0]
-        blf.position(font, x - tw * 0.5, y0 + 3.0 * us, 0)
-        blf.draw(font, label)
+        if x - tw * 0.5 > last_label + 3 * us:
+            blf.position(font, x - tw * 0.5, y0 + 3.0 * us, 0)
+            blf.draw(font, label)
+            last_label = x + tw * 0.5
     _flat(lines, (1.0, 1.0, 1.0, 0.12))
-    _flat([(X(t), Y(s)) for t, s in pts], (0.55, 0.85, 1.0, 1.0), 'LINE_STRIP')
-    for quads, col in ((diamonds, (0.92, 0.92, 0.92, 1.0)), (sel_diamonds, (1.0, 0.62, 0.2, 1.0))):
+    if hot_lines:
+        _flat(hot_lines, sc + (0.8,), 'LINES', 2.0 * us)
+    width = 2.5 * us if hot is not None and hot[1] == 'EASE' else None
+    if width is not None:
+        a, b = hot[2]
+        seg = [(X(t), Y(s)) for t, s in pts if a - 1e-6 <= t <= b + 1e-6]
+        if len(seg) > 1:
+            _flat(seg, cc + (1.0,), 'LINE_STRIP', width)
+    _flat([(X(t), Y(s)) for t, s in pts], cc + (1.0,), 'LINE_STRIP')
+    for quads, col in ((diamonds, kc + (1.0,)), (sel_diamonds, sc + (1.0,))):
         if quads:
             _flat([p for q in quads for p in (q[0], q[1], q[2], q[0], q[2], q[3])], col, 'TRIS')
     cur = ctx.scene.frame_current
+    fc = tuple(st.graph_frame_color)
     if t0 <= cur <= t1:
         x = X(cur)
-        _flat([(x, gy0), (x, gy0 + gh)], (0.35, 1.0, 0.5, 0.8))
+        _flat([(x, gy0), (x, gy0 + gh)], fc + (0.8,))
         y = Y(_speed_at(pts, cur))
         r = 3.0 * us
         _flat([(x + math.cos(a * math.pi / 6) * r, y + math.sin(a * math.pi / 6) * r) for a in range(12)],
-              (0.35, 1.0, 0.5, 1.0), 'TRI_FAN')
-    blf.size(font, 10 * us)
+              fc + (1.0,), 'TRI_FAN')
+    blf.size(font, 10 * us * fs)
     blf.color(font, 1.0, 1.0, 1.0, 0.75)
     blf.position(font, x0 + 4 * us, y0 + h + 5 * us, 0)       # above the graph
-    blf.draw(font, "Speed  \u00b7  %s" % cache.label)
+    blf.draw(font, "Speed  ·  %s" % cache.label)
+    blf.size(font, 9 * us * fs)
+    blf.color(font, 1.0, 1.0, 1.0, 0.45)
+    hint = "drag: frame   a key's line: its time   the curve: ease"
+    blf.position(font, x1 - blf.dimensions(font, hint)[0] - 6 * us, y0 + h + 5 * us, 0)
+    blf.draw(font, hint)
+
+
+def speed_hit(area, mx, my):
+    """What the mouse is on in the speed graph: ('KEY', frame), ('EASE', (first, last frame of
+    the segment)) near the curve, ('SCRUB', frame) elsewhere on it; None off the graph."""
+    sg = state.speed_graph
+    if sg is None or area is None or sg["area"] != area.as_pointer():
+        return None
+    us = compat.ui_scale()
+    if not (sg["x0"] - 8 * us <= mx <= sg["x1"] + 8 * us and sg["y0"] <= my <= sg["y1"]):
+        return None
+    t0, t1 = sg["t0"], sg["t1"]
+
+    def X(t):
+        return sg["x0"] + (sg["x1"] - sg["x0"]) * (t - t0) / max(t1 - t0, 1e-6)
+    t = t0 + (t1 - t0) * (mx - sg["x0"]) / max(sg["x1"] - sg["x0"], 1.0)
+    best = min(sg["keys"], key=lambda k: abs(X(k) - mx), default=None)
+    if best is not None and abs(X(best) - mx) <= 6.0 * us:
+        return ('KEY', best)
+    y = sg["gy0"] + sg["gh"] * _speed_at(sg["pts"], t) / (sg["vmax"] * 1.2)
+    if abs(y - my) <= 10.0 * us and t0 <= t <= t1:
+        ks = sg["keys"]
+        a = max((k for k in ks if k <= t), default=None)
+        b = min((k for k in ks if k > t), default=None)
+        if a is not None and b is not None:
+            return ('EASE', (a, b))
+    return ('SCRUB', min(max(t, t0), t1))
 
 
 def _speed_at(pts, t):

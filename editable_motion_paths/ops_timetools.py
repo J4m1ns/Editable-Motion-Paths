@@ -646,6 +646,172 @@ class EMP_OT_timing_menu(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# ----------------------------------------------------------------------------
+# The speed graph, dragged: the current frame, a key in time, a segment's ease
+# ----------------------------------------------------------------------------
+
+class EMP_OT_speed_drag(bpy.types.Operator):
+    """Drag on the speed graph: on empty space the current frame follows; a key's line moves """ \
+        """that key in time (the whole pose; Ctrl: subframes); the curve of a segment, up: a """ \
+        """stronger slow in / slow out (higher peak), down: more even or faster at the keys (the """ \
+        """path keeps its shape). Esc / right click: cancel"""
+    bl_idname = "emp.speed_drag"
+    bl_label = "Speed Graph"
+    bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
+
+    mode: EnumProperty(items=[('SCRUB', "Frame", ""), ('KEY', "Key Time", ""), ('EASE', "Ease", "")],
+                       default='SCRUB')
+    frame: FloatProperty(name="Frame", description="Key Time: the key moved; Ease: the segment's first key")
+    frame_b: FloatProperty(name="Last Frame", description="Ease: the segment's last key")
+    obj_name: StringProperty(options={'HIDDEN'})
+    bone_name: StringProperty(options={'HIDDEN'})
+    new_frame: FloatProperty(name="New Frame", description="Key Time: where the key goes")
+    amount: FloatProperty(name="Ease", default=0.0, min=-1.0, max=1.0,
+                          description="Ease: 1 - the bone comes to rest at both keys, -1 - faster through them")
+
+    def _cache(self, context):
+        for c in state.editable_caches(context.scene):
+            if c.obj_name == self.obj_name and c.bone_name == self.bone_name:
+                return c
+        return None
+
+    def _setup(self, context):
+        c = self._cache(context)
+        if c is None:
+            return False
+        self.c = c
+        tg = c.target()
+        self.sel = {round(k.t, 3) for k in c.keys if k.sel}
+        if self.mode == 'KEY':
+            ks = [k.t for k in c.keys]
+            if not any(abs(t - self.frame) < 1e-3 for t in ks):
+                return False
+            self.prev = max((t for t in ks if t < self.frame - 1e-3), default=None)
+            self.next = min((t for t in ks if t > self.frame + 1e-3), default=None)
+            self.snapshot = pose_snapshot(c)
+        elif self.mode == 'EASE':
+            self.snapshot = core.FCurveSnapshot(tg, tg.channels(c.ptype))
+            self.job = SpaceJob(c, tg, float(self.frame), float(self.frame_b))
+            if self.job.arc[-1] < 1e-9:
+                return False        # a hold: nothing to ease
+        return True
+
+    def _apply(self):
+        c = self.c
+        if self.mode == 'KEY':
+            self.snapshot.restore()
+            c.refresh(force=True)
+            if abs(self.new_frame - self.frame) > 1e-6:
+                move_keys_in_time(c, {self.frame: self.new_frame}, select=self.sel)
+        elif self.mode == 'EASE':
+            from .ops_tools import ease_target
+            self.snapshot.restore()
+            c.refresh(force=True)
+            tg = c.target()
+            if abs(self.amount) > 1e-6:
+                refit(self.job, tg, ease_target(self.job, tg, True, True, self.amount), self.sel)
+            c.refresh(force=True)
+
+    def execute(self, context):
+        if self.mode == 'SCRUB' or not self._setup(context):
+            return {'CANCELLED'}
+        self._apply()
+        pick.tag_anim_editors()
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        sg = state.speed_graph
+        if sg is None or not self._setup(context):
+            return {'CANCELLED'}
+        self.area = context.area
+        self.sg = dict(sg)
+        self.mx0, self.my0 = event.mouse_region_x, event.mouse_region_y
+        self.frame0 = context.scene.frame_current
+        self.new_frame = self.frame
+        self.amount = 0.0
+        # the graph keeps its frames and its height while it is dragged
+        state.speed_hold = {"cache": self.c.key, "lo": sg["lo"], "hi": sg["hi"], "vmax": sg["vmax"]}
+        state.modal_running += 1
+        context.window_manager.modal_handler_add(self)
+        self._move(context, event)
+        return {'RUNNING_MODAL'}
+
+    def _frame_at(self, mx):
+        sg = self.sg
+        return sg["t0"] + (sg["t1"] - sg["t0"]) * (mx - sg["x0"]) / max(sg["x1"] - sg["x0"], 1.0)
+
+    def _move(self, context, event):
+        mx, my = event.mouse_region_x, event.mouse_region_y
+        if self.mode == 'SCRUB':
+            f = int(round(min(max(self._frame_at(mx), self.sg["lo"]), self.sg["hi"])))
+            if f != context.scene.frame_current:
+                context.scene.frame_set(f)
+            return
+        if self.mode == 'KEY':
+            t = self.frame + self._frame_at(mx) - self._frame_at(self.mx0)
+            t = t if event.ctrl else float(round(t))
+            gap = 0.05 if event.ctrl else 1.0
+            if self.prev is not None:
+                t = max(t, self.prev + gap)
+            if self.next is not None:
+                t = min(t, self.next - gap)
+            self.new_frame = t
+            text = "Key %g -> %g   (Ctrl: subframes)" % (self.frame, t)
+        else:
+            self.amount = min(1.0, max(-1.0, (my - self.my0) / (150.0 * compat.ui_scale())))
+            text = "Ease %g-%g: %+.2f   up: slower at the keys, down: faster" % (self.frame, self.frame_b,
+                                                                            self.amount)
+        self._apply()
+        self.area.header_text_set(text + "   click / release: confirm   Esc: cancel")
+        pick.tag_anim_editors()
+        state.tag_redraw()
+
+    def modal(self, context, event):
+        t, v = event.type, event.value
+        if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            self._move(context, event)
+        elif (t == 'LEFTMOUSE' and v == 'RELEASE') or (t in {'RET', 'SPACE'} and v == 'PRESS'):
+            return self._end(context, True)
+        elif t in {'RIGHTMOUSE', 'ESC'} and v == 'PRESS':
+            return self._end(context, False)
+        return {'RUNNING_MODAL'}
+
+    def _end(self, context, ok):
+        state.modal_running = max(0, state.modal_running - 1)
+        state.speed_hold = None
+        self.area.header_text_set(None)
+        if self.mode == 'SCRUB':
+            if not ok:
+                context.scene.frame_set(self.frame0)
+            state.tag_redraw()
+            return {'CANCELLED'}        # (a frame change isn't an undo step, like the timeline)
+        if not ok:
+            self.snapshot.restore()
+            self.c.dirty = True
+            self.c.refresh(force=True)
+        pick.tag_anim_editors()
+        state.tag_redraw()
+        return {'FINISHED'} if ok else {'CANCELLED'}
+
+
+class EMP_OT_graph_hover(bpy.types.Operator):
+    """(What the mouse is on in the speed graph is lit up)"""
+    bl_idname = "emp.graph_hover"
+    bl_label = "Speed Graph Hover"
+    bl_options = {'INTERNAL'}
+
+    def invoke(self, context, event):
+        from . import draw
+        hit = draw.speed_hit(context.area, event.mouse_region_x, event.mouse_region_y)
+        sg = state.speed_graph
+        hot = (sg["cache"], hit[0], hit[1]) if hit is not None and hit[0] != 'SCRUB' else None
+        if hot != state.speed_hot:
+            state.speed_hot = hot
+            if context.area is not None:
+                context.area.tag_redraw()
+        return {'PASS_THROUGH'}
+
+
 classes = (EMP_OT_drag_frame, EMP_OT_time_scale, EMP_OT_add_frames, EMP_OT_tween,
            EMP_OT_offset_cascade, EMP_OT_moving_hold, EMP_OT_snap_frames, EMP_MT_timing,
-           EMP_OT_timing_menu)
+           EMP_OT_timing_menu, EMP_OT_speed_drag, EMP_OT_graph_hover)

@@ -171,7 +171,16 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   right above it, as wide as the chart: for the selected keys, the segments on both sides of a
   single selected key, or the keys around the current frame (*Segment*), a set frame range
   (*Range*) or the scene's frame range (*Timeline*). Keys are marked on it with their frame
-  numbers (the selected ones orange), the current frame in green.
+  numbers (the selected ones orange), the current frame in green. The speed graph can be
+  dragged: on empty space the **current frame** follows the mouse; a **key's line** (it lights up
+  under the mouse) moves that key in **time** (the whole pose; Ctrl: subframes); the **curve** of a
+  segment, dragged up, makes a stronger **slow in / slow out** (a higher peak in the middle),
+  down a more even speed or faster through the keys - the path keeps its shape (keys are added
+  where needed, like *Ease*). While you drag, the graph keeps its frames and height.
+* Where the chart and the graph are and how they look - the **corner**, margins, width, heights,
+  text size, background, curve and key colors - is in the add-on's preferences (*Timing Chart and
+  Speed Graph*); the 3D view shows each change right away, and *Reset the Charts' Look* puts it
+  back.
 * **Timing menu (Shift+T**, also in the right-click menu and the Timing & Speed panel), all
   dragged left / right:
   * *Breakdown*: blend the selected keys between the poses of their neighbors, favoring one
@@ -300,7 +309,8 @@ clears the selection, so the whole path can be painted again (A selects all).
 
 The onion button in the tool header (its ⌄ arrow: the settings) shows ghosts of the edited bones
 / objects - or, with no path shown, of the selection - on the frames around the current one: on
-the keys (with a key on every frame, at least 4 frames apart), or every few frames (before /
+the keys (with a key on every frame, at least 4 frames apart; looping curves - a Cycles modifier
+- go on into the next and the previous loop), or every few frames (before /
 after, step, opacity; colors in the preferences). **Update Ghosts** builds them again after
 editing a mesh. Modes: *Silhouette* (the meshes in one flat color per ghost),
 *Wire*, *Points* (the lightest; *Size* sets the dots and lines), *Bones* (sticks: the visible
@@ -337,7 +347,10 @@ animation, and also an object changed on the same frame (a reset scale, a moved 
 While you drag a bone or an object with Blender's own G / R / S and *Auto Keying* is on, the
 ghosts show what the neighboring frames will look like once the key is in (the pose is put on
 the curves only for a moment; Esc leaves everything as it was). Without Auto Keying nothing
-changes on the other frames until you key, so the ghosts stay as they are.
+changes on the other frames until you key, so the ghosts stay as they are - unless
+**Preview Unkeyed Pose** is on (onion settings): then the ghosts show the neighbors as if the pose
+you are changing were keyed on this frame, during G / R / S and after it, until the frame
+changes (a pose that isn't keyed is gone then, and so is its preview).
 
 ## Center of mass
 
@@ -359,8 +372,12 @@ for the edited armature or the active one, with or without a path:
 
 The mass of every deform bone is worked out once from its vertex weights (with a *Preparing
 center of mass* note): each vertex counts its area times its distance from the bone, about the
-volume around it, so a torso weighs more than a hand. A pose bone's custom property
-`com_mass` scales its mass by hand (e.g. 0 for a cape or a prop). The velocity, the floor
+volume around it, so a torso weighs more than a hand. **Limb Weight** (the center's settings):
+select a controller in Pose Mode - an IK hand, a foot, an FK bone - and it shows how much of the
+body the limb it moves is (worked out from the meshes); set another share if it's off (a heavy
+boot, a prop in the hand). The limb lights up while it changes; the arrow next to it goes back to
+the worked out share. (It is kept on the controller bone as the custom property `com_limb`; a
+deform bone's `com_mass` still scales that one bone, e.g. 0 for a cape.) The velocity, the floor
 level and the trajectory are worked out in the background frame by frame (only the bones are
 evaluated, like the onion ghosts) and follow your edits.
 

@@ -14,6 +14,7 @@ def _k(op, key, props=None, **mods):
 TOOL_KEYMAP = (
     # select
     _k("emp.click", 'LEFTMOUSE', any=True),
+    _k("emp.graph_hover", 'MOUSEMOVE', value='ANY', any=True),
     _k("emp.jump_to_key", 'LEFTMOUSE', value='DOUBLE_CLICK'),
     _k("emp.box_select", 'LEFTMOUSE', value='CLICK_DRAG', any=True),
     _k("emp.box_select", 'B', {"wait_for_input": True}),
@@ -699,6 +700,7 @@ def _draw_onion(layout, st):
     row.prop(st, "onion_after")
     layout.prop(st, "onion_step", text="Step (0: on keys)")
     layout.prop(st, "onion_opacity", slider=True)
+    layout.prop(st, "onion_preview_pose")
     if used == 'BONES':
         layout.prop(st, "onion_bones", text="")
     if used in {'POINTS', 'BONES', 'WIRE'}:
@@ -727,6 +729,20 @@ def _draw_com(layout, st):
     row.prop(st, "com_floor", text="Floor")
     if st.com_floor == 'HEIGHT':
         row.prop(st, "com_floor_height", text="")
+    from . import com
+    from .props import _limb_target
+    arm, pb = _limb_target()
+    if arm is None:
+        layout.label(text="Limb Weight: select a controller (Pose Mode)", icon='INFO')
+    elif com.limb_share(arm, pb.name) is None:
+        layout.label(text="%s moves no part with weight" % pb.name, icon='INFO')
+    else:
+        layout.label(text="Limb Weight: what %s moves" % pb.name)
+        row = layout.row(align=True)
+        row.prop(st, "com_limb_share", text="Of the Body")
+        sub = row.row(align=True)
+        sub.enabled = "com_limb" in pb
+        sub.operator("emp.com_limb_reset", text="", icon='LOOP_BACK')
 
 
 def _draw_smoothing(layout, context):

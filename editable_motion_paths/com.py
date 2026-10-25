@@ -4,7 +4,8 @@ pose is believable (a visual aid only; nothing is changed).
 * The mass of every deform bone is worked out once from the meshes it moves: the onion proxies
   (the meshes melted down, with their bone weights), each vertex counting its area times its
   distance from the bone (about the volume around the bone), so a torso weighs more than a
-  hand. A pose bone's custom property "com_mass" scales its mass by hand.
+  hand. A pose bone's custom property "com_mass" scales its mass by hand; a controller's
+  "com_limb" (the Limb Weight in the panel) scales every bone it moves (its limb).
 * The point follows the pose live (from the bone matrices only); a plumb line drops it to the
   floor.
 * In the background, frame by frame over the paths' range (only the bones are evaluated, like
@@ -83,6 +84,11 @@ def _build_mass(scene, arm, st):
     sig = (tuple(o.name for o in meshes), tuple(onion._mesh_sig(o) for o in meshes), st.onion_max_tris, custom)
     old = _mass.get(arm.name)
     if old is not None and old["sig"] == sig:
+        limbs = _limbs(arm)
+        if old["limbs"] != limbs:
+            # only a limb's weight changed: no need to measure the meshes again
+            _apply_limbs(arm, old, limbs)
+            changed_all(arm)
         return False
     dg = bpy.context.evaluated_depsgraph_get()
     built = False
@@ -125,10 +131,131 @@ def _build_mass(scene, arm, st):
     c = np.array([np.append(acc[n][1] / acc[n][0], 1.0) for n in names]).reshape(-1, 4)
     height = (max(z[1] for z in zs) - min(z[0] for z in zs)) if zs else 1.0
     _mass[arm.name] = dict(sig=sig, names=names, rest_inv=onion.rest_inverses(arm, names), m=m, c=c,
-                           height=max(height, 1e-3))
+                           height=max(height, 1e-3), m_base=m, limbs=None)
+    _apply_limbs(arm, _mass[arm.name], _limbs(arm))
     _track.pop(arm.name, None)
     _now.pop(arm.name, None)
     return True
+
+
+def _limbs(arm):
+    """The limb weights set on controllers: ((bone, factor), ...)."""
+    return tuple(sorted((pb.name, float(pb["com_limb"])) for pb in arm.pose.bones if "com_limb" in pb))
+
+
+def _apply_limbs(arm, d, limbs):
+    """The masses with the limb weights: each controller's factor scales the bones it moves."""
+    m = d["m_base"].copy()
+    idx = {n: i for i, n in enumerate(d["names"])}
+    for name, f in limbs:
+        for b in onion.affected_bones(arm, {name}):
+            i = idx.get(b)
+            if i is not None:
+                m[i] *= f
+    d["m"] = m
+    d["limbs"] = limbs
+
+
+def changed_all(arm):
+    """The masses changed: the whole track is worked out again."""
+    tr = _track.get(arm.name)
+    if tr:
+        _redo.setdefault(arm.name, set()).update(tr)
+    _now.pop(arm.name, None)
+    _schedule(0.05)
+
+
+def limb_share(arm, bone):
+    """How much of the body's mass the limb a controller moves is (0..1), or None (not worked
+    out yet, or it moves no bone with weight)."""
+    d = _mass.get(arm.name)
+    if d is None or not d["names"]:
+        return None
+    aff = onion.affected_bones(arm, {bone})
+    idx = [i for i, n in enumerate(d["names"]) if n in aff]
+    total = float(d["m"].sum())
+    if not idx or total <= 0.0:
+        return None
+    return float(d["m"][idx].sum()) / total
+
+
+def set_limb_share(arm, bone, share):
+    """Make the controller's limb this much of the body (the rest keeps its masses): its factor
+    is stored on the controller ("com_limb"); back to 1: the property goes."""
+    d = _mass.get(arm.name)
+    pb = arm.pose.bones.get(bone)
+    now = limb_share(arm, bone)
+    if d is None or pb is None or not now:
+        return False
+    share = min(max(share, 0.001), 0.95)
+    total = float(d["m"].sum())
+    m = now * total
+    want = share * (total - m) / (1.0 - share)
+    f = float(pb.get("com_limb", 1.0)) * want / m
+    if abs(f - 1.0) < 1e-4:
+        if "com_limb" in pb:
+            del pb["com_limb"]
+    else:
+        pb["com_limb"] = f
+    _apply_limbs(arm, d, _limbs(arm))
+    changed_all(arm)
+    flash_limb(arm, bone)
+    return True
+
+
+_flash = [None, 0.0, False]     # (armature, controller) lit up, when, its fade timer runs
+
+
+def flash_limb(arm, bone):
+    """Light up the limb for a moment (while its weight is being set)."""
+    _flash[:2] = [(arm.name, bone), time.time()]
+
+    def fade():
+        state.tag_redraw()
+        if time.time() - _flash[1] < FLASH:
+            return 0.05
+        _flash[2] = False
+        return None
+    if not _flash[2]:
+        _flash[2] = True
+        bpy.app.timers.register(fade, first_interval=0.05)
+    state.tag_redraw()
+
+
+FLASH = 1.5
+
+
+def _draw_flash(scene, us):
+    """The limb lit up: the part of the meshes its bones move (like By Weight of the onion)."""
+    import numpy as np
+    if _flash[0] is None:
+        return
+    age = time.time() - _flash[1]
+    if age > FLASH:
+        _flash[0] = None
+        return
+    arm = bpy.data.objects.get(_flash[0][0])
+    if arm is None or arm.type != 'ARMATURE':
+        return
+    aff = onion.affected_bones(arm, {_flash[0][1]})
+    tris = []
+    for o in _meshes(scene, arm):
+        p = onion._proxies.get(o.name)
+        if p is None or p.rest is None or not len(p.tri):
+            continue
+        keep = onion._shown_by_weight(p, aff)
+        if keep is None or not keep.any():
+            continue
+        tri = p.tri[keep[p.tri].all(axis=1)]
+        if len(tri):
+            tris.append(onion._pose(p)[tri].reshape(-1, 3))
+    if not tris:
+        return
+    sh = gpu.shader.from_builtin('UNIFORM_COLOR')
+    sh.uniform_float("color", (1.0, 0.8, 0.25, 0.35 * (1.0 - age / FLASH) + 0.05))
+    gpu.state.face_culling_set('BACK')
+    batch_for_shader(sh, 'TRIS', {"pos": np.concatenate(tris)}).draw(sh)
+    gpu.state.face_culling_set('NONE')
 
 
 def center(arm):
@@ -347,6 +474,7 @@ def draw(scene, st, us):
     prev = gpu.state.depth_test_get()
     gpu.state.depth_test_set('NONE')        # always in front: it's a guide
     gpu.state.blend_set('ALPHA')
+    _draw_flash(scene, us)
     for arm in arms:
         s = state_now(scene, arm)
         if s is None:

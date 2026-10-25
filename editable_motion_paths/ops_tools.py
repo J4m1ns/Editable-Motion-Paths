@@ -256,6 +256,45 @@ class EMP_OT_reset_button(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class EMP_OT_com_limb_reset(bpy.types.Operator):
+    """Set the limb's weight back to the one worked out from the meshes"""
+    bl_idname = "emp.com_limb_reset"
+    bl_label = "Worked Out Weight"
+    bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
+
+    def execute(self, context):
+        from . import com
+        from .props import _limb_target
+        arm, pb = _limb_target(context)
+        if arm is None or "com_limb" not in pb:
+            return {'CANCELLED'}
+        del pb["com_limb"]
+        d = com._mass.get(arm.name)
+        if d is not None:
+            com._apply_limbs(arm, d, com._limbs(arm))
+            com.changed_all(arm)
+        com.flash_limb(arm, pb.name)
+        return {'FINISHED'}
+
+
+class EMP_OT_reset_graph_look(bpy.types.Operator):
+    """Set the look of the timing chart and the speed graph (place, size, colors, text) back to """ \
+        """the defaults"""
+    bl_idname = "emp.reset_graph_look"
+    bl_label = "Reset the Charts' Look"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        from .props import GRAPH_LOOK, prefs
+        p = prefs()
+        if p is None:
+            return {'CANCELLED'}
+        for name in GRAPH_LOOK:
+            reset_property(p, name)
+        state.tag_redraw()
+        return {'FINISHED'}
+
+
 def button_context_entry(self, context):
     """Right click on a setting in a panel opened under the mouse: a Reset that works there."""
     region = getattr(context, "region", None)
@@ -1753,6 +1792,7 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
 
 
 classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
+           EMP_OT_reset_graph_look, EMP_OT_com_limb_reset,
            EMP_OT_smoothing_none, EMP_OT_onion_mode, EMP_OT_onion_update, EMP_OT_path_update,
            EMP_OT_edit_tool,
            EMP_OT_handle_type, EMP_OT_interpolation,

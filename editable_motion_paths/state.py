@@ -18,7 +18,9 @@ box = None           # (x0, y0, x1, y1, mode) box-select rectangle in region spa
 box_area = 0
 circle = None        # (x, y, radius, area pointer) circle select brush
 chart = None         # timing chart geometry of the last draw (see draw._draw_chart)
-speed_graph = None   # (path key, first, last frame) the speed graph showed last
+speed_graph = None   # where the speed graph is and what it shows (for dragging it), see draw
+speed_hold = None    # while the speed graph is dragged: {cache, lo, hi, vmax} it keeps
+speed_hot = None     # (path key, 'KEY' / 'EASE', frame / segment) under the mouse on the graph
 sculpt_cursor = None   # (x, y, radius, area pointer, painting) the sculpt brush circle
 sculpt_preview = None  # ([world points], area pointer) frame dots while a timing brush paints
 sculpt_hide = set()    # paths whose own frame dots are hidden meanwhile
@@ -355,11 +357,18 @@ def _any_modal(skip=()):
 
 
 def blender_edit_running():
-    """True while one of Blender's own interactive edits runs (G / R / S, graph editing...): the
-    pose being dragged isn't keyed yet, so nothing may change frames then (frame_set would put
-    the animation back and the drag would snap back every time). Scrubbing the timeline isn't
-    one: the ghosts are still captured meanwhile."""
-    return _any_modal(skip=("EMP", "ANIM"))
+    """True while one of Blender's own interactive edits of a pose runs (G / R / S, the pose
+    sliders): the pose being dragged isn't keyed yet, so frames may change under it only with
+    the pose put back. Other modal operators (scrubbing, other add-ons' permanent ones) don't
+    count."""
+    wm = bpy.context.window_manager
+    if wm is None:
+        return False
+    for win in wm.windows:
+        for op in getattr(win, "modal_operators", ()):
+            if op.bl_idname.split("_OT_")[0] in {"TRANSFORM", "POSE"}:
+                return True
+    return False
 
 
 def keep_pose(objs):

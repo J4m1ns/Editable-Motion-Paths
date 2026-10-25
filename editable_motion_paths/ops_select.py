@@ -31,6 +31,20 @@ class EMP_OT_click(bpy.types.Operator):
         if event.alt or not state.visible_caches(context.scene) or context.region_data is None:
             return {'PASS_THROUGH'}
         mx, my = _region_mouse(context, event)
+        from . import draw
+        sp = draw.speed_hit(context.area, mx, my)
+        if sp is not None:
+            # the speed graph: the current frame, a key in time, a segment's ease
+            c = state.caches.get(state.speed_graph["cache"])
+            if c is not None:
+                kind, val = sp
+                props = dict(mode=kind, obj_name=c.obj_name, bone_name=c.bone_name)
+                if kind == 'EASE':
+                    props.update(frame=val[0], frame_b=val[1])
+                else:
+                    props.update(frame=val)
+                bpy.ops.emp.speed_drag('INVOKE_DEFAULT', **props)
+                return {'FINISHED'}
         tick = _chart_tick(context, mx, my)
         if tick is not None:
             cache, frame = tick

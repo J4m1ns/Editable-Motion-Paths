@@ -601,6 +601,7 @@ def clear():
     _frames.clear()
     _batches.clear()
     _stale.clear()
+    _previewed.clear()
 
 
 def clear_all():
@@ -627,7 +628,11 @@ def all_frames(scene, st, limit=250):
         f0, f1 = scene.frame_start, scene.frame_end
     if st.onion_step > 0:
         return [f for f in range(f0, f1 + 1)][:limit]
-    keys = [k for k in _key_frames(scene) if f0 <= k <= f1]
+    keys = _key_frames(scene)
+    if len(keys) > 1 and keys[-1] > keys[0] and _loops(scene):
+        p = keys[-1] - keys[0]
+        keys = sorted({k + n * p for n in range((f0 - keys[-1]) // p, (f1 - keys[0]) // p + 1) for k in keys})
+    keys = [k for k in keys if f0 <= k <= f1]
     return keys[:limit]
 
 
@@ -637,14 +642,41 @@ def ready(scene, st):
     return [f for f in shows if f in _frames and f not in _stale], shows
 
 
+_loop_cache = [None, 0.0, False]
+
+
+def _loops(scene):
+    """The ghosted curves loop (a Cycles modifier: the path's Looping, or set in the Graph
+    Editor). Worked out again when the edited set changes, else twice a second."""
+    from . import compat
+    arms, objs = _edited(scene)
+    key = (tuple(sorted(arms)), tuple(o.name for o in objs))
+    now = time.time()
+    if _loop_cache[0] == key and now - _loop_cache[1] < 0.5:
+        return _loop_cache[2]
+    out = False
+    for ob in [bpy.data.objects.get(n) for n in arms] + list(objs):
+        if ob is not None and any(m.type == 'CYCLES' for fc in compat.get_fcurves(ob) or [] for m in fc.modifiers):
+            out = True
+            break
+    _loop_cache[:] = [key, now, out]
+    return out
+
+
 def frames_to_show(scene, st):
-    """Ghost frames around the current one: every `onion_step` frames, or the keys."""
+    """Ghost frames around the current one: every `onion_step` frames, or the keys (looping
+    curves: the keys go on in both directions, one loop after another)."""
     cur = scene.frame_current
     if st.onion_step > 0:
         before = [cur - st.onion_step * i for i in range(1, st.onion_before + 1)]
         after = [cur + st.onion_step * i for i in range(1, st.onion_after + 1)]
     else:
         keys = _key_frames(scene)
+        if len(keys) > 1 and keys[-1] > keys[0] and _loops(scene):
+            p = keys[-1] - keys[0]
+            n0 = (cur - keys[0]) // p
+            reps = max(st.onion_before, st.onion_after) // max(len(keys) - 1, 1) + 2
+            keys = sorted({k + n * p for n in range(n0 - reps, n0 + reps + 1) for k in keys})
         if not keys:
             # nothing keyed: every 5 frames
             step = 5
@@ -705,6 +737,10 @@ def _capture(scene, frames, targets, st):
             o.hide_viewport = False
 
 
+_previewed = set()          # frames captured with an unkeyed pose put on the curves
+_previewed_at = [None]      # on which frame that pose was
+
+
 _TF = {"location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "scale"}
 
 
@@ -720,6 +756,7 @@ def _pending_keys(scene):
     for ob in owners:
         if ob is None:
             continue
+        sel = ob.select_get()
         for fc in compat.get_fcurves(ob) or []:
             dp = fc.data_path
             prop = dp.rsplit(".", 1)[-1]
@@ -730,7 +767,7 @@ def _pending_keys(scene):
                 if pb is None or not compat.bone_selected(pb):
                     continue
                 owner = pb
-            elif "." in dp:
+            elif "." in dp or not sel:
                 continue
             else:
                 owner = ob
@@ -798,7 +835,9 @@ def _tick():
         # show what the neighbors will look like once it is (the pose put on the curves for a
         # moment); without it nothing changes on the other frames, so they wait
         editing = state.blender_edit_running()
-        if editing and not scene.tool_settings.use_keyframe_insert_auto:
+        # (Preview Unkeyed Pose: also without auto keying, during the drag and after it)
+        preview = st.onion_preview_pose or (editing and scene.tool_settings.use_keyframe_insert_auto)
+        if editing and not preview:
             return 0.1
         if (state.modal_running or editing) and _cost > 0.03 and time.time() - _changed_at < 0.15:
             return 0.05
@@ -840,7 +879,7 @@ def _tick():
         held = state.keep_pose([o for o, _a, _h in targets] + [bpy.data.objects[n] for n in _edited(scene)[0]])
         undo = []
         try:
-            if editing:
+            if preview:
                 undo = _put_keys(_pending_keys(scene), cur)
             done = []
             batch = []
@@ -853,6 +892,13 @@ def _tick():
                 _stale.discard(f)
             _capture(scene, batch, targets, st)
             done += batch
+            if undo:
+                # captured with the pose put on the curves: captured again once the frame changes
+                # (the pose that isn't keyed is gone then)
+                _previewed.update(batch)
+                _previewed_at[0] = cur
+            else:
+                _previewed.difference_update(batch)
             per = (time.time() - t1) / max(len(batch), 1)
             _cost = per if not _cost else _cost * 0.7 + per * 0.3
         finally:
@@ -1001,6 +1047,11 @@ def draw(scene, st, us):
         # other bones / objects are edited now: their ghosts are captured anew
         clear()
         _sig = sig
+    if _previewed and scene.frame_current != _previewed_at[0]:
+        # ghosts of a pose that wasn't keyed: another frame now, that pose is gone
+        _stale.update(f for f in _previewed if f in _frames)
+        _previewed.clear()
+        _schedule()
     shows = frames_to_show(scene, st)
     if any(f not in _frames for f, _i in shows) or status:
         _schedule()
