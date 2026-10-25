@@ -736,6 +736,19 @@ def _draw_com(layout, st):
     row.prop(st, "com_floor", text="Floor")
     if st.com_floor == 'HEIGHT':
         row.prop(st, "com_floor_height", text="")
+    if st.com_trail or st.com_velocity:
+        row = layout.row(align=True)
+        row.prop(st, "com_range_mode", text="Range")
+        if st.com_range_mode == 'MANUAL':
+            row = layout.row(align=True)
+            row.prop(st, "com_frame_start")
+            row.prop(st, "com_frame_end")
+    if st.com_trail:
+        layout.prop(st, "com_use_window")
+        if st.com_use_window:
+            row = layout.row(align=True)
+            row.prop(st, "com_window_before")
+            row.prop(st, "com_window_after")
     draw_limb_weight(layout, st)
 
 
@@ -803,7 +816,10 @@ def _draw_display(layout, st, popover=False, context=None):
     every = not popover
     layout.prop(st, "color_mode")
     if st.color_mode == 'JITTER':
-        layout.prop(st, "jitter_threshold", text="Threshold", slider=True)
+        from .props import prefs
+        p = prefs()         # (it lives in the preferences: the same in every file)
+        if p is not None:
+            layout.prop(p, "jitter_threshold", text="Threshold", slider=True)
     col = layout.column(heading="Show")
     col.prop(st, "show_frames")
     col.prop(st, "show_handles")

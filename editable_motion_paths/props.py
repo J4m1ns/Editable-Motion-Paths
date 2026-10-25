@@ -52,6 +52,12 @@ def _set_limb_mass(self, value):
     _set_limb(self, 100.0 * kg / max(self.com_body_mass, 1e-6))
 
 
+def _com_range(self, context):
+    from . import com
+    com._schedule(0.05)
+    state.tag_redraw()
+
+
 def _rebake(self, context):
     for c in state.caches.values():
         c.B = []
@@ -279,6 +285,20 @@ class EMP_Settings(bpy.types.PropertyGroup):
         name="Body Mass", default=70.0, min=0.1, soft_max=500.0, precision=1, update=_redraw,
         description="Center of mass: the character's whole mass in kilograms (only for showing the limbs' "
                     "masses in kg / lb; the center itself only needs the shares)")
+    com_range_mode: EnumProperty(
+        name="Trajectory Range", update=_com_range,
+        description="Center of mass: the frames its trajectory (and velocity) is worked out for",
+        items=[('SCENE', "Scene", "The scene's frame range (or the preview range when it's on)"),
+               ('ACTION', "Action", "The frame range of the armature's action"),
+               ('PATHS', "Paths", "The frames of the motion paths shown"),
+               ('MANUAL', "Manual", "The frames set below")],
+        default='SCENE')
+    com_frame_start: IntProperty(name="Start", default=1, update=_com_range)
+    com_frame_end: IntProperty(name="End", default=100, update=_com_range)
+    com_use_window: BoolProperty(name="Around Current Frame", default=False, update=_redraw,
+                                 description="Center of mass: only draw the trajectory around the current frame")
+    com_window_before: IntProperty(name="Before", default=15, min=0, update=_redraw)
+    com_window_after: IntProperty(name="After", default=15, min=0, update=_redraw)
     com_floor_height: FloatProperty(name="Floor Height", default=0.0, subtype='DISTANCE', unit='LENGTH',
                                     update=_redraw)
     onion_show: EnumProperty(

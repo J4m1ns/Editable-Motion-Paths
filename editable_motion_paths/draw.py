@@ -62,27 +62,37 @@ def _jitter_color(x):
 
 
 def jitter_values(cache):
-    """Roughness at every sample of the path: |4th difference| of the per-frame positions (zero
-    for any smooth cubic motion; a jump of the acceleration at a key, a pop or noise make it
-    big) against the motion's TYPICAL acceleration over the whole path - so what is rough is
-    measured on the scale of the motion: a small change while the foot is planted (slow, little
-    acceleration) stays calm, a pop or a wobble that would show at full speed glows."""
+    """Roughness at every sample of the path: how far the acceleration on a frame is from where
+    it was heading, from the left AND from the right (its 2nd differences, each side's trend
+    carried on). A key where the acceleration just changes - the joint of two smooth Bezier
+    segments - follows one side's trend, so it stays calm; a pop (the speed or the direction
+    jumps on one frame) and noise follow neither, so they glow. Measured against the motion's
+    typical acceleration over the whole path, so a small change while a foot is planted stays
+    calm too."""
     cached = getattr(cache, "_jitter", None)
     if cached is not None and cached[0] is cache.sig:
         return cached[1]
     frames = [(t, p) for t, p in zip(cache.times, cache.points) if abs(t - round(t)) < 1e-6]
     P = [p for _t, p in frames]
     n = len(P)
-    d4 = [0.0] * n
-    for i in range(2, n - 2):
-        d4[i] = (P[i - 2] - 4.0 * P[i - 1] + 6.0 * P[i] - 4.0 * P[i + 1] + P[i + 2]).length
-    d2 = sorted((P[i - 1] - 2.0 * P[i] + P[i + 1]).length for i in range(1, n - 1))
+    A = [None] * n
+    for i in range(1, n - 1):
+        A[i] = P[i - 1] - 2.0 * P[i] + P[i + 1]
+    dev = [0.0] * n
+    for i in range(1, n - 1):
+        cands = []
+        if i >= 3:
+            cands.append((A[i] - (2.0 * A[i - 1] - A[i - 2])).length)
+        if i + 3 <= n - 1:
+            cands.append((A[i] - (2.0 * A[i + 1] - A[i + 2])).length)
+        dev[i] = min(cands) if cands else 0.0
+    mags = sorted(a.length for a in A if a is not None)
     steps = [(b - a).length for a, b in zip(P, P[1:])]
     speed = sum(steps) / max(1, n - 1)
     # the typical acceleration: most of the motion's (a linear motion: as if it changed over 20
-    # frames); 4x it, so the threshold keeps its meaning
-    typical = max(d2[int(len(d2) * 0.8)] if d2 else 0.0, speed / 20.0, 1e-9) * 4.0
-    rough = [max(d4[max(0, i - 1):i + 2]) / typical for i in range(n)]
+    # frames)
+    typical = max(mags[int(len(mags) * 0.8)] if mags else 0.0, speed / 20.0, 1e-9) * 4.0
+    rough = [max(dev[max(0, i - 1):i + 2]) / typical for i in range(n)]
     at = {round(t): r for (t, _p), r in zip(frames, rough)}
     out = [at.get(round(t), 0.0) for t in cache.times]
     cache._jitter = (cache.sig, out)
@@ -1161,6 +1171,8 @@ def _draw_speed_graph(ctx, st, us):
         s = _speed_at(pts, k.t)
         d = 4.0 * us
         y = Y(s)
+        if hot is not None and hot[1] == 'KEYSPEED' and abs(hot[2] - k.t) < 1e-3:
+            d *= 1.6            # (the dot under the mouse: drag it up / down)
         quad = [(x, y - d), (x + d, y), (x, y + d), (x - d, y)]
         (sel_diamonds if k.sel else diamonds).append(quad)
         blf.color(font, *((sc + (0.9,)) if k.sel else (kc + (0.7,))))
@@ -1198,15 +1210,16 @@ def _draw_speed_graph(ctx, st, us):
     blf.draw(font, "Speed  ·  %s" % cache.label)
     blf.size(font, 9 * us * fs)
     blf.color(font, 1.0, 1.0, 1.0, 0.45)
-    hint = "drag: frame   a key's line: its time   the curve: ease"
+    hint = "drag: frame   a key's line: its time   its dot: its speed   the curve: ease"
     blf.position(font, x1 - blf.dimensions(font, hint)[0] - 6 * us, y0 + h + 5 * us, 0)
     blf.draw(font, hint)
 
 
 def speed_hit(area, mx, my):
-    """What the mouse is on in the speed graph: ('KEY', frame), ('EASE', (first, last frame of
-    the segment, the frame under the mouse)) near the curve, ('SCRUB', frame) elsewhere on it;
-    None off the graph."""
+    """What the mouse is on in the speed graph: ('KEYSPEED', frame) on a key's dot, ('KEY',
+    frame) on its line, ('EASE', (first, last frame of the segment, the
+    frame under the mouse)) near the curve, ('SCRUB', frame) elsewhere on it; None off the
+    graph."""
     sg = state.speed_graph
     if sg is None or area is None or sg["area"] != area.as_pointer():
         return None
@@ -1220,7 +1233,10 @@ def speed_hit(area, mx, my):
     t = t0 + (t1 - t0) * (mx - sg["x0"]) / max(sg["x1"] - sg["x0"], 1.0)
     best = min(sg["keys"], key=lambda k: abs(X(k) - mx), default=None)
     if best is not None and abs(X(best) - mx) <= 6.0 * us:
-        return ('KEY', best)
+        yk = sg["gy0"] + sg["gh"] * _speed_at(sg["pts"], best) / (sg["vmax"] * 1.2)
+        if abs(yk - my) <= 8.0 * us:
+            return ('KEYSPEED', best)       # the dot: the speed at the key, up / down
+        return ('KEY', best)                # the line: the key in time
     y = sg["gy0"] + sg["gh"] * _speed_at(sg["pts"], t) / (sg["vmax"] * 1.2)
     if abs(y - my) <= 10.0 * us and t0 <= t <= t1:
         ks = sg["keys"]

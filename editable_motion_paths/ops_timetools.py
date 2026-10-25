@@ -659,7 +659,8 @@ class EMP_OT_speed_drag(bpy.types.Operator):
     bl_label = "Speed Graph"
     bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
 
-    mode: EnumProperty(items=[('SCRUB', "Frame", ""), ('KEY', "Key Time", ""), ('EASE', "Ease", "")],
+    mode: EnumProperty(items=[('SCRUB', "Frame", ""), ('KEY', "Key Time", ""), ('EASE', "Ease", ""),
+                              ('KEYSPEED', "Key Speed", "")],
                        default='SCRUB')
     frame: FloatProperty(name="Frame", description="Key Time: the key moved; Ease: the segment's first key")
     frame_b: FloatProperty(name="Last Frame", description="Ease: the segment's last key")
@@ -696,6 +697,16 @@ class EMP_OT_speed_drag(bpy.types.Operator):
             self.job = SpaceJob(c, tg, float(self.frame), float(self.frame_b))
             if self.job.arc[-1] < 1e-9:
                 return False        # a hold: nothing to ease
+        elif self.mode == 'KEYSPEED':
+            ks = [k.t for k in c.keys]
+            prev = max((t for t in ks if t < self.frame - 1e-3), default=None)
+            nxt = min((t for t in ks if t > self.frame + 1e-3), default=None)
+            if prev is None and nxt is None:
+                return False
+            self.snapshot = core.FCurveSnapshot(tg, tg.channels(c.ptype))
+            # the segments on both sides (the first / last key: one): faster / slower around
+            # the key (u = 1 / 0 of them)
+            self.jobs = ([(SpaceJob(c, tg, float(prev), float(self.frame)), 1.0)] if prev is not None else []) +                 ([(SpaceJob(c, tg, float(self.frame), float(nxt)), 0.0)] if nxt is not None else [])
         return True
 
     def _apply(self):
@@ -717,6 +728,19 @@ class EMP_OT_speed_drag(bpy.types.Operator):
                 p = prefs()
                 refit(self.job, tg, bump_target(self.job, tg, u0, self.amount),
                       True if p is None or p.speed_select_new else self.sel)
+            c.refresh(force=True)
+        elif self.mode == 'KEYSPEED':
+            from .props import prefs
+            p = prefs()
+            self.snapshot.restore()
+            c.refresh(force=True)
+            if abs(self.amount) > 1e-9:
+                for job, u0 in self.jobs:
+                    if job.arc[-1] < 1e-9:
+                        continue    # (a hold on that side)
+                    tg = c.target()
+                    refit(job, tg, bump_target(job, tg, u0, self.amount),
+                          True if p is None or p.speed_select_new else self.sel)
             c.refresh(force=True)
 
     def execute(self, context):
@@ -767,7 +791,8 @@ class EMP_OT_speed_drag(bpy.types.Operator):
         else:
             sg = self.sg
             self.amount = (my - self.my0) / max(sg["gh"], 1.0) * sg["vmax"] * 1.2
-            text = "Speed at frame %.1f: %+.4f   up: faster there, down: slower" % (self.grab, self.amount)
+            at = self.frame if self.mode == 'KEYSPEED' else self.grab
+            text = "Speed at frame %.1f: %+.4f   up: faster there, down: slower" % (at, self.amount)
         self._apply()
         self.area.header_text_set(text + "   click / release: confirm   Esc: cancel")
         pick.tag_anim_editors()

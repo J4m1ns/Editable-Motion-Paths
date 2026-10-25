@@ -173,7 +173,9 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   (*Range*) or the scene's frame range (*Timeline*). Keys are marked on it with their frame
   numbers (the selected ones orange), the current frame in green. The speed graph can be
   dragged: on empty space the **current frame** follows the mouse; a **key's line** (it lights up
-  under the mouse) moves that key in **time** (the whole pose; Ctrl: subframes); the **curve**:
+  under the mouse) moves that key in **time** (the whole pose; Ctrl: subframes); a **key's dot**
+  (it grows under the mouse), dragged up or down, makes the motion faster or slower at that key
+  (both segments around it make up for it); the **curve**:
   the part of it you grab goes up (faster there) or down (slower), the rest of the segment makes
   up for it - grab it on the left to change the start of the segment, on the right for its end.
   The path keeps its shape and the keys their frames (keys are added where needed, like *Ease*;
@@ -370,7 +372,8 @@ for the edited armature or the active one, with or without a path:
 * the **velocity** (on by default): an arrow where the body is going - *Adaptive* (as far as it
   gets in about 8 frames), *Fixed* (a set length: only the direction) or *Adaptive + Length*;
 * the **trajectory** (off by default): the center's path over the frames - a jump's arc should
-  be a parabola;
+  be a parabola. Its *Range* is like the paths': the *Scene*, the armature's *Action*, the
+  *Paths* shown or *Manual* frames, and it can be drawn only *Around the Current Frame*;
 * the **floor**: *Auto* (the character's lowest point over the animation), a *Height* (a
   rooftop, a table) or the *3D Cursor*'s height.
 
@@ -406,11 +409,12 @@ add-on's preferences (*Colors, Sizes, Keys...* at the bottom of the sidebar's Di
 the same in every file.
 
 * **Color**: *Speed* (blue slow, red fast), **Jitter**, *Before / After* and *Solid*. Jitter
-  is a heat map of roughness. Smooth motion stays gray: roughness (the jump of the
-  acceleration from frame to frame) is measured against the motion's typical acceleration, so
-  a small change while a foot is planted stays calm, fast smooth motion too; hitches, pops (a
-  key where the speed jumps, e.g. a Linear segment after a flat Bezier handle) and noisy
-  wobbles glow yellow to red. Select the red part and smooth it. *Threshold* (right under the
+  is a heat map of roughness. Smooth motion stays gray: a frame is rough when its
+  acceleration follows neither the trend before it nor the one after it - so a key between two
+  smooth Bezier segments (the acceleration only changes there) stays calm, while a pop (a key
+  where the speed or the direction jumps, e.g. a Linear segment after a flat Bezier handle) and
+  noise glow yellow to red. It is measured against the motion's typical acceleration, so a
+  small change while a foot is planted stays calm, fast smooth motion too. Select the red part and smooth it. *Threshold* (right under the
   color, in the display settings) sets the sensitivity.
 * Baked keys (a key every frame or two) are drawn as small dots, so dense motion stays
   readable.

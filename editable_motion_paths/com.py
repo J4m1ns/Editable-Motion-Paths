@@ -291,10 +291,32 @@ def _lowest(scene, arm):
 # ---- the track: frame by frame in the background -------------------------------------------
 
 def _range(scene):
-    cs = state.editable_caches(scene)
-    if cs:
-        return min(c.fs for c in cs), max(c.fe for c in cs)
+    """The frames the track is worked out for (the Trajectory Range, like the paths' Range)."""
+    st = state.settings(scene)
+    mode = st.com_range_mode if st is not None else 'SCENE'
+    if mode == 'MANUAL':
+        return st.com_frame_start, max(st.com_frame_end, st.com_frame_start + 1)
+    if mode == 'PATHS':
+        cs = state.editable_caches(scene)
+        if cs:
+            return min(c.fs for c in cs), max(c.fe for c in cs)
+    if mode == 'ACTION':
+        rs = [ad.action.frame_range for ad in (a.animation_data for a in armatures(scene))
+              if ad is not None and ad.action is not None]
+        if rs:
+            return int(min(r[0] for r in rs)), int(max(r[1] for r in rs) + 0.999)
+    if scene.use_preview_range:
+        return scene.frame_preview_start, scene.frame_preview_end
     return scene.frame_start, scene.frame_end
+
+
+def trail_frames(scene, st):
+    """(first, last) frame of the trajectory drawn: the range, around the current frame if set."""
+    f0, f1 = _range(scene)
+    if st.com_use_window:
+        cur = scene.frame_current
+        f0, f1 = max(f0, cur - st.com_window_before), min(f1, cur + st.com_window_after)
+    return f0, f1
 
 
 def _schedule(delay=0.05):
@@ -491,7 +513,8 @@ def draw(scene, st, us):
         foot = (float(g[0]), float(g[1]), float(floor))
         if st.com_trail:
             tr = _track.get(arm.name) or {}
-            pts = [tuple(tr[f][0]) for f in sorted(tr) if tr[f] is not None]
+            f0, f1 = trail_frames(scene, st)
+            pts = [tuple(tr[f][0]) for f in sorted(tr) if tr[f] is not None and f0 <= f <= f1]
             if len(pts) > 1:
                 _draw._flat(pts, (1.0, 0.65, 0.2, 0.8), 'LINE_STRIP', 1.5 * us)
                 gpu.state.point_size_set(3.0 * us)
