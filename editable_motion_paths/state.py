@@ -92,6 +92,31 @@ def entry_key(entry, mode=None):
     return (entry.object.name, entry.bone_name, mode or edit_mode(entry.id_data))
 
 
+_bone_names = {}      # armature object name -> its bone names (in order) when last seen
+
+
+def _follow_renamed_bones(st):
+    """A bone of a path was renamed: the path follows it (the bones keep their order when one is
+    renamed, so its old place tells the new name)."""
+    for e in st.paths:
+        ob = e.object
+        if ob is None or ob.type != 'ARMATURE' or not e.bone_name:
+            continue
+        names = tuple(b.name for b in ob.data.bones)
+        if e.bone_name not in names:
+            old = _bone_names.get(ob.name)
+            if old is not None and len(old) == len(names) and e.bone_name in old:
+                was = e.bone_name
+                e.bone_name = names[old.index(was)]
+                prefix = 'pose.bones["%s"]' % bpy.utils.escape_identifier(was)
+                if e.value_path.startswith(prefix):
+                    e.value_path = 'pose.bones["%s"]' % bpy.utils.escape_identifier(e.bone_name) + \
+                        e.value_path[len(prefix):]
+    for e in st.paths:
+        if e.object is not None and e.object.type == 'ARMATURE':
+            _bone_names[e.object.name] = tuple(b.name for b in e.object.data.bones)
+
+
 def sync_caches(scene=None):
     """Make the cache dict match the scene's path list and edit mode.
 
@@ -102,6 +127,7 @@ def sync_caches(scene=None):
     st = settings(scene)
     if st is None:
         return []
+    _follow_renamed_bones(st)
     mode = st.edit_mode
     targets = set()
     wanted = []
@@ -356,6 +382,39 @@ def _any_modal(skip=()):
     return False
 
 
+_unhide_cost = {}       # mesh name -> seconds showing it again took (it is rebuilt then)
+
+
+def can_hide(o, frames):
+    """Hiding a bent mesh while stepping through `frames` frames saves evaluating it on each of
+    them - worth it unless showing it again costs more: a heavy subdivided mesh is rebuilt from
+    scratch then (seconds), while a frame of it costs some 20-60 ms."""
+    cost = _unhide_cost.get(o.name)
+    return cost is None or cost < 0.02 * frames
+
+
+def unhide_cost(objs, seconds):
+    """Showing these again (and the frame after) took that long."""
+    for o in objs:
+        _unhide_cost[o.name] = seconds
+
+
+def render_running():
+    """True while Blender renders (F12, an animation) or bakes: nothing may step the scene's
+    frames then - the render reads the scene, and an animation render would get wrong, doubled
+    or missing frames."""
+    is_running = getattr(bpy.app, "is_job_running", None)
+    if is_running is None:
+        return False
+    for job in ('RENDER', 'OBJECT_BAKE', 'COMPOSITE'):
+        try:
+            if is_running(job):
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
 def blender_edit_running():
     """True while one of Blender's own interactive edits of a pose runs (G / R / S, the pose
     sliders): the pose being dragged isn't keyed yet, so frames may change under it only with
@@ -383,6 +442,13 @@ def keep_pose(objs):
     return core._pose_state(seen.values())
 
 
+def keep_scene_pose(scene, objs=()):
+    """keep_pose for everything stepping through frames can change: every animated object of
+    the scene (its unkeyed changes - a prop moved by hand - would be lost otherwise) and `objs`."""
+    animated = [o for o in scene.objects if o.animation_data is not None]
+    return keep_pose(animated + [o for o in objs if o is not None])
+
+
 def put_pose_back(saved):
     """Put the kept poses back; True if anything had changed."""
     from . import core
@@ -397,9 +463,10 @@ def _bake_timer():
     remaining = _bake_due - time.time()
     if remaining > 0.01:
         return remaining
+    reconcile_modal()
     ctx = bpy.context
     screen = getattr(ctx, "screen", None)
-    if modal_running or baking or (screen is not None and screen.is_animation_playing) or _any_modal():
+    if modal_running or baking or (screen is not None and screen.is_animation_playing) or _any_modal() or             render_running():
         return 0.3
     _bake_timer_on = False
     force = _force_bake
@@ -578,11 +645,34 @@ def _watch_isolated(st):
                             r.tag_redraw()
 
 
+def reconcile_modal():
+    """The 'editing' counter says one of our modal tools runs, but none does (it stopped on an
+    error): set it back, or the paths would never re-bake again."""
+    global modal_running, hud, constraint, prop_circle, snap_point
+    if not modal_running:
+        return
+    wm = bpy.context.window_manager
+    if wm is None:
+        return
+    for win in wm.windows:
+        if any(op.bl_idname.startswith("EMP_OT_") for op in getattr(win, "modal_operators", ())):
+            return
+    modal_running = 0
+    ghosts.clear()
+    hud = constraint = prop_circle = snap_point = None
+    for win in wm.windows:
+        for area in win.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.header_text_set(None)
+    tag_redraw()
+
+
 def _watch_active():
     """Auto edit mode: when the active bone/object has a path but nothing to edit in the
     current mode (e.g. only location is animated while editing Rotation), switch modes."""
     global _watch_last
     try:
+        reconcile_modal()
         st = settings()
         if st is None or not st.paths or modal_running:
             return 0.25
@@ -626,6 +716,14 @@ def _watch_active():
 
 
 def register():
+    global _bake_timer_on, modal_running
+    # (enabled again in the same session: the module is the same, its timers are gone)
+    _bake_timer_on = False
+    modal_running = 0
+    from . import com, onion
+    onion._timer_on = False
+    com._timer_on = False
+    com._flash[2] = False
     bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph)
     bpy.app.handlers.undo_post.append(_on_undo)
     bpy.app.handlers.redo_post.append(_on_undo)
@@ -647,4 +745,8 @@ def unregister():
         bpy.app.timers.unregister(_load_bake)
     if bpy.app.timers.is_registered(_watch_active):
         bpy.app.timers.unregister(_watch_active)
+    from . import com, onion
+    for fn in (onion._tick, com._tick):
+        if bpy.app.timers.is_registered(fn):
+            bpy.app.timers.unregister(fn)
     caches.clear()

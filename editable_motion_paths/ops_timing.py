@@ -108,7 +108,7 @@ class SpaceJob:
         ch = tg.channels(cache.ptype)
         n = max(2, int(round((r1 - r0) / self.STEP)))
         self.ts = [r0 + (r1 - r0) * i / n for i in range(n + 1)]
-        self.vals = [ch.values(t) for t in self.ts]
+        self.vals = core.raw_values(ch, self.ts)        # (the keys' own motion: no Noise...)
         self.pts = [cache.point(tg, t, v) for t, v in zip(self.ts, self.vals)]
         self.arc = [0.0]
         for a, b in zip(self.pts, self.pts[1:]):

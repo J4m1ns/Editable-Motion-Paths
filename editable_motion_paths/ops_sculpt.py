@@ -171,6 +171,9 @@ class EMP_OT_sculpt_set_brush(bpy.types.Operator):
         return {i: d for i, _n, d in BRUSHES}.get(properties.brush, cls.__doc__)
 
     def execute(self, context):
+        if self.brush not in {i for i, _n, _d in BRUSHES}:
+            self.report({'WARNING'}, "No such brush: %r" % self.brush)
+            return {'CANCELLED'}
         _bs().brush = self.brush
         state.tag_redraw()
         return {'FINISHED'}

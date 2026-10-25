@@ -151,15 +151,25 @@ def _targets(scene):
             seen.add(o.name)
             out.append((o, arm, how))
     for name in arms:
-        arm = bpy.data.objects[name]
+        arm = bpy.data.objects.get(name)
+        if arm is None:
+            continue
+        deform = []
         for o in scene.objects:
             if not o.visible_get():
                 continue
             if o.type == 'MESH' and any(m.type == 'ARMATURE' and m.object == arm and m.show_viewport
                                         for m in o.modifiers):
                 add(o, arm, 'DEFORM')
+                deform.append(o)
             elif o.parent == arm and _how(o):
                 add(o, arm, _how(o))
+        # what hangs on them further down: a prop on an empty on a bone, eyes parented to a
+        # vertex of the head mesh...
+        for top in [arm] + deform:
+            for o in top.children_recursive:
+                if o.visible_get() and _how(o):
+                    add(o, arm, _how(o))
     for obj in objs:
         if _how(obj):
             add(obj, None, _how(obj))
@@ -707,9 +717,12 @@ def _capture(scene, frames, targets, st):
     armatures are evaluated); their proxies are bent here."""
     import numpy as np
     hidden = []
+    # a bent mesh something is parented to (eyes on a vertex of the head) has to be evaluated
+    # for real, or that child wouldn't follow it
+    parents = {o.parent.name for o, _a, _h in targets if o.parent is not None}
     try:
         for o, _arm, how in targets:
-            if how == 'DEFORM' and not o.hide_viewport:
+            if how == 'DEFORM' and not o.hide_viewport and o.name not in parents and state.can_hide(o, len(frames)):
                 o.hide_viewport = True
                 hidden.append(o)
         arms = {a.name: a for _o, a, _h in targets if a is not None}
@@ -738,6 +751,7 @@ def _capture(scene, frames, targets, st):
     finally:
         for o in hidden:
             o.hide_viewport = False
+        _shown_again[:] = hidden
 
 
 _previewed = set()          # frames captured with an unkeyed pose put on the curves
@@ -748,9 +762,9 @@ _TF = {"location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle
 
 
 def _pending_keys(scene):
-    """Auto keying during Blender's own G / R / S: [(F-Curve, value)] that the drag will key on
-    the current frame once confirmed - the channels of the selected bones / objects whose pose
-    differs from their curve now."""
+    """Auto keying during Blender's own G / R / S: [(object, F-Curve, value)] that the drag will
+    key on the current frame once confirmed - the channels of the selected bones / objects whose
+    pose differs from their curve now."""
     from . import compat
     f = scene.frame_current
     arms, objs = _edited(scene)
@@ -759,14 +773,24 @@ def _pending_keys(scene):
     for ob in owners:
         if ob is None:
             continue
+        ad = ob.animation_data
+        if ad is None or ad.action is None or getattr(ad, "use_tweak_mode", False) or \
+                ad.action_blend_type != 'REPLACE' or ad.action_influence < 1.0 - 1e-6 or \
+                any(not t.mute for t in ad.nla_tracks):
+            continue            # (the pose is more than the action's curves: NLA, blending)
+        driven = {(d.data_path, d.array_index) for d in ad.drivers}
         sel = ob.select_get()
         for fc in compat.get_fcurves(ob) or []:
+            if (fc.data_path, fc.array_index) in driven:
+                continue        # (a driver sets that channel, not the curve)
             dp = fc.data_path
             prop = dp.rsplit(".", 1)[-1]
             if prop not in _TF or fc.mute:
                 continue
             if dp.startswith('pose.bones["'):
-                pb = ob.pose.bones.get(dp[12:dp.find('"]')]) if ob.pose else None
+                m = state._BONE_PATH.match(dp)
+                name = m.group(1).replace('\\"', '"').replace('\\\\', '\\') if m else None
+                pb = ob.pose.bones.get(name) if ob.pose and name is not None else None
                 if pb is None or not compat.bone_selected(pb):
                     continue
                 owner = pb
@@ -779,39 +803,65 @@ def _pending_keys(scene):
             except (AttributeError, IndexError, TypeError):
                 continue
             if abs(v - fc.evaluate(f)) > 1e-5:
-                out.append((fc, v))
+                out.append((ob, fc, v))
     return out
 
 
 def _put_keys(pending, f):
-    """The pending keys put on their curves for a moment (to capture what the neighbors will
-    look like); returns how to take them off again."""
+    """The pending keys put on the curves for a moment (to capture what the neighbors will look
+    like) - on a COPY of each action, assigned for the capture: the real curves are never touched,
+    so a transform running elsewhere (keys dragged in the Graph Editor holds pointers into them)
+    is safe. Returns how to put the real actions back."""
+    from . import compat
+    by_ob = {}
+    for ob, fc, v in pending:
+        by_ob.setdefault(ob.name, (ob, []))[1].append((fc.data_path, fc.array_index, v))
     undo = []
-    for fc, v in pending:
-        kp = next((k for k in fc.keyframe_points if abs(k.co[0] - f) < 1e-3), None)
-        if kp is None:
-            fc.keyframe_points.insert(f, v, options={'FAST'})
-            undo.append((fc, None))
-        else:
-            undo.append((fc, (tuple(kp.co), tuple(kp.handle_left), tuple(kp.handle_right))))
-            dv = v - kp.co[1]
-            kp.co[1] = v
-            kp.handle_left[1] += dv
-            kp.handle_right[1] += dv
-        fc.update()
+    for ob, items in by_ob.values():
+        ad = ob.animation_data
+        orig = ad.action if ad is not None else None
+        if orig is None or getattr(ad, "use_tweak_mode", False):
+            continue
+        slot = getattr(ad, "action_slot", None)
+        slot_id = slot.identifier if slot is not None else None
+        tmp = orig.copy()
+        undo.append((ad, orig, slot_id, tmp))
+        ad.action = tmp
+        if slot_id is not None and hasattr(tmp, "slots"):
+            s = tmp.slots.get(slot_id)
+            if s is not None and ad.action_slot != s:
+                ad.action_slot = s
+        coll = compat.get_fcurves(ob)
+        for path, index, v in items:
+            fc = coll.find(path, index=index) if coll is not None else None
+            if fc is None:
+                continue
+            kp = next((k for k in fc.keyframe_points if abs(k.co[0] - f) < 1e-3), None)
+            if kp is None:
+                fc.keyframe_points.insert(f, v, options={'FAST'})
+            else:
+                dv = v - kp.co[1]
+                kp.co[1] = v
+                kp.handle_left[1] += dv
+                kp.handle_right[1] += dv
+            fc.update()
     return undo
 
 
 def _take_keys_off(undo, f):
-    for fc, old in reversed(undo):
-        kp = next((k for k in fc.keyframe_points if abs(k.co[0] - f) < 1e-3), None)
-        if kp is None:
-            continue
-        if old is None:
-            fc.keyframe_points.remove(kp, fast=True)
-        else:
-            kp.co, kp.handle_left, kp.handle_right = old
-        fc.update()
+    """The real actions back; the copies go."""
+    for ad, orig, slot_id, tmp in reversed(undo):
+        try:
+            ad.action = orig
+            if slot_id is not None and hasattr(orig, "slots"):
+                s = orig.slots.get(slot_id)
+                if s is not None and ad.action_slot != s:
+                    ad.action_slot = s
+        finally:
+            bpy.data.actions.remove(tmp)
+
+
+_shown_again = []      # the meshes the last capture hid and showed again
 
 
 def _schedule(delay=0.05):
@@ -832,6 +882,8 @@ def _tick():
             status = ""
             _timer_on = False
             return None
+        if state.render_running():
+            return 0.5              # (a render reads the scene: no frame stepping meanwhile)
         screen = bpy.context.screen
         playing = screen is not None and screen.is_animation_playing
         # Blender's own G / R / S: the dragged pose isn't keyed yet. With auto keying the ghosts
@@ -879,7 +931,8 @@ def _tick():
         cur, sub = scene.frame_current, scene.frame_subframe
         t0 = time.time()
         _busy = True
-        held = state.keep_pose([o for o, _a, _h in targets] + [bpy.data.objects[n] for n in _edited(scene)[0]])
+        held = state.keep_scene_pose(scene, [o for o, _a, _h in targets] +
+                                     [bpy.data.objects.get(n) for n in _edited(scene)[0]])
         undo = []
         try:
             if preview:
@@ -906,7 +959,10 @@ def _tick():
             _cost = per if not _cost else _cost * 0.7 + per * 0.3
         finally:
             _take_keys_off(undo, cur)
+            t_back = time.time()
             scene.frame_set(cur, subframe=sub)
+            state.unhide_cost(_shown_again, time.time() - t_back)
+            _shown_again.clear()
             if state.put_pose_back(held):     # (what isn't keyed stays as it was)
                 bpy.context.view_layer.update()     # (now, so it doesn't count as an edit)
             _busy = False

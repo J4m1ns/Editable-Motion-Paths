@@ -12,6 +12,7 @@ minimal swing rotation (rotation).
 
 import bisect
 import math
+import time
 from array import array
 
 import bpy
@@ -305,8 +306,11 @@ cycle_skip = set()      # key frames edited by the running operator (see _sync_c
 
 
 def _sync_cycle_partner(fc, idx, d):
-    """First and last key of a loop are the same pose: move the other one too."""
+    """First and last key of a loop are the same pose: move the other one too (not for a
+    mirrored loop: it goes back and forth, its ends needn't meet)."""
     if fc is None or abs(d) < 1e-12 or cycle_info(fc) is None:
+        return
+    if any(m.type == 'CYCLES' and not m.mute and 'MIRROR' in (m.mode_before, m.mode_after) for m in fc.modifiers):
         return
     kps = fc.keyframe_points
     n = len(kps)
@@ -368,7 +372,30 @@ def _fc_signature(fc):
 # Path cache
 # ----------------------------------------------------------------------------
 
+def _anim_lock(tg):
+    """(locked, reason) for animation that can't be edited from here at all."""
+    ad = getattr(tg.obj, "animation_data", None)
+    act = ad.action if ad is not None else None
+    if act is None:
+        return False, ""
+    if act.library is not None or not getattr(act, "is_editable", True):
+        return True, ("The animation comes linked from a library (read-only): an edit would be lost "
+                      "on save. Make the action local to edit it")
+    if getattr(ad, "use_tweak_mode", False):
+        strip = next((s for t in ad.nla_tracks for s in t.strips if s.active and s.action == act), None)
+        if strip is None:
+            strip = next((s for t in ad.nla_tracks for s in t.strips if s.action == act), None)
+        if strip is not None and (abs(strip.scale - 1.0) > 1e-6 or abs(strip.repeat - 1.0) > 1e-6 or
+                                  abs(strip.frame_start - strip.action_frame_start) > 1e-6):
+            return True, ("NLA tweak mode with a moved / scaled strip: its keys aren't on the scene's "
+                          "frames. Edit the action outside the strip (or with the strip unmoved)")
+    return False, ""
+
+
 def _lock_state(tg, ptype):
+    locked, why = _anim_lock(tg)
+    if locked:
+        return True, why
     if ptype == LOCATION:
         if tg.is_bone and tg.owner.bone.use_connect:
             return True, "Connected bone: its location can't move. Press 2 to edit Rotation"
@@ -611,9 +638,13 @@ class PathCache:
             v = (W - base).dot(self.value_dir(tg, t)) / self.vgain + self.vbase
             return [v] if math.isfinite(v) and abs(v) < 1e12 else list(ref_vals)
         if self.ptype == LOCATION:
-            v = self.B_at(t).inverted_safe() @ W
+            B = self.B_at(t)
+            if abs(B.to_3x3().determinant()) <= SINGULAR:
+                return list(ref_vals)       # (no parent space to solve in)
+            v = B.inverted_safe() @ W
             locks = tg.loc_locks()
-            return [ref_vals[i] if locks[i] else v[i] for i in range(3)]
+            return [ref_vals[i] if locks[i] or not (math.isfinite(v[i]) and abs(v[i]) < 1e9) else v[i]
+                    for i in range(3)]
         M, u = self.rot_frame(tg, t)
         d = M.inverted_safe() @ W
         q_ref = vals_to_quat(ref_vals, tg.rot_mode)
@@ -893,6 +924,12 @@ class PathCache:
             if first is None:
                 first = kp
             x, y = kp.co
+            if any(not m.mute and m.type != 'CYCLES' for m in fc.modifiers):
+                # F-modifiers (Noise...) add to the key: a write takes their part off again, so
+                # they aren't baked into the key
+                if k.offs is None:
+                    k.offs = [0.0] * ch.count
+                k.offs[c] = fc.evaluate(t) - y
             hlx, hly = kp.handle_left
             hrx, hry = kp.handle_right
             if x - hlx > EPS:
@@ -952,6 +989,23 @@ class PathCache:
 # ----------------------------------------------------------------------------
 # Writing to F-Curves
 # ----------------------------------------------------------------------------
+
+def raw_values(ch, ts):
+    """Channel values at the times ts without the F-modifiers that add to the curve (all but
+    Cycles, which only maps time): what the keys themselves make. Retiming works on this, the
+    modifiers then add theirs on top again (instead of being baked into the keys)."""
+    mods = [m for fc in ch.fcurves if fc is not None for m in fc.modifiers
+            if not m.mute and m.type != 'CYCLES']
+    if not mods:
+        return [ch.values(t) for t in ts]
+    try:
+        for m in mods:
+            m.mute = True
+        return [ch.values(t) for t in ts]
+    finally:
+        for m in mods:
+            m.mute = False
+
 
 def write_key(ch, k, vals, move_handles=True, touched=None):
     for c, fc in enumerate(ch.fcurves):
@@ -1252,6 +1306,70 @@ def bake_range(scene, settings, caches):
     return fs, fe
 
 
+SINGULAR = 1e-12       # |determinant| below this: a zero scale, the matrix can't be inverted
+
+
+def _fill_singular(mats, ok):
+    """Parent spaces of frames with a zero scale: blended from the nearest good frames before and
+    after (the parent space doesn't depend on the bone's / object's own scale; a parent that is
+    scaled to nothing has no usable space, so editing there works as on the frames around)."""
+    n = len(mats)
+    if all(ok) or not any(ok):
+        return
+    prev = [None] * n
+    last = None
+    for i in range(n):
+        if ok[i]:
+            last = i
+        prev[i] = last
+    nxt = [None] * n
+    last = None
+    for i in range(n - 1, -1, -1):
+        if ok[i]:
+            last = i
+        nxt[i] = last
+    for i in range(n):
+        if ok[i]:
+            continue
+        a, b = prev[i], nxt[i]
+        if a is None:
+            mats[i] = mats[b].copy()
+        elif b is None:
+            mats[i] = mats[a].copy()
+        else:
+            f = (i - a) / float(b - a)
+            mats[i] = mats[a] + (mats[b] - mats[a]) * f
+
+
+def _meshes_not_needed(scene, objs):
+    """Meshes bent by an armature that the paths' bones / objects don't depend on (not a parent,
+    a constraint's target, a driver's): they can be left out while stepping through frames."""
+    needed = set(objs)
+    todo = list(objs.values())
+    while todo:
+        o = todo.pop()
+        refs = []
+        owners = [o] + (list(o.pose.bones) if o.type == 'ARMATURE' and o.pose is not None else [])
+        for ow in owners:
+            for con in ow.constraints:
+                refs.append(getattr(con, "target", None))
+                for t in getattr(con, "targets", ()):       # (the Armature constraint)
+                    refs.append(getattr(t, "target", None))
+        for idb in (o, getattr(o, "data", None)):
+            ad = getattr(idb, "animation_data", None)
+            for d in (ad.drivers if ad is not None else ()):
+                for v in d.driver.variables:
+                    refs += [t.id for t in v.targets]
+        if o.parent is not None:
+            refs.append(o.parent)
+        for r in refs:
+            if isinstance(r, bpy.types.Object) and r.name not in needed:
+                needed.add(r.name)
+                todo.append(r)
+    return [o for o in scene.objects if o.type == 'MESH' and not o.hide_viewport and o.name not in needed
+            and any(m.type == 'ARMATURE' and m.show_viewport for m in o.modifiers)]
+
+
 def bake(scene, caches):
     """Bake parent spaces of the given caches by stepping through the frame range."""
     settings = state.settings(scene)
@@ -1267,31 +1385,51 @@ def bake(scene, caches):
             c.valid = False
             c.failed = True
             continue
-        resolved.append((c, obj, owner, []))
+        resolved.append((c, obj, owner, [], []))
         o = obj
         while o is not None:
             objs[o.name] = o
             o = o.parent
     if not resolved:
         return
+    hide = [o for o in _meshes_not_needed(scene, objs) if state.can_hide(o, fe - fs + 1)]
+    for o in scene.objects:
+        if o.animation_data is not None:
+            objs.setdefault(o.name, o)      # (their unkeyed changes stay too)
     saved = _pose_state(objs.values())
     cur = scene.frame_current
     sub = scene.frame_subframe
     state.baking = True
+    hidden = []
     try:
+        for o in hide:
+            # bent meshes nothing here depends on: left out of the evaluation (like the onion
+            # ghosts do), so a heavy character steps through its frames fast
+            o.hide_viewport = True
+            hidden.append(o)
         for f in range(fs, fe + 1):
             scene.frame_set(f)
-            for c, obj, owner, mats in resolved:
+            for c, obj, owner, mats, ok in resolved:
                 if c.bone_name:
                     W = obj.matrix_world @ owner.matrix
                 else:
                     W = owner.matrix_world.copy()
-                mats.append(W @ owner.matrix_basis.inverted_safe())
+                basis = owner.matrix_basis
+                mats.append(W @ basis.inverted_safe())
+                # a zero scale (its own, or a parent's) on this frame: W / basis can't be
+                # inverted, so the parent space here is taken from the frames around it
+                ok.append(abs(basis.to_3x3().determinant()) > SINGULAR and
+                          abs(W.to_3x3().determinant()) > SINGULAR)
     finally:
+        for o in hidden:
+            o.hide_viewport = False
+        t_back = time.time()
         scene.frame_set(cur, subframe=sub)
+        state.unhide_cost(hidden, time.time() - t_back)
         _restore_pose_state(saved)
         state.baking = False
-    for c, obj, owner, mats in resolved:
+    for c, obj, owner, mats, ok in resolved:
+        _fill_singular(mats, ok)
         c.fs = fs
         c.B = mats
         c.failed = False

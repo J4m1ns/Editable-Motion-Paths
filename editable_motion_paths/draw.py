@@ -115,7 +115,55 @@ def path_window(scene, st, cache):
 def handles_shown(st, cache, editable, k):
     if not editable or not st.show_handles:
         return False
-    return st.show_all_handles or k.any_sel
+    if not (st.show_all_handles or k.any_sel):
+        return False
+    # keys packed closer on screen than a few pixels (baked motion, mocap): their handles would
+    # only pile up - left out, unless a handle alone is picked
+    return (not k.sel and (k.sel_l or k.sel_r)) or round(k.t, 3) not in _dense_keys(cache)
+
+
+_dense_cache = [None, {}]      # (pass, {(path key, keys id): frames})
+_pass = [0]         # drawing / picking pass: the view stays the same within one
+
+
+def new_pass():
+    _pass[0] += 1
+
+
+def _dense_keys(cache):
+    """Frames of the keys that sit within a few pixels of a neighbor on screen (paths with many
+    keys only; worked out once per view and path)."""
+    keys = cache.keys
+    if len(keys) < 50:
+        return frozenset()
+    if _dense_cache[0] != _pass[0]:
+        _dense_cache[:] = [_pass[0], {}]
+    quick = (cache.key, id(keys))
+    got = _dense_cache[1].get(quick)
+    if got is not None:
+        return got
+    ctx = bpy.context
+    region, rv3d = getattr(ctx, "region", None), getattr(ctx, "region_data", None)
+    if region is None or rv3d is None or not hasattr(rv3d, "perspective_matrix"):
+        return frozenset()
+    import numpy as np
+    xy, ok = project_many(region, rv3d, [k.co for k in keys])
+    d = np.linalg.norm(np.diff(xy, axis=0), axis=1)
+    near = np.full(len(keys), np.inf)
+    near[:-1] = d
+    near[1:] = np.minimum(near[1:], d)
+    lim = 6.0 * compat.ui_scale()
+    out = {round(k.t, 3) for k, n, o in zip(keys, near.tolist(), ok.tolist()) if o and n < lim}
+    # many keys selected on baked motion (a key every frame or two): their handles - tiny, a
+    # third of a frame long - only pile up too
+    if sum(1 for k in keys if k.sel) > 50:
+        ts = [k.t for k in keys]
+        for i, t in enumerate(ts):
+            if (i == 0 or t - ts[i - 1] <= 2.0 + 1e-6) and (i + 1 == len(ts) or ts[i + 1] - t <= 2.0 + 1e-6):
+                out.add(round(t, 3))
+    out = frozenset(out)
+    _dense_cache[1][quick] = out
+    return out
 
 
 def _in(t, lo, hi):
@@ -139,8 +187,26 @@ def _lines(coords, colors, width, kind='LINES'):
 _CIRCLE = [(math.cos(a * 2 * math.pi / 16), math.sin(a * 2 * math.pi / 16)) for a in range(16)]
 
 
+_DISC = None     # (48, 2): the triangles of a unit disc (numpy), made on first use
+
+
+def _disc_template():
+    global _DISC
+    if _DISC is None:
+        import numpy as np
+        tris = []
+        for i in range(16):
+            a = _CIRCLE[i]
+            b = _CIRCLE[(i + 1) % 16]
+            tris += [(0.0, 0.0), a, b]
+        _DISC = np.array(tris, dtype=np.float32)
+    return _DISC
+
+
 class Discs:
-    """Collects 2D discs per color and draws them in one batch per color."""
+    """Collects 2D discs per color and draws them in one batch per color (only their centers
+    are collected; the triangles are made all at once when drawing - a baked path has
+    thousands)."""
 
     def __init__(self):
         self.groups = {}
@@ -148,12 +214,12 @@ class Discs:
     def add(self, p, radius, color):
         if p is None:
             return
-        tris = self.groups.setdefault((radius, tuple(color)), [])
-        x, y = p
-        for i in range(16):
-            a = _CIRCLE[i]
-            b = _CIRCLE[(i + 1) % 16]
-            tris += [(x, y), (x + a[0] * radius, y + a[1] * radius), (x + b[0] * radius, y + b[1] * radius)]
+        self.groups.setdefault((radius, tuple(color)), []).append((p[0], p[1]))
+
+    def add_many(self, centers, radius, color):
+        """centers: (N, 2) numpy array."""
+        if len(centers):
+            self.groups.setdefault((radius, tuple(color)), []).append(centers)
 
     def add_outlined(self, p, radius, color, outline=1.5):
         self.add(p, radius + outline, COL_OUTLINE)
@@ -162,19 +228,57 @@ class Discs:
     def draw(self):
         if not self.groups:
             return
+        import numpy as np
         sh = gpu.shader.from_builtin('UNIFORM_COLOR')
+        disc = _disc_template()
         # bigger (outline) discs first
-        for (radius, color), tris in sorted(self.groups.items(), key=lambda kv: -kv[0][0]):
+        for (radius, color), items in sorted(self.groups.items(), key=lambda kv: -kv[0][0]):
+            parts = [np.asarray(i, dtype=np.float32).reshape(-1, 2) for i in items if not isinstance(i, tuple)]
+            single = [i for i in items if isinstance(i, tuple)]
+            if single:
+                parts.append(np.array(single, dtype=np.float32))
+            c = np.concatenate(parts) if len(parts) > 1 else parts[0]
+            tris = (c[:, None, :] + disc[None, :, :] * radius).reshape(-1, 2)
             sh.uniform_float("color", color)
             batch_for_shader(sh, 'TRIS', {"pos": tris}).draw(sh)
+
+
+def project_many(region, rv3d, pts):
+    """Region positions of world points (numpy, (N, 2)) and which are in front of the view."""
+    import numpy as np
+    P = np.array(rv3d.perspective_matrix, dtype=np.float64)
+    a = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+    h = a @ P[:3, :3].T + P[:3, 3]
+    w = a @ P[3, :3] + P[3, 3]
+    ok = w > 1e-6
+    w = np.where(ok, w, 1.0)
+    x = (h[:, 0] / w + 1.0) * 0.5 * region.width
+    y = (h[:, 1] / w + 1.0) * 0.5 * region.height
+    return np.stack([x, y], axis=1), ok
 
 
 # ----------------------------------------------------------------------------
 # 3D pass
 # ----------------------------------------------------------------------------
 
+_part_errors = set()
+
+
+def _part_failed(part, ex):
+    """One part of the drawing failed: the rest still draws; say it once (console and a note)."""
+    key = (part, type(ex).__name__, str(ex)[:80])
+    if key in _part_errors:
+        return
+    _part_errors.add(key)
+    import traceback
+    traceback.print_exc()
+    print("Editable Motion Paths: %s couldn't be drawn:" % part, ex)
+    state.flash_message("%s couldn't be drawn (%s) - see the console" % (part, type(ex).__name__), 5.0)
+
+
 def draw_view():
     global _error_reported
+    new_pass()
     try:
         _draw_view()
     except Exception as ex:
@@ -634,10 +738,20 @@ def _draw_view():
     # the ghosts and the center of mass don't need a path (the selection is enough)
     if st.show_onion or st.show_com:
         from . import com, onion
-        gpu.state.blend_set('ALPHA')
-        gpu.state.depth_mask_set(False)
-        onion.draw(scene, st, us)
-        com.draw(scene, st, us)
+        for part, fn in (("Onion skin", onion.draw), ("Center of mass", com.draw)):
+            gpu.state.blend_set('ALPHA')
+            gpu.state.depth_mask_set(False)
+            try:
+                fn(scene, st, us)
+            except Exception as ex:
+                _part_failed(part, ex)
+            finally:
+                # (whatever it left half way: the paths and Blender's own drawing come next)
+                gpu.state.face_culling_set('NONE')
+                gpu.state.color_mask_set(True, True, True, True)
+                gpu.state.depth_mask_set(False)
+                gpu.state.line_width_set(1.0)
+                gpu.state.point_size_set(1.0)
     if not st.paths:
         return
     caches = state.visible_caches(scene)
@@ -736,6 +850,7 @@ def _draw_view():
 
 def draw_pixel():
     global _error_reported
+    new_pass()
     try:
         _draw_pixel()
     except Exception as ex:
@@ -771,9 +886,14 @@ def _draw_points(ctx, st, us):
             col = COL_FRAME if editable else (0.7, 0.7, 0.7, 0.5)
             r = 1.8 * us
             vis, rep = _sample_flags(cache)
-            for t, p, v, r_ in zip(cache.times, cache.points, vis, rep):
-                if v and not r_ and _in(t, lo, hi) and abs(t - round(t)) < 1e-4:
-                    discs.add(proj(p), r, col)
+            idx = [i for i, (t, v, r_) in enumerate(zip(cache.times, vis, rep))
+                   if v and not r_ and _in(t, lo, hi) and abs(t - round(t)) < 1e-4]
+            if idx:
+                import numpy as np
+                xy, ok = project_many(region, rv3d, [cache.points[i] for i in idx])
+                m = 4.0 * us
+                ok &= (xy[:, 0] > -m) & (xy[:, 0] < region.width + m) & (xy[:, 1] > -m) & (xy[:, 1] < region.height + m)
+                discs.add_many(xy[ok], r, col)
 
         if cache.fs <= cur <= cache.fe and _in(cur, lo, hi):
             tg = cache.target()
@@ -782,7 +902,11 @@ def _draw_points(ctx, st, us):
 
         active = state.get_active(scene)
         # dense keys (baked / mocap) get smaller dots, so the path stays readable
-        scr = [proj(k.co) for k in cache.keys]
+        if cache.keys:
+            xy, ok = project_many(region, rv3d, [k.co for k in cache.keys])
+            scr = [Vector(p) if o else None for p, o in zip(xy.tolist(), ok.tolist())]
+        else:
+            scr = []
         last_label = None
         for i, k in enumerate(cache.keys):
             if k.hidden or not _in(k.t, lo, hi):
@@ -1420,6 +1544,21 @@ def _tool_active(ctx):
 def _draw_mode_indicator(ctx, st, us):
     """Bottom-center hint: which trajectory is being edited, how to switch."""
     if not _tool_active(ctx):
+        # (another tool: only a short note, e.g. that the ghosts couldn't be drawn)
+        if state.flash is not None:
+            import time
+            if time.time() < state.flash[1]:
+                font = 0
+                blf.size(font, 12 * us)
+                w = blf.dimensions(font, state.flash[0])[0]
+                blf.enable(font, blf.SHADOW)
+                blf.shadow(font, 3, 0.0, 0.0, 0.0, 0.9)
+                blf.color(font, 1.0, 0.85, 0.4, 1.0)
+                blf.position(font, (ctx.region.width - w) * 0.5, 44 * us, 0)
+                blf.draw(font, state.flash[0])
+                blf.disable(font, blf.SHADOW)
+            else:
+                state.flash = None
         return
     region = ctx.region
     font = 0
@@ -1494,6 +1633,8 @@ def _draw_pixel():
         _draw_slide_marker(ctx, us)
         _draw_snap_point(ctx, us)
         _draw_mode_indicator(ctx, st, us)
+    elif st is not None and state.flash is not None and not state.overlays_hidden() and not _tool_active(ctx):
+        _draw_mode_indicator(ctx, st, us)       # (no path: only the note)
 
     if state.box is not None and ctx.area is not None and ctx.area.as_pointer() == state.box_area:
         x0, y0, x1, y1, mode = state.box

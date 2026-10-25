@@ -29,14 +29,16 @@ MIN_HANDLE_PX = 36.0
 
 def handle_min_world(region, rv3d, co):
     """World length that corresponds to the minimum on-screen handle length at `co`."""
-    if region is None or rv3d is None:
+    if region is None or rv3d is None or region.width < 1:
         return 0.0
-    s = location_3d_to_region_2d(region, rv3d, co)
-    if s is None:
+    # a pixel at the depth of co, in world units: 2 w / (width * window[0][0]) - w is the clip
+    # depth (1 in an orthographic view). (Called for every key with handles: no projections.)
+    P = rv3d.perspective_matrix
+    w = P[3][0] * co[0] + P[3][1] * co[1] + P[3][2] * co[2] + P[3][3]
+    s = rv3d.window_matrix[0][0]
+    if w <= 1e-6 or abs(s) < 1e-12:
         return 0.0
-    a = region_2d_to_location_3d(region, rv3d, s, co)
-    b = region_2d_to_location_3d(region, rv3d, s + Vector((10.0, 0.0)), co)
-    return (b - a).length * 0.1 * MIN_HANDLE_PX * compat.ui_scale()
+    return 2.0 * w / (region.width * abs(s)) * MIN_HANDLE_PX * compat.ui_scale()
 
 
 def display_handle(k, side, m):
@@ -68,6 +70,8 @@ def _polyline_distance(region, rv3d, pts, m):
 
 def hit_test(context, mx, my, radius=None):
     """Nearest key point or visible handle end under the mouse."""
+    from . import draw as _draw
+    _draw.new_pass()
     region = context.region
     rv3d = context.region_data
     if region is None or rv3d is None or state.overlays_hidden():

@@ -705,8 +705,17 @@ class EMP_OT_speed_drag(bpy.types.Operator):
                 return False
             self.snapshot = core.FCurveSnapshot(tg, tg.channels(c.ptype))
             # the segments on both sides (the first / last key: one): faster / slower around
-            # the key (u = 1 / 0 of them)
-            self.jobs = ([(SpaceJob(c, tg, float(prev), float(self.frame)), 1.0)] if prev is not None else []) +                 ([(SpaceJob(c, tg, float(self.frame), float(nxt)), 0.0)] if nxt is not None else [])
+            # the key (u = 1 / 0 of them). On a loop the first and the last key are one pose:
+            # the other end of the loop changes too, so the loop still joins
+            self.jobs = []
+            if prev is not None:
+                self.jobs.append((SpaceJob(c, tg, float(prev), float(self.frame)), 1.0))
+            elif c.cyclic and len(ks) > 2:
+                self.jobs.append((SpaceJob(c, tg, float(ks[-2]), float(ks[-1])), 1.0))
+            if nxt is not None:
+                self.jobs.append((SpaceJob(c, tg, float(self.frame), float(nxt)), 0.0))
+            elif c.cyclic and len(ks) > 2:
+                self.jobs.append((SpaceJob(c, tg, float(ks[0]), float(ks[1])), 0.0))
         return True
 
     def _apply(self):

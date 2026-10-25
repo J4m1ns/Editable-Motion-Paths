@@ -45,6 +45,39 @@ def _thomas(a, b, c, d):
     return x
 
 
+def _modifier_offsets(ch, chans, S):
+    """{channel: [what its F-modifiers add (all but Cycles) at each sample]}: evaluated with them,
+    minus with them muted for a moment. Channels without such modifiers are left out."""
+    out = {}
+    for c in chans:
+        fc = ch.fcurves[c]
+        mods = [m for m in fc.modifiers if not m.mute and m.type != 'CYCLES']
+        if not mods:
+            continue
+        full = [fc.evaluate(t) for t in S]
+        try:
+            for m in mods:
+                m.mute = True
+            raw = [fc.evaluate(t) for t in S]
+        finally:
+            for m in mods:
+                m.mute = False
+        out[c] = [a - b for a, b in zip(full, raw)]
+    return out
+
+
+def _at(S, vals, t):
+    """vals (on the samples S) at t, linear between them; held past the ends."""
+    if t <= S[0]:
+        return vals[0]
+    if t >= S[-1]:
+        return vals[-1]
+    x = (t - S[0]) / (S[-1] - S[0]) * (len(S) - 1)
+    i = min(int(x), len(S) - 2)
+    f = x - i
+    return vals[i] + (vals[i + 1] - vals[i]) * f
+
+
 class Fitter:
     def __init__(self, cache, tg, r0, r1, target=None):
         """Fit the channels over [r0, r1]: to their current curves, or to `target(t)` (channel
@@ -60,6 +93,7 @@ class Fitter:
         self._der = {}
         n = max(1, int(round((r1 - r0) / STEP)))
         self.S = [r0 + (r1 - r0) * i / n for i in range(n + 1)]
+        self.moff = _modifier_offsets(ch, self.chans, self.S)
         self.Y = [self.value(t) for t in self.S]
         self.P = [cache.measure(tg, t, v) for t, v in zip(self.S, self.Y)]
         # slope scale per channel, to tell corners from smooth keys
@@ -77,9 +111,14 @@ class Fitter:
         v = self._vals.get(t)
         if v is None:
             if self.target is not None and self.r0 - 1e-9 <= t <= self.r1 + 1e-9:
-                v = self.target(t)
+                v = self.target(t)          # (targets are the keys' own motion: see raw_values)
             else:
                 v = self.ch.values(t)
+                if self.moff:
+                    # the keys make the curve without its modifiers (they add theirs again)
+                    v = list(v)
+                    for c, offs in self.moff.items():
+                        v[c] -= _at(self.S, offs, t)
             self._vals[t] = v
         return v
 

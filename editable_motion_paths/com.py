@@ -337,7 +337,7 @@ def _tick():
             return None
         screen = bpy.context.screen
         if (screen is not None and screen.is_animation_playing) or state.modal_running or onion.busy() or \
-                state.blender_edit_running():
+                state.blender_edit_running() or state.render_running():
             return 0.2
         arms = armatures(scene)
         for arm in arms:
@@ -366,10 +366,10 @@ def _tick():
             t0 = time.time()
             _busy = True
             hidden = []
-            held = state.keep_pose([arm])
+            held = state.keep_scene_pose(scene, [arm])
             try:
                 for o in meshes:
-                    if not o.hide_viewport:
+                    if not o.hide_viewport and state.can_hide(o, len(want)):
                         o.hide_viewport = True      # only the bones are evaluated
                         hidden.append(o)
                 for f in want:
@@ -383,7 +383,9 @@ def _tick():
             finally:
                 for o in hidden:
                     o.hide_viewport = False
+                t_back = time.time()
                 scene.frame_set(cur, subframe=sub)
+                state.unhide_cost(hidden, time.time() - t_back)
                 if state.put_pose_back(held):     # (what isn't keyed stays as it was)
                     bpy.context.view_layer.update()
                 _busy = False
