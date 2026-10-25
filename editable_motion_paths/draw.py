@@ -279,6 +279,7 @@ def _part_failed(part, ex):
 def draw_view():
     global _error_reported
     new_pass()
+    state.draw_pass = _pass[0]
     try:
         _draw_view()
     except Exception as ex:
@@ -287,6 +288,8 @@ def draw_view():
             import traceback
             traceback.print_exc()
             print("Editable Motion Paths: drawing failed:", ex)
+    finally:
+        state.draw_pass = None
 
 
 COL_HIDDEN = (0.7, 0.7, 0.7, 0.4)
@@ -354,16 +357,34 @@ def _path_colors(st, cache, editable, cur, lo, hi):
 
 
 def _draw_path_runs(st, cache, editable, cur, lo, hi, us):
+    """The path's line in its colors. Its GPU batches are kept on the cache while nothing they
+    show changes (turning the view doesn't): a long path isn't colored point by point on every
+    redraw."""
     width = st.line_width * us * (1.0 if editable else 0.75)
-    for pts, cols, kind in _path_colors(st, cache, editable, cur, lo, hi):
-        if kind == 'hidden':
-            dashed, dcols = [], []
-            for i in range(0, len(pts) - 1, 2):
-                dashed += [pts[i], pts[i + 1]]
-                dcols += [cols[i], cols[i + 1]]
-            _lines(dashed, dcols, 1.2 * us)
-        else:
-            _lines(pts, cols, width * (0.7 if kind == 'repeat' else 1.0), 'LINE_STRIP')
+    key = (id(cache.points), len(cache.points), id(getattr(cache, "vis", None)), len(cache.speeds), st.color_mode,
+           tuple(st.color), round(st.jitter_threshold, 5), editable, lo, hi, st.show_repeats,
+           cur if st.color_mode == 'TIME' else None)
+    kept = getattr(cache, "_run_batches", None)
+    sh = gpu.shader.from_builtin('POLYLINE_SMOOTH_COLOR')
+    if kept is None or kept[0] != key:
+        made = []
+        for pts, cols, kind in _path_colors(st, cache, editable, cur, lo, hi):
+            if kind == 'hidden':
+                dashed, dcols = [], []
+                for i in range(0, len(pts) - 1, 2):
+                    dashed += [pts[i], pts[i + 1]]
+                    dcols += [cols[i], cols[i + 1]]
+                if len(dashed) > 1:
+                    made.append((batch_for_shader(sh, 'LINES', {"pos": dashed, "color": dcols}), None))
+            elif len(pts) > 1:
+                made.append((batch_for_shader(sh, 'LINE_STRIP', {"pos": pts, "color": cols}),
+                             0.7 if kind == 'repeat' else 1.0))
+        kept = cache._run_batches = (key, made)
+    region = bpy.context.region
+    sh.uniform_float("viewportSize", (region.width, region.height))
+    for batch, f in kept[1]:
+        sh.uniform_float("lineWidth", 1.2 * us if f is None else width * f)
+        batch.draw(sh)
 
 
 COL_RIBBON = (1.0, 0.75, 0.3)
@@ -624,33 +645,49 @@ def rot_ribbon_handle(st, cache, k):
 
 def _draw_rot_ribbon(st, cache, lo, hi, editable, us):
     """Rotation paths: a ribbon along the path of the tip, across the bone's X axis, so the
-    twist (roll around Y) shows as the ribbon turning."""
+    twist (roll around Y) shows as the ribbon turning. (Its batches are kept on the cache while
+    the path and the settings stay.)"""
     pts = cache.points
     n = len(pts)
     if len(cache.sample_axes) != n:
         return
-    vis = cache.vis if len(cache.vis) == n else [True] * n
     a0, a1 = rot_ribbon_span(st, cache)
-    alpha = 0.2 if editable else 0.08
-    tris, cols, e0, e1 = [], [], [], []
-    prev = None
-    for i, t in enumerate(cache.times):
-        if not _in(t, lo, hi) or not vis[i]:
-            prev = None
-            continue
-        x = cache.sample_axes[i][0]
-        cur = (pts[i] + x * a0, pts[i] + x * a1)
-        if prev is not None:
-            tris += [prev[0], prev[1], cur[0], cur[0], prev[1], cur[1]]
-            e0 += [prev[0], cur[0]]
-            e1 += [prev[1], cur[1]]
-        prev = cur
-    if tris:
-        sh = gpu.shader.from_builtin('SMOOTH_COLOR')
-        cols = [COL_ROT_RIBBON + (alpha,)] * len(tris)
-        batch_for_shader(sh, 'TRIS', {"pos": tris, "color": cols}).draw(sh)
-        ea = 0.7 if editable else 0.3
-        _lines(e0 + e1, [COL_ROT_RIBBON + (ea,)] * (len(e0) + len(e1)), 1.0 * us)
+    key = (id(pts), n, id(cache.sample_axes), id(getattr(cache, "vis", None)), lo, hi, a0, a1, editable)
+    kept = getattr(cache, "_ribbon_batches", None)
+    if kept is None or kept[0] != key:
+        vis = cache.vis if len(cache.vis) == n else [True] * n
+        alpha = 0.2 if editable else 0.08
+        tris, e0, e1 = [], [], []
+        prev = None
+        for i, t in enumerate(cache.times):
+            if not _in(t, lo, hi) or not vis[i]:
+                prev = None
+                continue
+            x = cache.sample_axes[i][0]
+            cur = (pts[i] + x * a0, pts[i] + x * a1)
+            if prev is not None:
+                tris += [prev[0], prev[1], cur[0], cur[0], prev[1], cur[1]]
+                e0 += [prev[0], cur[0]]
+                e1 += [prev[1], cur[1]]
+            prev = cur
+        made = None
+        if tris:
+            sh = gpu.shader.from_builtin('SMOOTH_COLOR')
+            lsh = gpu.shader.from_builtin('POLYLINE_SMOOTH_COLOR')
+            ea = 0.7 if editable else 0.3
+            made = (batch_for_shader(sh, 'TRIS', {"pos": tris, "color": [COL_ROT_RIBBON + (alpha,)] * len(tris)}),
+                    batch_for_shader(lsh, 'LINES', {"pos": e0 + e1,
+                                                    "color": [COL_ROT_RIBBON + (ea,)] * (len(e0) + len(e1))}))
+        kept = cache._ribbon_batches = (key, made)
+    if kept[1] is None:
+        return
+    sh = gpu.shader.from_builtin('SMOOTH_COLOR')
+    kept[1][0].draw(sh)
+    lsh = gpu.shader.from_builtin('POLYLINE_SMOOTH_COLOR')
+    region = bpy.context.region
+    lsh.uniform_float("viewportSize", (region.width, region.height))
+    lsh.uniform_float("lineWidth", 1.0 * us)
+    kept[1][1].draw(lsh)
 
 
 def _draw_scale_gizmos(st, cache, keys, us):
@@ -851,6 +888,7 @@ def _draw_view():
 def draw_pixel():
     global _error_reported
     new_pass()
+    state.draw_pass = _pass[0]
     try:
         _draw_pixel()
     except Exception as ex:
@@ -859,6 +897,8 @@ def draw_pixel():
             import traceback
             traceback.print_exc()
             print("Editable Motion Paths: overlay drawing failed:", ex)
+    finally:
+        state.draw_pass = None
 
 
 def _draw_points(ctx, st, us):

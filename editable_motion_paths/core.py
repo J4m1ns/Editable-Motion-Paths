@@ -1370,70 +1370,134 @@ def _meshes_not_needed(scene, objs):
             and any(m.type == 'ARMATURE' and m.show_viewport for m in o.modifiers)]
 
 
+class BakeJob:
+    """The bake (parent spaces of the caches, frame by frame) done in steps, so a heavy scene
+    can be baked in the background without freezing Blender: each step steps through as many
+    frames as fit in its time and puts the frame and the poses back. The old parent spaces stay
+    drawn until finish() puts the new ones in."""
+
+    def __init__(self, scene, caches):
+        self.scene = scene
+        self.ok_start = False
+        settings = state.settings(scene)
+        if not caches or settings is None:
+            return
+        self.fs, self.fe = bake_range(scene, settings, caches)
+        self.f = self.fs
+        self.items = []         # [cache, its matrices, frames ok]
+        for c in caches:
+            obj, owner = resolve(c.obj_name, c.bone_name)
+            if owner is None:
+                c.B = []
+                c.valid = False
+                c.failed = True
+                continue
+            self.items.append([c, [], []])
+        self.ok_start = bool(self.items)
+        self.t_spent = 0.0
+        # the hashes of now: what changes while this runs is seen as a change afterwards
+        state.remember_action_hashes()
+
+    @property
+    def done(self):
+        return not self.ok_start or self.f > self.fe
+
+    def step(self, budget=None):
+        """Bake frames for up to `budget` seconds (None: all of them). Returns True when done."""
+        if self.done:
+            return True
+        scene = self.scene
+        live = []
+        objs = {}
+        for item in self.items:
+            obj, owner = resolve(item[0].obj_name, item[0].bone_name)
+            if owner is None:
+                return self._abort()
+            live.append((item, obj, owner))
+            o = obj
+            while o is not None:
+                objs[o.name] = o
+                o = o.parent
+        if budget is None:
+            frames = self.fe - self.f + 1
+        else:
+            # frames this step will get through (from the last step's pace)
+            frames = max(1, min(self.fe - self.f + 1, int(budget / max(getattr(self, "pace", 0.01), 1e-4))))
+        hide = [o for o in _meshes_not_needed(scene, objs) if state.can_hide(o, frames, budget is not None)]
+        for o in scene.objects:
+            if o.animation_data is not None:
+                objs.setdefault(o.name, o)      # (their unkeyed changes stay too)
+        saved = _pose_state(objs.values())
+        cur = scene.frame_current
+        sub = scene.frame_subframe
+        state.baking = True
+        hidden = []
+        t0 = time.time()
+        f_start = self.f
+        try:
+            for o in hide:
+                # bent meshes nothing here depends on: left out of the evaluation (like the
+                # onion ghosts do), so a heavy character steps through its frames fast
+                o.hide_viewport = True
+                hidden.append(o)
+            while self.f <= self.fe:
+                scene.frame_set(self.f)
+                for (c, mats, ok), obj, owner in live:
+                    if c.bone_name:
+                        W = obj.matrix_world @ owner.matrix
+                    else:
+                        W = owner.matrix_world.copy()
+                    basis = owner.matrix_basis
+                    mats.append(W @ basis.inverted_safe())
+                    # a zero scale (its own, or a parent's) on this frame: W / basis can't be
+                    # inverted, so the parent space here is taken from the frames around it
+                    ok.append(abs(basis.to_3x3().determinant()) > SINGULAR and
+                              abs(W.to_3x3().determinant()) > SINGULAR)
+                self.f += 1
+                if budget is not None and time.time() - t0 > budget:
+                    break
+            self.pace = (time.time() - t0) / max(self.f - f_start, 1)
+            if self.f > self.fe:
+                # how long a whole bake takes here (steps: their frames; once: all of it)
+                if budget is not None:
+                    state.bake_seconds = self.pace * (self.fe - self.fs + 1)
+        finally:
+            for o in hidden:
+                o.hide_viewport = False
+            t_back = time.time()
+            scene.frame_set(cur, subframe=sub)
+            state.unhide_cost(hidden, time.time() - t_back)
+            _restore_pose_state(saved)
+            state.baking = False
+            if budget is None and self.f > self.fe:
+                state.bake_seconds = time.time() - t0      # (all of it, showing meshes again too)
+        return self.done
+
+    def _abort(self):
+        self.ok_start = False
+        self.items = []
+        return True
+
+    def finish(self):
+        """The new parent spaces into the caches (those still in use)."""
+        if not self.ok_start or self.f <= self.fe:
+            return
+        alive = set(id(c) for c in state.caches.values())
+        for c, mats, ok in self.items:
+            if id(c) not in alive:
+                continue
+            _fill_singular(mats, ok)
+            c.fs = self.fs
+            c.B = mats
+            c.failed = False
+            c.bake_id += 1
+            c.dirty = True
+            c.refresh(force=True)
+
+
 def bake(scene, caches):
-    """Bake parent spaces of the given caches by stepping through the frame range."""
-    settings = state.settings(scene)
-    if not caches or settings is None:
-        return
-    fs, fe = bake_range(scene, settings, caches)
-    resolved = []
-    objs = {}
-    for c in caches:
-        obj, owner = resolve(c.obj_name, c.bone_name)
-        if owner is None:
-            c.B = []
-            c.valid = False
-            c.failed = True
-            continue
-        resolved.append((c, obj, owner, [], []))
-        o = obj
-        while o is not None:
-            objs[o.name] = o
-            o = o.parent
-    if not resolved:
-        return
-    hide = [o for o in _meshes_not_needed(scene, objs) if state.can_hide(o, fe - fs + 1)]
-    for o in scene.objects:
-        if o.animation_data is not None:
-            objs.setdefault(o.name, o)      # (their unkeyed changes stay too)
-    saved = _pose_state(objs.values())
-    cur = scene.frame_current
-    sub = scene.frame_subframe
-    state.baking = True
-    hidden = []
-    try:
-        for o in hide:
-            # bent meshes nothing here depends on: left out of the evaluation (like the onion
-            # ghosts do), so a heavy character steps through its frames fast
-            o.hide_viewport = True
-            hidden.append(o)
-        for f in range(fs, fe + 1):
-            scene.frame_set(f)
-            for c, obj, owner, mats, ok in resolved:
-                if c.bone_name:
-                    W = obj.matrix_world @ owner.matrix
-                else:
-                    W = owner.matrix_world.copy()
-                basis = owner.matrix_basis
-                mats.append(W @ basis.inverted_safe())
-                # a zero scale (its own, or a parent's) on this frame: W / basis can't be
-                # inverted, so the parent space here is taken from the frames around it
-                ok.append(abs(basis.to_3x3().determinant()) > SINGULAR and
-                          abs(W.to_3x3().determinant()) > SINGULAR)
-    finally:
-        for o in hidden:
-            o.hide_viewport = False
-        t_back = time.time()
-        scene.frame_set(cur, subframe=sub)
-        state.unhide_cost(hidden, time.time() - t_back)
-        _restore_pose_state(saved)
-        state.baking = False
-    for c, obj, owner, mats, ok in resolved:
-        _fill_singular(mats, ok)
-        c.fs = fs
-        c.B = mats
-        c.failed = False
-        c.bake_id += 1
-        c.dirty = True
-        c.refresh(force=True)
-    state.remember_action_hashes()
+    """Bake parent spaces of the given caches by stepping through the frame range (all at once;
+    the automatic re-bake uses BakeJob in steps instead)."""
+    job = BakeJob(scene, caches)
+    job.step(None)
+    job.finish()

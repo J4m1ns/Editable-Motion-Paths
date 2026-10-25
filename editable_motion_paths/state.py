@@ -216,13 +216,23 @@ def visible_caches(scene=None):
     return out
 
 
+draw_pass = None     # set while drawing (see draw.draw_view): results can be kept for that pass
+_editable_memo = [None, []]
+
+
 def editable_caches(scene=None):
     if overlays_hidden() and _viewport_input():
         return []       # paths are hidden with the overlays: viewport hotkeys go to Blender
+    if draw_pass is not None:
+        key = (draw_pass, id(scene or bpy.context.scene))
+        if _editable_memo[0] == key:
+            return list(_editable_memo[1])
     out = []
     for c in visible_caches(scene):
         if c.owner_selected() and c.refresh() and not c.locked:
             out.append(c)
+    if draw_pass is not None:
+        _editable_memo[:] = [key, list(out)]
     return out
 
 
@@ -385,11 +395,14 @@ def _any_modal(skip=()):
 _unhide_cost = {}       # mesh name -> seconds showing it again took (it is rebuilt then)
 
 
-def can_hide(o, frames):
+def can_hide(o, frames, quick=False):
     """Hiding a bent mesh while stepping through `frames` frames saves evaluating it on each of
     them - worth it unless showing it again costs more: a heavy subdivided mesh is rebuilt from
     scratch then (seconds), while a frame of it costs some 20-60 ms."""
     cost = _unhide_cost.get(o.name)
+    if quick:
+        # (a step of the background bake: showing it again must not stall that step)
+        return cost is not None and cost < 0.1
     return cost is None or cost < 0.02 * frames
 
 
@@ -458,29 +471,54 @@ def put_pose_back(saved):
 _BLOCKING_MODALS = {"TRANSFORM", "EMP", "ANIM", "GRAPH", "ACTION", "VIEW3D", "POSE", "OBJECT", "WM"}
 
 
+_job = None        # the automatic re-bake running in steps (core.BakeJob), or None
+bake_seconds = 0.0  # how long the last whole bake took (a quick one is done at once)
+
+
+def bake_running():
+    return _job is not None
+
+
 def _bake_timer():
-    global _bake_timer_on, _force_bake
+    """The automatic re-bake: when something else than a path's own channels changed, the paths
+    are baked again - in steps of ~40 ms (a heavy scene doesn't freeze Blender meanwhile; the old
+    paths stay drawn until the new ones are ready)."""
+    global _bake_timer_on, _force_bake, _job
     remaining = _bake_due - time.time()
-    if remaining > 0.01:
+    if remaining > 0.01 and _job is None:
         return remaining
     reconcile_modal()
     ctx = bpy.context
     screen = getattr(ctx, "screen", None)
     if modal_running or baking or (screen is not None and screen.is_animation_playing) or _any_modal() or             render_running():
         return 0.3
-    _bake_timer_on = False
-    force = _force_bake
-    _force_bake = False
+    from . import core
     try:
+        if _job is not None:
+            # (a step: ~0.12 s with putting the frame back, which costs about one frame)
+            if not _job.step(max(0.02, 0.12 - 2.0 * getattr(_job, "pace", 0.0))):
+                return 0.01
+            _job.finish()
+            _job = None
+            tag_redraw()
+            # (what changed meanwhile is seen right away below: the job kept the hashes of its start)
+        force = _force_bake
+        _force_bake = False
         st = settings()
         if st is not None and st.paths:
-            if force or any(not c.B for c in caches.values()) or sync_caches() or _range_changed() \
-                    or _needs_rebake():
-                bake_all()
-            else:
-                tag_redraw()
+            if force or any(not c.B for c in caches.values()) or sync_caches() or _range_changed()                     or _needs_rebake():
+                sync_caches()
+                _job = core.BakeJob(bpy.context.scene, list(caches.values()))
+                # quick scenes at once (as before); heavy ones in steps, without a freeze
+                if not _job.step(None if bake_seconds < 0.5 else 0.12):
+                    return 0.01
+                _job.finish()
+                _job = None
+            tag_redraw()
     except Exception as ex:  # never let a timer die silently with a traceback storm
         print("Editable Motion Paths: auto update failed:", ex)
+        _job = None
+    _bake_timer_on = False
     return None
 
 
@@ -548,10 +586,18 @@ def _on_undo(*_args):
 
 @persistent
 def _on_load(*_args):
+    global _bake_timer_on, _job, modal_running
     from . import onion
     onion.clear_all()
     from . import com
     com.clear()
+    # (loading a file drops the timers that aren't persistent: their flags start over)
+    _bake_timer_on = False
+    _job = None
+    modal_running = 0
+    onion._timer_on = False
+    com._timer_on = False
+    com._flash[2] = False
     caches.clear()
     ghosts.clear()
     _action_hashes.clear()
@@ -561,10 +607,8 @@ def _on_load(*_args):
 
 
 def _load_bake():
-    try:
-        bake_all()
-    except Exception as ex:
-        print("Editable Motion Paths: bake after load failed:", ex)
+    # (in steps, like the automatic re-bake: a heavy file opens without a freeze)
+    schedule_rebake(0.01, force=True)
     return None
 
 
@@ -716,9 +760,10 @@ def _watch_active():
 
 
 def register():
-    global _bake_timer_on, modal_running
+    global _bake_timer_on, modal_running, _job
     # (enabled again in the same session: the module is the same, its timers are gone)
     _bake_timer_on = False
+    _job = None
     modal_running = 0
     from . import com, onion
     onion._timer_on = False
