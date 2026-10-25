@@ -331,22 +331,11 @@ class _Proxy:
         self.counts = None      # exact: how many vertices of the mesh make each proxy vertex
 
 
-_EXACT_MODIFIERS = {'LATTICE', 'MESH_DEFORM', 'SURFACE_DEFORM', 'HOOK', 'SHRINKWRAP', 'NODES', 'CAST',
-                    'SIMPLE_DEFORM', 'WARP', 'WAVE', 'LAPLACIANDEFORM', 'CLOTH', 'SOFT_BODY'}
-
-
 def needs_exact(o):
-    """A bent mesh whose shape on other frames isn't just its bones': shape keys that change
-    (driven or animated: correctives, expressions) or another deformer (a lattice on the face...)."""
-    from .props import prefs
-    p = prefs()
-    if o.type != 'MESH' or (p is not None and p.onion_shapes == 'FAST'):
-        return False
-    if any(m.type in _EXACT_MODIFIERS and m.show_viewport for m in o.modifiers):
-        return True
-    key = getattr(o.data, "shape_keys", None)
-    ad = getattr(key, "animation_data", None) if key is not None else None
-    return ad is not None and (len(ad.drivers) > 0 or ad.action is not None)
+    """Exact ghosts (Fast off): the bent mesh is taken as Blender makes it on every ghost frame, in
+    full detail - shape keys, lattices and every other deformer show."""
+    st = state.settings()
+    return o.type == 'MESH' and st is not None and not st.onion_fast
 
 
 def _mesh_sig(o):
@@ -522,13 +511,14 @@ def _build(o, arm, how, st, dg):
     ed = ed.reshape(-1, 2)
     limit = max(500, st.onion_max_tris)
     inv = np.arange(n)
-    if n and (len(tri) > limit or len(ed) > limit * 1.5 or n > limit):
+    exact = how == 'DEFORM' and needs_exact(o)
+    if n and not exact and (len(tri) > limit or len(ed) > limit * 1.5 or n > limit):
         co, tri, ed, inv = _decimate(co, tri, limit, ed)
     p.co, p.tri, p.edges = co, tri, ed
     p.M0 = Matrix(ev.matrix_world)
     if how == 'DEFORM':
         _weights(p, o, arm, me, inv)
-        if needs_exact(o):
+        if exact:
             p.exact = True
             p.inv = inv
             p.counts = np.maximum(np.bincount(inv, minlength=len(co)), 1)

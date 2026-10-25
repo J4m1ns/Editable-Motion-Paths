@@ -712,9 +712,13 @@ def _draw_onion(layout, st):
         layout.prop(st, "onion_bones", text="")
     if used in {'POINTS', 'BONES', 'WIRE'}:
         layout.prop(st, "onion_size")
+    if meshes and used != 'BONES':
+        layout.prop(st, "onion_fast")
     row = layout.row(align=True)
     if meshes and used != 'BONES':
-        row.prop(st, "onion_max_tris")
+        sub = row.row(align=True)
+        sub.active = st.onion_fast         # (Exact ghosts are in full detail)
+        sub.prop(st, "onion_max_tris")
         row.prop(st, "onion_in_front", text="", icon='XRAY')
     else:
         row.prop(st, "onion_in_front", icon='XRAY')

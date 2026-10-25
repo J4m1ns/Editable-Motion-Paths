@@ -83,6 +83,9 @@ class EMP_OT_easing_preset(bpy.types.Operator):
     end: FloatProperty(name="To", default=1.0, min=0.0, max=1.0, subtype='FACTOR',
                        description="Keep the Path: where in the selected part the easing ends (after it "
                                    "the timing stays)")
+    blend: FloatProperty(name="Blend", default=0.0, min=0.0, max=0.5, subtype='FACTOR',
+                         description="Keep the Path: how softly the easing fades in at From and out at To "
+                                     "(share of the part; 0: it starts right there, still without a jolt)")
     back: FloatProperty(name="Overshoot", default=1.70158, min=0.0, soft_max=5.0,
                         description="Back: how far it goes past the end")
     amplitude: FloatProperty(name="Amplitude", default=1.0, min=0.0, soft_max=3.0,
@@ -115,36 +118,80 @@ class EMP_OT_easing_preset(bpy.types.Operator):
     def invoke(self, context, event):
         if not self.gallery or context.area is None or context.region is None:
             return self.execute(context)
+        region = context.region
         us = _ui_scale()
         w, h = gallery_size(us)
-        region = context.region
+        top = region.height - _covered_top(context.area, region)
+        # a small view: the whole gallery made smaller to fit (with room for its hint line)
+        us *= min(1.0, (top - 30.0 * us) / h, (region.width - 8.0) / w)
+        w, h = gallery_size(us)
         x0 = min(max(event.mouse_region_x - w * 0.5, 4.0), max(region.width - w - 4.0, 4.0))
-        y0 = min(max(event.mouse_region_y - h * 0.5, 4.0), max(region.height - h - 4.0, 4.0))
-        state.gallery = self._g = dict(area=context.area.as_pointer(), x0=x0, y0=y0, hover=None, drag=False)
+        y0 = min(max(event.mouse_region_y - h * 0.5, 4.0), max(top - h - 22.0 * us, 4.0))
+        state.gallery = self._g = dict(area=context.area.as_pointer(), x0=x0, y0=y0, hover=None, drag=None,
+                                       edit=None, us=us)
+        _preview_jobs.clear()
         context.window_manager.modal_handler_add(self)
         state.tag_redraw()
         return {'RUNNING_MODAL'}
 
     def _close(self, context, result):
         state.gallery = None
+        _preview_jobs.clear()
         state.tag_redraw()
         return result
+
+    def _apply(self, context):
+        st = state.settings(context.scene)
+        self._close(context, None)
+        self.easing = st.easing_type
+        self.direction = st.easing_direction
+        self.mode = st.easing_mode
+        self.channels = st.easing_channels
+        self.strength = st.easing_strength
+        self.start, self.end, self.blend = st.easing_from, st.easing_to, st.easing_blend
+        return self.execute(context)
+
+    def _typing(self, context, st, event):
+        """Ctrl+click on a slider: its value typed in percent (Enter: set, Esc: leave it)."""
+        e = self._g['edit']
+        t = event.type
+        digits = {'ZERO': '0', 'ONE': '1', 'TWO': '2', 'THREE': '3', 'FOUR': '4', 'FIVE': '5', 'SIX': '6',
+                  'SEVEN': '7', 'EIGHT': '8', 'NINE': '9', 'PERIOD': '.', 'NUMPAD_PERIOD': '.'}
+        digits.update({'NUMPAD_%d' % i: str(i) for i in range(10)})
+        if t in digits:
+            e['text'] += digits[t]
+        elif t == 'BACK_SPACE':
+            e['text'] = e['text'][:-1]
+        elif t in {'RET', 'NUMPAD_ENTER'}:
+            try:
+                set_slider(st, e['key'], float(e['text']) / 100.0)
+            except ValueError:
+                pass
+            self._g['edit'] = None
+        elif t == 'ESC':
+            self._g['edit'] = None
+        state.tag_redraw()
+        return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
         st = state.settings(context.scene)
         t, v = event.type, event.value
         g = self._g
         mx, my = event.mouse_region_x, event.mouse_region_y
+        if g.get('edit') and v == 'PRESS' and t not in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE', 'LEFTMOUSE'}:
+            return self._typing(context, st, event)
         hit = gallery_hit(context, g, mx, my)
         if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             g['hover'] = hit
-            if g['drag'] == 'strength':
-                _set_strength(st, g, mx)
-            elif g['drag'] in {'from', 'to'}:
-                _set_range(st, g, mx, g['drag'])
+            if g['drag']:
+                _slider_from_mouse(context, st, g, g['drag'], mx)
         elif t == 'LEFTMOUSE' and v == 'RELEASE':
-            g['drag'] = False
-        elif t == 'LEFTMOUSE' and v == 'PRESS':
+            g['drag'] = None
+        elif t == 'LEFTMOUSE' and v == 'DOUBLE_CLICK' and hit is not None and hit[0] == 'ease':
+            st.easing_type = hit[1]
+            return self._apply(context)
+        elif t == 'LEFTMOUSE' and v in {'PRESS', 'DOUBLE_CLICK'}:
+            g['edit'] = None
             if hit is None:
                 if not gallery_inside(g, mx, my):
                     return self._close(context, {'CANCELLED'})      # a click outside: close
@@ -156,24 +203,18 @@ class EMP_OT_easing_preset(bpy.types.Operator):
                 ch = list(st.easing_channels)
                 ch[hit[1]] = not ch[hit[1]]
                 st.easing_channels = ch
-            elif hit[0] == 'strength':
-                g['drag'] = 'strength'
-                _set_strength(st, g, mx)
-            elif hit[0] == 'range' and st.easing_mode == 'TIMING':
-                # the handle nearer the mouse
-                x, w = hit_box(context, g, 'range')
-                u = (mx - x) / max(w, 1.0)
-                g['drag'] = 'from' if abs(u - st.easing_from) <= abs(u - st.easing_to) else 'to'
-                _set_range(st, g, mx, g['drag'])
+            elif hit[0] == 'slider' and (st.easing_mode == 'TIMING' or hit[1] == 'strength'):
+                if event.ctrl or v == 'DOUBLE_CLICK':
+                    g['edit'] = {'key': hit[1], 'text': ""}
+                else:
+                    g['drag'] = hit[1]
+                    _slider_from_mouse(context, st, g, hit[1], mx)
             elif hit[0] == 'ease':
-                self._close(context, None)
-                self.easing = hit[1]
-                self.direction = st.easing_direction
-                self.mode = st.easing_mode
-                self.channels = st.easing_channels
-                self.strength = st.easing_strength
-                self.start, self.end = st.easing_from, st.easing_to
-                return self.execute(context)
+                st.easing_type = hit[1]                 # picked: the preview shows it, Apply puts it on
+            elif hit[0] == 'apply':
+                return self._apply(context)
+        elif t in {'RET', 'NUMPAD_ENTER', 'SPACE'} and v == 'PRESS':
+            return self._apply(context)
         elif t in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE'} and st.easing_mode == 'TIMING':
             st.easing_strength = min(1.0, max(0.0, st.easing_strength + (0.05 if t == 'WHEELUPMOUSE' else -0.05)))
         elif t in {'ESC', 'RIGHTMOUSE', 'P'} and v == 'PRESS':
@@ -193,10 +234,11 @@ class EMP_OT_easing_preset(bpy.types.Operator):
             layout.prop(self, "direction")
         layout.prop(self, "mode")
         if self.mode == 'TIMING':
-            layout.prop(self, "strength")
-            row = layout.row(align=True, heading="Part")
-            row.prop(self, "start", text="From", slider=True)
-            row.prop(self, "end", text="To", slider=True)
+            col = layout.column(align=True)
+            col.prop(self, "strength", slider=True)
+            col.prop(self, "start", slider=True)
+            col.prop(self, "end", slider=True)
+            col.prop(self, "blend", slider=True)
         else:
             labels = channel_labels(context) or ["1", "2", "3", "4"]
             row = layout.row(align=True, heading="Channels")
@@ -255,27 +297,16 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         total = job.arc[-1]
         if total < 1e-9:
             return 0
-        fn = self._fn()
-        w = self.strength
         pts, vals = job.pts, job.vals
         d0 = (pts[1] - pts[0]).normalized() if len(pts) > 1 else None
         d1 = (pts[-1] - pts[-2]).normalized() if len(pts) > 1 else None
-        # the part the easing works on (From / To): outside it the timing stays; where the motion
-        # goes on past the part, the easing starts / ends with the speed it had there
-        lo, hi = sorted((self.start, self.end))
-        if hi - lo < 0.02:
-            lo, hi = 0.0, 1.0
-        A, B = r0 + (r1 - r0) * lo, r0 + (r1 - r0) * hi
-        sA, sB = job._at(job.arc, A), job._at(job.arc, B)
-        G = window_easing(fn, B - A, sB - sA,
-                          _speed(job, A) if lo > 1e-3 else None,
-                          _speed(job, B) if hi < 1.0 - 1e-3 else None)
+        # (the easing on the From / To part; outside it the timing stays - see eased_arc)
+        S, A, B = eased_arc(job, self._fn(), self.strength, self.start, self.end, self.blend)
 
         def target(t):
-            s0 = job._at(job.arc, t)
             if t <= A or t >= B:
                 return cache.solve(tg, t, job._at(pts, t), job._at(vals, t))
-            s = s0 + (sA + (sB - sA) * G((t - A) / (B - A)) - s0) * w
+            s = S(t)
             if s > total and d1 is not None:
                 # Back / Elastic overshoot: on along the direction of the motion
                 return cache.solve(tg, t, pts[-1] + d1 * (s - total), vals[-1])
@@ -323,11 +354,12 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         return 1 if touched else 0
 
 
-# ---- the gallery (P): big pictures to click, drawn in the viewport ----------------------
-# (Blender's buttons keep their icons small whatever their size, so the easing pictures are
-# drawn here, like the sculpt brush strip)
+# ---- the gallery (P): pick an easing, see what it does, tune it, apply ------------------------
+# (drawn in the viewport like the sculpt brush strip: Blender's buttons keep their icons small)
 
-_COLS, _TILE, _GAP, _PAD, _ROW, _WIDE = 5, 86.0, 6.0, 10.0, 24.0, 40.0
+_COLS, _TILE, _GAP, _PAD, _ROW, _WIDE, _PREVIEW, _APPLY = 5, 86.0, 6.0, 10.0, 24.0, 40.0, 110.0, 30.0
+SLIDERS = (('strength', "Strength", "easing_strength"), ('from', "From", "easing_from"),
+           ('to', "To", "easing_to"), ('blend', "Blend", "easing_blend"))
 
 
 def _speed(job, t):
@@ -360,6 +392,41 @@ def window_easing(fn, frames, dist, v_in=None, v_out=None):
     return G
 
 
+def eased_arc(job, fn, strength, start, end, blend):
+    """S(t): how far along the path the motion is on frame t after the easing (the arc length of
+    the part, from 0 to its length) - the easing on the From / To part of it, blended in over
+    `blend` of that part where the motion goes on past it, `strength` of it. Applying it and the
+    preview use the same."""
+    r0, r1 = job.r0, job.r1
+    lo, hi = sorted((start, end))
+    if hi - lo < 0.02:
+        lo, hi = 0.0, 1.0
+    A, B = r0 + (r1 - r0) * lo, r0 + (r1 - r0) * hi
+    sA, sB = job._at(job.arc, A), job._at(job.arc, B)
+    inside_lo, inside_hi = lo > 1e-3, hi < 1.0 - 1e-3
+    G = window_easing(fn, B - A, sB - sA, _speed(job, A) if inside_lo else None,
+                      _speed(job, B) if inside_hi else None)
+
+    def smooth(x):
+        x = min(max(x, 0.0), 1.0)
+        return x * x * (3.0 - 2.0 * x)
+
+    def S(t):
+        s0 = job._at(job.arc, t)
+        if t <= A or t >= B:
+            return s0
+        u = (t - A) / (B - A)
+        k = strength
+        if blend > 1e-3:
+            # (the ends of the part inside the selection fade in / out: a softer change of speed)
+            if inside_lo:
+                k *= smooth(u / blend)
+            if inside_hi:
+                k *= smooth((1.0 - u) / blend)
+        return s0 + (sA + (sB - sA) * G(u) - s0) * k
+    return S, A, B
+
+
 def _ui_scale():
     from . import compat
     return compat.ui_scale()
@@ -368,7 +435,8 @@ def _ui_scale():
 def gallery_size(us):
     w = _COLS * _TILE + (_COLS - 1) * _GAP + 2 * _PAD
     rows = (len(easing.TYPES) + _COLS - 1) // _COLS
-    h = 2 * _PAD + 4 * (_ROW + _GAP) + _WIDE + _GAP + rows * _TILE + (rows - 1) * _GAP
+    h = (2 * _PAD + 2 * (_ROW + _GAP) + _PREVIEW + _GAP + _ROW + _GAP + _WIDE + _GAP + rows * _TILE +
+         (rows - 1) * _GAP + _GAP + _APPLY)
     return w * us, h * us
 
 
@@ -389,58 +457,150 @@ def gallery_items(context, g, us):
             out.append((kind, val, x0 + pad + i * (sw + 2 * us), y, sw, row, label))
     segments('mode', [(i, n) for i, n, _d in MODES], y)
     y -= row + gap
-    segments('dir', easing.DIRECTIONS, y)
-    y -= row + gap
     if st.easing_mode == 'CHANNELS':
         labels = channel_labels(context) or ["1", "2", "3"]
-        segments('chan', list(enumerate(labels[:4])), y)
+        n_dir = len(easing.DIRECTIONS)
+        # (Channels: the direction and the channels share the row)
+        sw = (inner - 6 * us) * 0.5
+        sub = [(v, lab) for v, lab in easing.DIRECTIONS]
+        for i, (val, label) in enumerate(sub):
+            bw = (sw - (n_dir - 1) * 2 * us) / n_dir
+            out.append(('dir', val, x0 + pad + i * (bw + 2 * us), y, bw, row, label))
+        chans = list(enumerate(labels[:4]))
+        for i, (val, label) in enumerate(chans):
+            bw = (sw - (len(chans) - 1) * 2 * us) / len(chans)
+            out.append(('chan', val, x0 + pad + sw + 6 * us + i * (bw + 2 * us), y, bw, row, label))
     else:
-        out.append(('strength', None, x0 + pad, y, inner, row, "Strength"))
+        segments('dir', easing.DIRECTIONS, y)
+    y -= _PREVIEW * us + gap
+    out.append(('preview', None, x0 + pad, y, inner, _PREVIEW * us, ""))
     y -= row + gap
-    out.append(('range', None, x0 + pad, y, inner, row, "Part"))
+    sw = (inner - 3 * 4 * us) / 4
+    for i, (key, label, _prop) in enumerate(SLIDERS):
+        out.append(('slider', key, x0 + pad + i * (sw + 4 * us), y, sw, row, label))
     y -= _WIDE * us + gap
     out.append(('ease', 'LINEAR', x0 + pad, y, inner, _WIDE * us, "Linear"))
     tile = _TILE * us
     for i, (kind, name) in enumerate(easing.TYPES):
         r, c = divmod(i, _COLS)
         out.append(('ease', kind, x0 + pad + c * (tile + gap), y - gap - tile - r * (tile + gap), tile, tile, name))
+    rows = (len(easing.TYPES) + _COLS - 1) // _COLS
+    y_apply = y - gap - rows * tile - (rows - 1) * gap - gap - _APPLY * us
+    out.append(('apply', None, x0 + pad, y_apply, inner, _APPLY * us, "Apply"))
     return out
 
 
+def _covered_top(area, region):
+    """How much of the top of the view's region the headers cover (they lie over it when regions
+    overlap)."""
+    top = region.y + region.height
+    out = 0
+    for r in area.regions:
+        if r.type in {'HEADER', 'TOOL_HEADER'} and r.height > 1 and region.y <= r.y < top:
+            out = max(out, top - r.y)
+    return out
+
+
+def _gus(g):
+    return g.get('us') or _ui_scale()
+
+
 def gallery_inside(g, mx, my):
-    w, h = gallery_size(_ui_scale())
+    w, h = gallery_size(_gus(g))
     return g['x0'] <= mx <= g['x0'] + w and g['y0'] <= my <= g['y0'] + h
 
 
 def gallery_hit(context, g, mx, my):
-    for kind, val, x, y, w, h, _l in gallery_items(context, g, _ui_scale()):
+    for kind, val, x, y, w, h, _l in gallery_items(context, g, _gus(g)):
         if x <= mx <= x + w and y <= my <= y + h:
             return (kind, val)
     return None
 
 
-def hit_box(context, g, kind):
+def hit_box(context, g, kind, val=None):
     """(x, width) of a gallery item."""
-    for k, _v, x, _y, w, _h, _l in gallery_items(context, g, _ui_scale()):
-        if k == kind:
+    for k, v, x, _y, w, _h, _l in gallery_items(context, g, _gus(g)):
+        if k == kind and (val is None or v == val):
             return x, w
     return 0.0, 1.0
 
 
-def _set_range(st, g, mx, which):
-    x, w = hit_box(bpy.context, g, 'range')
-    u = min(1.0, max(0.0, (mx - x) / max(w, 1.0)))
-    if which == 'from':
-        st.easing_from = min(u, st.easing_to - 0.05) if st.easing_to > 0.05 else 0.0
-    else:
-        st.easing_to = max(u, st.easing_from + 0.05) if st.easing_from < 0.95 else 1.0
+def slider_value(st, key):
+    return getattr(st, dict((k, p) for k, _l, p in SLIDERS)[key])
+
+
+def set_slider(st, key, value):
+    """A slider's value (0..1), From kept before To."""
+    value = min(1.0, max(0.0, value))
+    if key == 'from':
+        value = min(value, max(st.easing_to - 0.05, 0.0))
+    elif key == 'to':
+        value = max(value, min(st.easing_from + 0.05, 1.0))
+    elif key == 'blend':
+        value = min(value, 0.5)
+    setattr(st, dict((k, p) for k, _l, p in SLIDERS)[key], value)
+
+
+def _slider_from_mouse(context, st, g, key, mx):
+    x, w = hit_box(context, g, 'slider', key)
+    set_slider(st, key, (mx - x) / max(w, 1.0) * (0.5 if key == 'blend' else 1.0))
 
 
 def _set_strength(st, g, mx):
-    for kind, _v, x, _y, w, _h, _l in gallery_items(bpy.context, g, _ui_scale()):
-        if kind == 'strength':
-            st.easing_strength = min(1.0, max(0.0, (mx - x) / max(w, 1.0)))
+    _slider_from_mouse(bpy.context, st, g, 'strength', mx)
 
+
+# ---- the preview: the speed of the selected part, before and after ---------------------------
+
+_preview_jobs = {}      # (path key, its signature, range) -> SpaceJob
+
+
+def preview_cache(context):
+    """The path the gallery previews: the first editable one with selected keys (or any)."""
+    cs = [c for c in state.editable_caches(context.scene) if c.ptype in (core.LOCATION, core.ROTATION)]
+    for c in cs:
+        if any(k.sel for k in c.keys) and _ranges(c) is not None:
+            return c
+    return next((c for c in cs if _ranges(c) is not None), None)
+
+
+def preview_speeds(context, st, kind, n=64):
+    """([frame], [speed before], [speed after]) of the selected part with easing `kind` and the
+    gallery's settings, or None."""
+    from .ops_timing import SpaceJob
+    c = preview_cache(context)
+    if c is None:
+        return None
+    r0, r1 = (float(x) for x in _ranges(c))
+    if r1 - r0 < 2.0:
+        return None
+    key = (c.key, id(c.sig), r0, r1)
+    job = _preview_jobs.get(key)
+    if job is None:
+        tg = c.target()
+        if tg is None:
+            return None
+        _preview_jobs.clear()
+        job = _preview_jobs[key] = SpaceJob(c, tg, r0, r1)
+    if job.arc[-1] < 1e-9:
+        return None
+    p = (1.70158, 1.0, 0.3, 3, 0.5)
+    direction = st.easing_direction
+
+    def fn(u):
+        return easing.ease(kind, direction, u, *p) if kind != 'LINEAR' else u
+    timing = st.easing_mode == 'TIMING'
+    S, _A, _B = eased_arc(job, fn, st.easing_strength if timing else 1.0, st.easing_from if timing else 0.0,
+                          st.easing_to if timing else 1.0, st.easing_blend if timing else 0.0)
+    ts = [r0 + (r1 - r0) * i / n for i in range(n + 1)]
+    h = (r1 - r0) / n * 0.5
+    before = [abs(job._at(job.arc, min(t + h, r1)) - job._at(job.arc, max(t - h, r0))) /
+              (min(t + h, r1) - max(t - h, r0)) for t in ts]
+    after = [abs(S(min(t + h, r1)) - S(max(t - h, r0))) / (min(t + h, r1) - max(t - h, r0)) for t in ts]
+    return ts, before, after
+
+
+# ---- drawing -------------------------------------------------------------------------------
 
 def draw_gallery(ctx, us):
     import blf
@@ -452,6 +612,7 @@ def draw_gallery(ctx, us):
     st = state.settings(ctx.scene)
     if g is None or st is None:
         return
+    us = _gus(g)
     w, h = gallery_size(us)
     gpu.state.blend_set('ALPHA')
     draw._rounded_rect(g['x0'], g['y0'], w, h, 8.0 * us, (0.09, 0.09, 0.1, 0.94))
@@ -459,59 +620,121 @@ def draw_gallery(ctx, us):
     hover = g.get('hover')
     on = {'mode': st.easing_mode, 'dir': st.easing_direction}
     chans = list(st.easing_channels)
+    timing = st.easing_mode == 'TIMING'
+    blue, dark, lit = (0.28, 0.45, 0.78, 0.95), (0.18, 0.18, 0.18, 0.95), (0.3, 0.3, 0.3, 0.95)
 
-    def text(s, cx, cy, size=11, col=(1.0, 1.0, 1.0, 0.92)):
+    def text(s, cx, cy, size=11, col=(1.0, 1.0, 1.0, 0.92), left=False):
         blf.size(0, size * us)
         tw, th = blf.dimensions(0, s)
         blf.color(0, *col)
-        blf.position(0, cx - tw * 0.5, cy - th * 0.5, 0)
+        blf.position(0, cx if left else cx - tw * 0.5, cy - th * 0.5, 0)
         blf.draw(0, s)
+        return tw
+
+    def picture(name, x, y, s):
+        tex = _texture(name)
+        if tex is not None:
+            quad = [(x, y), (x + s, y), (x + s, y + s), (x, y + s)]
+            batch = batch_for_shader(sh, 'TRI_FAN', {"pos": quad, "texCoord": [(0, 0), (1, 0), (1, 1), (0, 1)]})
+            sh.uniform_sampler("image", tex)
+            batch.draw(sh)
+    shown = hover[1] if hover and hover[0] == 'ease' else st.easing_type
     for kind, val, x, y, bw, bh, label in gallery_items(ctx, g, us):
         over = hover == (kind, val)
         if kind in {'mode', 'dir', 'chan'}:
             active = chans[val] if kind == 'chan' else on[kind] == val
-            col = (0.28, 0.45, 0.78, 0.95) if active else ((0.3, 0.3, 0.3, 0.95) if over else (0.18, 0.18, 0.18, 0.95))
-            draw._rounded_rect(x, y, bw, bh, 4.0 * us, col)
+            draw._rounded_rect(x, y, bw, bh, 4.0 * us, blue if active else (lit if over else dark))
             text(label, x + bw * 0.5, y + bh * 0.5)
-        elif kind == 'strength':
-            draw._rounded_rect(x, y, bw, bh, 4.0 * us, (0.3, 0.3, 0.3, 0.95) if over else (0.18, 0.18, 0.18, 0.95))
-            f = st.easing_strength
-            if f > 0.0:
-                draw._rounded_rect(x, y, max(bw * f, 8.0 * us), bh, 4.0 * us, (0.28, 0.45, 0.78, 0.95))
-            text("Strength  %d%%" % round(f * 100), x + bw * 0.5, y + bh * 0.5)
-        elif kind == 'range':
-            timing = st.easing_mode == 'TIMING'
-            draw._rounded_rect(x, y, bw, bh, 4.0 * us, (0.3, 0.3, 0.3, 0.95) if over and timing else (0.18, 0.18, 0.18, 0.95))
-            a, b = st.easing_from, st.easing_to
-            if timing:
-                draw._rounded_rect(x + bw * a, y, max(bw * (b - a), 8.0 * us), bh, 4.0 * us, (0.28, 0.45, 0.78, 0.95))
-                for f in (a, b):
-                    draw._rounded_rect(x + bw * f - 2.0 * us, y - 2.0 * us, 4.0 * us, bh + 4.0 * us, 2.0 * us,
-                                       (1.0, 1.0, 1.0, 0.9))
-                text("Part  %d%% - %d%%" % (round(a * 100), round(b * 100)), x + bw * 0.5, y + bh * 0.5)
+        elif kind == 'preview':
+            draw._rounded_rect(x, y, bw, bh, 5.0 * us, (0.06, 0.06, 0.07, 0.95))
+            _draw_preview(ctx, st, shown, x, y, bw, bh, us, text)
+        elif kind == 'slider':
+            usable = timing or val == 'strength'
+            value = slider_value(st, val)
+            editing = g.get('edit') and g['edit']['key'] == val
+            draw._rounded_rect(x, y, bw, bh, 4.0 * us, lit if over and usable else dark)
+            frac = value / 0.5 if val == 'blend' else value
+            if usable and not editing:
+                if val == 'to':
+                    # (To fills from its value to the end: the part is between the two)
+                    draw._rounded_rect(x + bw * frac, y, max(bw * (1.0 - frac), 4.0 * us), bh, 4.0 * us,
+                                       (0.22, 0.32, 0.5, 0.95))
+                elif frac > 0.0:
+                    draw._rounded_rect(x, y, max(bw * frac, 6.0 * us), bh, 4.0 * us, blue)
+            col = (1.0, 1.0, 1.0, 0.92 if usable else 0.35)
+            if editing:
+                text("%s: %s|" % (label, g['edit']['text']), x + bw * 0.5, y + bh * 0.5, col=(1.0, 0.85, 0.4, 1.0))
             else:
-                text("Part: Keep the Path only", x + bw * 0.5, y + bh * 0.5, col=(1.0, 1.0, 1.0, 0.45))
+                text("%s %d%%" % (label, round(value * 100)), x + bw * 0.5, y + bh * 0.5, col=col)
+        elif kind == 'apply':
+            draw._rounded_rect(x, y, bw, bh, 5.0 * us, (0.32, 0.55, 0.9, 0.98) if over else blue)
+            name = dict([('LINEAR', "Linear")] + list(easing.TYPES)).get(st.easing_type, "")
+            text("Apply %s" % name, x + bw * 0.5, y + bh * 0.5, size=12)
         else:
+            chosen = st.easing_type == val
             draw._rounded_rect(x, y, bw, bh, 6.0 * us, (0.32, 0.32, 0.34, 0.95) if over else (0.15, 0.15, 0.16, 0.95))
-            name = "ease_LINEAR" if val == 'LINEAR' else "ease_%s_%s" % (val, st.easing_direction)
-            tex = _texture(name)
+            if chosen:
+                _outline(x, y, bw, bh, us, (0.45, 0.65, 1.0, 1.0))
             if val == 'LINEAR':
-                s = bh - 8.0 * us
-                ix, iy = x + 8.0 * us, y + 4.0 * us
-                lx = x + 8.0 * us + s + (bw - s - 16.0 * us) * 0.5
-                ly = y + bh * 0.5
+                # the picture right next to the word, the two in the middle
+                s = bh - 10.0 * us
+                blf.size(0, 12 * us)
+                tw, _th = blf.dimensions(0, label)
+                gap = 8.0 * us
+                ix = x + (bw - s - gap - tw) * 0.5
+                picture("ease_LINEAR", ix, y + 5.0 * us, s)
+                text(label, ix + s + gap, y + bh * 0.5, size=12, left=True)
             else:
                 s = bw - 26.0 * us
-                ix, iy = x + (bw - s) * 0.5, y + 20.0 * us
-                lx, ly = x + bw * 0.5, y + 11.0 * us
-            if tex is not None:
-                quad = [(ix, iy), (ix + s, iy), (ix + s, iy + s), (ix, iy + s)]
-                batch = batch_for_shader(sh, 'TRI_FAN', {"pos": quad, "texCoord": [(0, 0), (1, 0), (1, 1), (0, 1)]})
-                sh.uniform_sampler("image", tex)
-                batch.draw(sh)
-            text(label, lx, ly, size=12 if val == 'LINEAR' else 11)
-    text("Click a picture: apply      Wheel: strength      Esc: close", g['x0'] + w * 0.5, g['y0'] + h + 12.0 * us,
-         size=11, col=(1.0, 1.0, 1.0, 0.7))
+                picture("ease_%s_%s" % (val, st.easing_direction), x + (bw - s) * 0.5, y + 20.0 * us, s)
+                text(label, x + bw * 0.5, y + 11.0 * us)
+    # the hint above the gallery, or below it where there is no room above
+    region = ctx.region
+    room = region.height - _covered_top(ctx.area, region) if region is not None and ctx.area is not None else 1e9
+    hint_y = g['y0'] + h + 12.0 * us if g['y0'] + h + 22.0 * us < room else g['y0'] - 12.0 * us
+    text("Click: pick (the preview shows it)     Enter / double click: apply     Ctrl+click a slider: type     "
+         "Esc: close", g['x0'] + w * 0.5, hint_y, size=10, col=(1.0, 1.0, 1.0, 0.7))
+
+
+def _outline(x, y, w, h, us, col):
+    from . import draw
+    pts = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+    draw._flat(pts, col, 'LINE_LOOP', 2.0 * us)
+
+
+def _draw_preview(ctx, st, kind, x, y, w, h, us, text):
+    """The selected part's speed, before (gray) and with the easing (blue, filled): like the speed
+    graph, only the shape."""
+    from . import draw
+    try:
+        data = preview_speeds(ctx, st, kind)
+    except Exception:
+        data = None
+    if data is None:
+        text("Select keys of a path: their speed shows here", x + w * 0.5, y + h * 0.5, col=(1, 1, 1, 0.45))
+        return
+    ts, before, after = data
+    top = max(max(before), max(after), 1e-9) * 1.1
+    m = 8.0 * us
+    gx, gy, gw, gh = x + m, y + m, w - 2 * m, h - 2 * m - 10.0 * us
+
+    def P(i, v):
+        return (gx + gw * i / (len(ts) - 1), gy + gh * min(v / top, 1.05))
+    if st.easing_mode == 'TIMING' and (st.easing_from > 1e-3 or st.easing_to < 1.0 - 1e-3):
+        # the part the easing works on
+        a, b = sorted((st.easing_from, st.easing_to))
+        draw._rounded_rect(gx + gw * a, gy, max(gw * (b - a), 2.0), gh, 2.0 * us, (0.2, 0.25, 0.35, 0.5))
+    fill = []
+    for i in range(len(ts) - 1):
+        (x0, y0), (x1, y1) = P(i, after[i]), P(i + 1, after[i + 1])
+        fill += [(x0, gy), (x1, gy), (x1, y1), (x0, gy), (x1, y1), (x0, y0)]
+    draw._flat(fill, (0.3, 0.5, 0.9, 0.25), 'TRIS')
+    draw._flat([P(i, v) for i, v in enumerate(before)], (0.7, 0.7, 0.7, 0.55), 'LINE_STRIP', 1.5 * us)
+    draw._flat([P(i, v) for i, v in enumerate(after)], (0.45, 0.7, 1.0, 1.0), 'LINE_STRIP', 2.2 * us)
+    name = dict([('LINEAR', "Linear")] + list(easing.TYPES)).get(kind, "")
+    dname = dict(easing.DIRECTIONS).get(st.easing_direction, "") if kind != 'LINEAR' else ""
+    text("Speed: now (gray), %s %s (blue)" % (name, dname), x + 8.0 * us, y + h - 9.0 * us, size=10,
+         col=(1.0, 1.0, 1.0, 0.6), left=True)
 
 
 def channel_labels(context):
@@ -536,10 +759,12 @@ def draw_presets(layout, context):
             for i, label in enumerate(labels[:4]):
                 row.prop(st, "easing_channels", index=i, text=label, toggle=True)
     else:
-        layout.prop(st, "easing_strength", slider=True)
-        row = layout.row(align=True, heading="Part")
-        row.prop(st, "easing_from", text="From", slider=True)
-        row.prop(st, "easing_to", text="To", slider=True)
+        col = layout.column(align=True)
+        col.prop(st, "easing_strength", slider=True)
+        row = col.row(align=True)
+        row.prop(st, "easing_from", slider=True)
+        row.prop(st, "easing_to", slider=True)
+        col.prop(st, "easing_blend", slider=True)
 
     def setup(op, kind):
         op.easing = kind
@@ -547,7 +772,7 @@ def draw_presets(layout, context):
         op.mode = st.easing_mode
         op.channels = st.easing_channels
         op.strength = st.easing_strength
-        op.start, op.end = st.easing_from, st.easing_to
+        op.start, op.end, op.blend = st.easing_from, st.easing_to, st.easing_blend
     setup(layout.operator("emp.easing_preset", text="Linear", icon_value=icon_id("ease_LINEAR")), 'LINEAR')
     grid = layout.grid_flow(row_major=True, columns=5, even_columns=True, even_rows=True, align=False)
     for kind, name in easing.TYPES:
@@ -556,7 +781,7 @@ def draw_presets(layout, context):
         if ic:
             col.template_icon(icon_value=ic, scale=3.0)
         setup(col.operator("emp.easing_preset", text=name), kind)
-    layout.label(text="P in the viewport: the same as big pictures to click", icon='INFO')
+    layout.label(text="P in the viewport: pick, see the speed it gives, tune, apply", icon='INFO')
 
 
 class EMP_PT_easing_presets(bpy.types.Panel):

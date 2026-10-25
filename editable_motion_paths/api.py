@@ -418,6 +418,35 @@ def _move_key(obj, bone, frame, target, offset, mode):
     return _v(k.co)
 
 
+def set_key(obj, bone=None, frame=None, values=None, mode=None):
+    """Set a key's channel values directly (no viewport, no world space): LOCATION (x, y, z) local
+    location, ROTATION the rotation channels (Euler x, y, z in radians / quaternion w, x, y, z),
+    SCALE (x, y, z), VALUE (v,) of the value channel picked with set_value_channel. No key at
+    `frame`: one is inserted first (the motion doesn't change). Returns the values set."""
+    with _in_mode(_valid_mode(mode)):
+        c = _cache(obj, bone, mode)
+        if frame is None or values is None:
+            raise ValueError("set_key needs a frame and the values")
+        tg = c.target()
+        ch = tg.channels(c.ptype)
+        vals = [float(v) for v in values]
+        if len(vals) != ch.count:
+            raise ValueError("the %s path of %s %s has %d channels (%s), not %d" % (
+                c.ptype.lower(), c.obj_name, c.bone_name, ch.count, ch.path, len(vals)))
+        core.ensure_keys(tg, c.ptype, [float(frame)], None, state.settings(_scene()).pin_partial)
+        c.refresh(force=True)
+        tg = c.target()
+        k = next((k for k in c.keys if abs(k.t - frame) < 1e-3), None)
+        if k is None:
+            raise ValueError("No key could be made at frame %s" % frame)
+        touched = set()
+        core.write_key(tg.channels(c.ptype), k, vals, True, touched)
+        core.update_fcurves(touched)
+        c.refresh(force=True)
+        _push("Set Path Key")
+        return vals
+
+
 def insert_key(obj, bone=None, frame=None, mode=None):
     """Insert a key on the path at `frame` without changing the motion."""
     from .ops_keys import insert_key as _insert
@@ -688,8 +717,61 @@ def preview_objects(show=True):
     return made
 
 
-def render_view(filepath, overlays=True):
-    """Save the largest 3D viewport, with the path overlays, to a PNG. Returns the path."""
+def render_view(filepath, overlays=True, frame_numbers=False):
+    """Save the largest 3D viewport, with the path overlays (as you see them in Blender), to a PNG.
+    frame_numbers=True writes every key's frame next to it (to tell which key is which). Returns
+    the path."""
+    arr = _render(overlays, frame_numbers)
+    _save_png(arr, filepath)
+    return filepath
+
+
+def render_speed_graph(filepath, obj, bone=None, frames=None, mode=None):
+    """Save the speed graph of a path to a PNG, as the viewport draws it: the speed (height) over
+    the frames, the keys as lines with their frames - to judge the timing by eye. frames: [first,
+    last] key of the part shown (None: all the keys). The path's keys there get selected."""
+    st = state.settings(_scene())
+    shown = st.show_speed_graph
+    rng = st.speed_range
+    with _in_mode(_valid_mode(mode)):
+        c = _cache(obj, bone, mode)
+        ks = [k.t for k in c.keys]
+        if frames:
+            lo, hi = min(frames), max(frames)
+            ks = [t for t in ks if lo - 1e-3 <= t <= hi + 1e-3]
+        with _only(c):
+            _select_owner_and_keys(c, ks or None)
+            st.show_speed_graph = True
+            st.speed_range = 'SEGMENT'
+            try:
+                arr = _render(True, False)
+                sg = state.speed_graph
+            finally:
+                st.show_speed_graph = shown
+                st.speed_range = rng
+    if sg is None:
+        raise ValueError("No speed graph for %s %s (too short?)" % (c.obj_name, c.bone_name))
+    H, W = arr.shape[:2]
+    m = 12
+    x0, x1 = max(int(sg["x0"]) - 4 * m, 0), min(int(sg["x1"]) + 4 * m, W)
+    y0, y1 = max(int(sg["y0"]) - m, 0), min(int(sg["y1"]) + 2 * m, H)
+    _save_png(arr[y0:y1, x0:x1], filepath)
+    return filepath
+
+
+def _save_png(arr, filepath):
+    import numpy as np
+    H, W = arr.shape[:2]
+    img = bpy.data.images.new("_emp_render_view", W, H, alpha=True)
+    img.pixels.foreach_set(np.ascontiguousarray(arr).ravel())
+    img.filepath_raw = filepath
+    img.file_format = 'PNG'
+    img.save()
+    bpy.data.images.remove(img)
+
+
+def _render(overlays=True, frame_numbers=False):
+    """The largest 3D viewport drawn offscreen with the add-on's overlays: (H, W, 4) floats."""
     import gpu
     import numpy as np
     win, area, region = _view3d()
@@ -708,6 +790,8 @@ def render_view(filepath, overlays=True):
                         rv3d.window_matrix, do_color_management=True)
         with off.bind():
             state.force_draw = True
+            numbers = state.force_numbers
+            state.force_numbers = numbers or frame_numbers
             if overlays:
                 with gpu.matrix.push_pop():
                     gpu.matrix.load_matrix(rv3d.view_matrix)
@@ -720,15 +804,9 @@ def render_view(filepath, overlays=True):
                     emp_draw._draw_pixel()
             buf = gpu.state.active_framebuffer_get().read_color(0, 0, W, H, 4, 0, 'UBYTE')
             state.force_draw = False
+            state.force_numbers = numbers
     off.free()
-    arr = np.array(buf.to_list(), dtype=np.float32).reshape(H, W, 4) / 255.0
-    img = bpy.data.images.new("_emp_render_view", W, H, alpha=True)
-    img.pixels.foreach_set(arr.ravel())
-    img.filepath_raw = filepath
-    img.file_format = 'PNG'
-    img.save()
-    bpy.data.images.remove(img)
-    return filepath
+    return np.array(buf.to_list(), dtype=np.float32).reshape(H, W, 4) / 255.0
 
 
 def setup_view(obj=None, bone=None, mode=None, solid=True, angle=None, show_bones=None):

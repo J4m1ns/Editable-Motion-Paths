@@ -238,7 +238,13 @@ class EMP_Settings(bpy.types.PropertyGroup):
     onion_opacity: FloatProperty(name="Opacity", default=0.3, min=0.02, max=1.0, subtype='FACTOR',
                                  update=_redraw)
     onion_max_tris: IntProperty(name="Detail", default=20000, min=500, soft_max=200000, update=_redraw,
-                                description="Most triangles / edges / points per ghost (fewer: faster)")
+                                description="Fast ghosts: most triangles / edges / points per mesh (fewer: faster)")
+    onion_fast: BoolProperty(
+        name="Fast", default=True, update=_onion_rebuild,
+        description="Fast ghosts: every bent mesh is simplified once (down to Detail) and bent by its bones "
+                    "only - quick also on heavy characters, but shape keys (correctives, expressions), "
+                    "lattices and other deformers don't show. Off: Exact - every ghost is the mesh as "
+                    "Blender makes it on that frame, in full detail (slower on heavy characters)")
     onion_bones: EnumProperty(
         name="Onion Bones", update=_redraw,
         items=[('SELECTED', "Selected Bones", "Only the selected bones"),
@@ -358,14 +364,24 @@ class EMP_Settings(bpy.types.PropertyGroup):
                                                     "switch several; one always stays on)")
     easing_strength: FloatProperty(name="Strength", default=1.0, min=0.0, max=1.0, subtype='FACTOR',
                                    description="How much of the easing (0: the timing as it was)")
-    easing_from: FloatProperty(name="From", default=0.0, min=0.0, max=1.0, subtype='FACTOR',
+    easing_type: EnumProperty(
+        name="Easing", update=_redraw,
+        items=[('LINEAR', "Linear", "")] + [(i, n, "") for i, n in (
+            ('SINE', "Sine"), ('QUAD', "Quadratic"), ('CUBIC', "Cubic"), ('QUART', "Quartic"),
+            ('QUINT', "Quintic"), ('EXPO', "Exponential"), ('CIRC', "Circular"), ('BACK', "Back"),
+            ('BOUNCE', "Bounce"), ('ELASTIC', "Elastic"))],
+        default='SINE', description="The easing picked in the gallery (P), put on with Apply")
+    easing_blend: FloatProperty(name="Blend", default=0.0, min=0.0, max=0.5, subtype='FACTOR', update=_redraw,
+                                description="Keep the Path: how softly the easing fades in at From and out "
+                                            "at To (share of the part)")
+    easing_from: FloatProperty(name="From", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_redraw,
                                description="Keep the Path: where in the selected part the easing begins "
                                            "(before it the timing stays; e.g. Out from 60%: only the end "
                                            "slows down, the start keeps its speed)")
-    easing_to: FloatProperty(name="To", default=1.0, min=0.0, max=1.0, subtype='FACTOR',
+    easing_to: FloatProperty(name="To", default=1.0, min=0.0, max=1.0, subtype='FACTOR', update=_redraw,
                              description="Keep the Path: where in the selected part the easing ends "
                                          "(after it the timing stays)")
-    show_speed_graph: BoolProperty(name="Speed Graph", default=False, update=_redraw,
+    show_speed_graph: BoolProperty(name="Speed Graph", default=True, update=_redraw,
                                    description="A graph of the speed of the active path, above the "
                                                "timing chart")
     speed_range: EnumProperty(
@@ -499,15 +515,6 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         name="Ghosts Ahead", default=10, min=0, soft_max=100, update=_redraw,
         description="Onion skin: the ghosts are captured ahead of time this many frames before and after the "
                     "current frame (the ones shown always are); more: smoother playback, more work")
-    onion_shapes: EnumProperty(
-        name="Ghost Shapes", update=_onion_rebuild,
-        description="Onion skin: how the bent meshes are shaped on the ghosts",
-        items=[('EXACT', "Exact", "Meshes with shape keys that change (correctives, expressions) or other "
-                                  "deformers (lattices, hooks, Mesh / Surface Deform, Shrinkwrap, Geometry "
-                                  "Nodes) are taken as Blender makes them on every ghost frame - right, slower"),
-               ('FAST', "Fast (Bones Only)", "Every mesh is bent by its bones only (fastest; shape keys and "
-                                             "lattices don't show on the ghosts)")],
-        default='EXACT')
     onion_other_display: EnumProperty(
         name="Other Objects", update=_redraw,
         description="Onion skin: how objects without a shape of their own (speakers, light probes, force "
@@ -601,7 +608,6 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         col.prop(self, "onion_color_after", text="After")
         col.prop(self, "onion_other_display")
         col.prop(self, "onion_cache_range")
-        col.prop(self, "onion_shapes")
         layout.separator()
         col = layout.column()
         col.label(text="Center of Mass")

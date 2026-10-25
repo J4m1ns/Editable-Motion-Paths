@@ -102,6 +102,14 @@ emp.setup_view("Zombie_Rig", "CTRL_Foot_L", angle=(1.3, 0, 1.2))
 emp.render_view(r"C:\path\shot.png")     # framed on the path, close up
 ```
 
+The speed graph alone, to judge the timing by eye (the speed over the frames, the keys as
+lines with their frame numbers):
+
+```python
+emp.render_speed_graph(r"C:\path\speed.png", "RIG-rain", "IK-Hand_Parent.L", frames=[12, 36])
+emp.render_view(r"C:\path\shot.png", frame_numbers=True)   # every key's frame written next to it
+```
+
 ## Edit
 
 Each edit is one undo step, so you can try something and undo it.
@@ -110,6 +118,8 @@ Each edit is one undo step, so you can try something and undo it.
 emp.move_key("Zombie_Rig", "CTRL_Foot_L", frame=25, offset=(0, 0, 0.05))   # world-space nudge
 emp.move_key("Zombie_Rig", "CTRL_Foot_L", frame=25, target=(0.1, -0.2, 0.3))
 emp.insert_key("Zombie_Rig", "CTRL_Foot_L", frame=30)       # keeps the motion
+emp.set_key("Zombie_Rig", "CTRL_Torso", frame=12, values=(1.1, 0.85, 1.1), mode='SCALE')  # squash, by values
+emp.set_key("Zombie_Rig", "CTRL_Hand_L", frame=20, values=(0.0,), mode='VALUE')     # the value channel
 emp.smooth("Zombie_Rig", "CTRL_Foot_L", frames=[19, 25, 27], factor=1.0)  # shape; <0 sharpens
 emp.ease("Zombie_Rig", "CTRL_Foot_L", frames=[25], factor=0.8)            # slow in/out at a key
 emp.ease("Zombie_Rig", "CTRL_Foot_L", frames=[25], factor=0.8, side='IN') # slow in only (arrive gently)

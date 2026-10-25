@@ -169,7 +169,7 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   the bottom right corner of the viewport (a dark block like the speed graph's; with both on,
   one block) shows where every frame lies between the selected
   keys (one key: the segments around it; none: the keys around the current frame), like an
-  animator's chart; drag its ticks the same way. An optional **speed graph** sits
+  animator's chart; drag its ticks the same way. The **speed graph** (on by default) sits
   right above it, as wide as the chart: for the selected keys, the segments on both sides of a
   single selected key, or the keys around the current frame (*Segment*), a set frame range
   (*Range*) or the scene's frame range (*Timeline*). Keys are marked on it with their frame
@@ -228,12 +228,16 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   Elastic overshoot along the direction of the motion); *Channels* sets Blender's easing
   interpolation on the channels you pick (drag across them to switch several; one always stays
   on), like in the Graph Editor. *Bounce* has *Bounces* and *Bounciness*, *Elastic* its
-  amplitude and period. **Part** (*From* / *To*, Keep the Path): the easing works on that part of
-  the selection only, the timing before and after it stays - *Out* from 60% slows down only the
-  end (the speed carries on smoothly into the slow-down; with the keys on their frames, the part
-  in between goes a bit faster to make up for it). **P** opens them as a gallery under the mouse:
-  big pictures to click, with the mode, direction, strength (wheel) and part above them; after a
-  click the redo panel has all the settings.
+  amplitude and period. *From* / *To* (Keep the Path): the easing works on that part of the
+  selection only, the timing before and after it stays - *Out* from 60% slows down only the end
+  (the speed carries on smoothly into the slow-down; with the keys on their frames, the part in
+  between goes a bit faster to make up for it); *Blend* fades it in and out over that much of the
+  part, for an even softer start and end. **P** opens them as a gallery under the mouse: a
+  **preview** of the selected part's speed (now in gray, with the easing in blue) shows what a
+  picture does as soon as the mouse is on it; click a picture to pick it, tune *Strength*,
+  *From*, *To*, *Blend* while watching the preview (drag a slider, or Ctrl+click it to type a
+  value), then **Apply** (or Enter, or double-click the picture). The redo panel has all the
+  settings after that.
 
 ## Shape tools
 
@@ -347,11 +351,11 @@ ghosts follow the edits live, the nearest ones first, also while a key is dragge
 ghost stays until its new one is ready (nothing blinks). Back faces are skipped, *Wire* and
 *Points* use the same simplified mesh (the wire stays connected), and ghosts show in X-ray
 too. *In Front* (on by default) draws them over everything. Editing a mesh (its shape, weights,
-normals) builds its ghost again by itself. Meshes whose shape isn't only their bones' - shape keys
-that change (correctives, expressions driven by bones) or another deformer (a lattice on the face,
-hooks, Mesh / Surface Deform, Shrinkwrap, Geometry Nodes) - are taken as Blender makes them on
-every ghost frame, then simplified the same way (preferences: *Ghost Shapes: Exact*; *Fast* bends
-every mesh by its bones only).
+normals) builds its ghost again by itself. **Fast** (on by default) is all of the above: quick on
+heavy characters, but the ghosts are bent by the bones only - shape keys (correctives, expressions),
+lattices and other deformers don't show. Turn it off for **Exact** ghosts: every ghost is the mesh
+as Blender makes it on that frame, in full detail (*Detail* doesn't apply; slower on heavy
+characters).
 
 The ghosts are captured ahead of time for every frame they can be on (the keys, or every step
 frames, in the scene's range), the nearest first, so playback shows them all; while playing,
