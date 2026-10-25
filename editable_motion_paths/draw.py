@@ -16,7 +16,6 @@ from mathutils import Vector
 from . import compat, core, state
 
 _handles = []
-_error_reported = False
 
 COL_KEY = (0.95, 0.95, 0.95, 1.0)
 COL_KEY_SEL = (1.0, 0.55, 0.1, 1.0)
@@ -277,17 +276,12 @@ def _part_failed(part, ex):
 
 
 def draw_view():
-    global _error_reported
     new_pass()
     state.draw_pass = _pass[0]
     try:
         _draw_view()
     except Exception as ex:
-        if not _error_reported:
-            _error_reported = True
-            import traceback
-            traceback.print_exc()
-            print("Editable Motion Paths: drawing failed:", ex)
+        _part_failed("The paths", ex)       # (each new error said once, with a note)
     finally:
         state.draw_pass = None
 
@@ -764,6 +758,27 @@ def _draw_rot_rings(st, cache, tg, keys, rv3d, us):
                 _lines(pts, [RING_COLORS[part] + (0.9,)] * len(pts), 2.0 * us, 'LINE_STRIP')
 
 
+def _lead_view(ctx):
+    """True for the 3D view a value track turns to face: with several views open (a camera view
+    beside the working one), only one of them - not a camera view, the biggest - or the track
+    would be rebuilt for each view in turn, and clicks in one would miss what the other placed."""
+    area = ctx.area
+    screen = getattr(ctx, "screen", None)
+    sd = getattr(ctx, "space_data", None)
+    if sd is not None and getattr(sd, "region_quadviews", None) and ctx.region_data != sd.region_3d:
+        return False        # (Quad View: the free view leads, not the three locked ones)
+    if area is None or screen is None:
+        return True
+    views = [a for a in screen.areas if a.type == 'VIEW_3D']
+    if len(views) < 2:
+        return True
+
+    def rank(a):
+        r3 = a.spaces.active.region_3d
+        return (r3 is not None and r3.view_perspective != 'CAMERA', a.width * a.height)
+    return max(views, key=rank) == area
+
+
 def _draw_view():
     from . import pick
     ctx = bpy.context
@@ -804,9 +819,10 @@ def _draw_view():
 
     up = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
     look = rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))
+    lead = _lead_view(ctx)
     for cache in caches:
         if cache.ptype == core.VALUE and cache.circle is None and cache.track_mode != 'PATH' and \
-                not state.modal_running and \
+                not state.modal_running and lead and \
                 (cache.vdir.angle(up, 0.0) > 0.01 or cache.vview.angle(look, 0.0) > 0.01):
             # the value track is placed relative to the screen; it turns with the view as it
             # turns (not while editing). The circle layout stays put.
@@ -886,17 +902,12 @@ def _draw_view():
 # ----------------------------------------------------------------------------
 
 def draw_pixel():
-    global _error_reported
     new_pass()
     state.draw_pass = _pass[0]
     try:
         _draw_pixel()
     except Exception as ex:
-        if not _error_reported:
-            _error_reported = True
-            import traceback
-            traceback.print_exc()
-            print("Editable Motion Paths: overlay drawing failed:", ex)
+        _part_failed("The keys and charts", ex)
     finally:
         state.draw_pass = None
 

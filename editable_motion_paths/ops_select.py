@@ -46,13 +46,13 @@ class EMP_OT_click(bpy.types.Operator):
                 else:
                     props.update(frame=val)
                 bpy.ops.emp.speed_drag('INVOKE_DEFAULT', **props)
-                return {'FINISHED'}
+                return {'CANCELLED'}    # (the drag is the undo step; this click changed nothing)
         tick = _chart_tick(context, mx, my)
         if tick is not None:
             cache, frame = tick
             bpy.ops.emp.drag_frame('INVOKE_DEFAULT', frame=frame, obj_name=cache.obj_name,
                                    bone_name=cache.bone_name, chart=True)
-            return {'FINISHED'}
+            return {'CANCELLED'}        # (the drag is the undo step; this click changed nothing)
         hit = pick.hit_test(context, mx, my)
         if (hit is None or not (hit.part[:1] == 'W' and len(hit.part) == 3)) and state.whisker_sel(context.scene):
             state.set_whisker_sel(set(), context.scene)     # any other click drops the picked scale handles
@@ -99,7 +99,7 @@ class EMP_OT_click(bpy.types.Operator):
             return {'FINISHED'}
         if hit.part == 'KEY' and not event.shift and not event.ctrl and self._is_double(context, event, hit):
             context.scene.frame_set(int(round(hit.t)))
-            return {'FINISHED'}
+            return {'CANCELLED'}        # (going to a frame isn't an undo step, like the timeline)
         if not cache.owner_selected():
             if not pick.select_owner(context, cache, event.shift):
                 return {'PASS_THROUGH'}
@@ -240,13 +240,13 @@ class EMP_OT_click(bpy.types.Operator):
                 if (m - self.press).length >= max(self.threshold, 3):
                     bpy.ops.emp.drag_frame('INVOKE_DEFAULT', frame=frame, obj_name=cache.obj_name,
                                            bone_name=cache.bone_name)
-                    return {'FINISHED'}
+                    return {'CANCELLED'}    # (the drag is the undo step; the dot press changed nothing)
                 return {'RUNNING_MODAL'}
             if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
                 context.scene.frame_set(int(frame))
-                return {'FINISHED'}
+                return {'CANCELLED'}    # (going to a frame isn't an undo step, like the timeline)
             if event.type in {'ESC', 'RIGHTMOUSE'}:
-                return {'FINISHED'}
+                return {'CANCELLED'}
             return {'RUNNING_MODAL'}
         if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             m = Vector((event.mouse_region_x, event.mouse_region_y))

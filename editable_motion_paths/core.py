@@ -347,25 +347,42 @@ def _fmod_signature(m):
     return tuple(out)
 
 
+def fc_shape(fc):
+    """Everything about the keys that shapes the curve, as bytes: where the keys and handles
+    are, the interpolation and easing (Constant / Back / Elastic... with their settings), and the
+    extrapolation. (A change of interpolation alone moves no key or handle.)"""
+    kps = fc.keyframe_points
+    n = len(kps)
+    out = []
+    for name in ("co", "handle_left", "handle_right"):
+        a = array('f', bytes(8 * n))
+        kps.foreach_get(name, a)
+        out.append(a.tobytes())
+    for name in ("interpolation", "easing"):
+        a = array('i', bytes(4 * n))
+        kps.foreach_get(name, a)
+        out.append(a.tobytes())
+    for name in ("back", "amplitude", "period"):
+        a = array('f', bytes(4 * n))
+        kps.foreach_get(name, a)
+        out.append(a.tobytes())
+    out.append(fc.extrapolation.encode())
+    return b"|".join(out)
+
+
 def _fc_signature(fc):
     if fc is None:
         return None
     kps = fc.keyframe_points
     n = len(kps)
-    co = array('f', bytes(8 * n))
-    hl = array('f', bytes(8 * n))
-    hr = array('f', bytes(8 * n))
-    kps.foreach_get("co", co)
-    kps.foreach_get("handle_left", hl)
-    kps.foreach_get("handle_right", hr)
     s0 = [False] * n
     s1 = [False] * n
     s2 = [False] * n
     kps.foreach_get("select_control_point", s0)
     kps.foreach_get("select_left_handle", s1)
     kps.foreach_get("select_right_handle", s2)
-    return (fc.mute, n, tuple(_fmod_signature(m) for m in fc.modifiers), co.tobytes(), hl.tobytes(),
-            hr.tobytes(), tuple(s0), tuple(s1), tuple(s2))
+    return (fc.mute, n, tuple(_fmod_signature(m) for m in fc.modifiers), fc_shape(fc),
+            tuple(s0), tuple(s1), tuple(s2))
 
 
 # ----------------------------------------------------------------------------
@@ -752,15 +769,17 @@ class PathCache:
         if self.ptype in (SCALE, ROTATION):
             # scale ribbons / rotation ribbon: the target's own axes at every sample
             self.sample_axes = [self.axes(tg, t) for t in self.times]
-            if self.ptype == VALUE:
-                # speed colors show how fast the value changes
-                vs = [v[0] for v in self.sample_vals]
-                self.speeds = [abs(b - a) * self.vgain / (tb - ta) if tb - ta > EPS else 0.0
-                               for a, b, ta, tb in zip(vs, vs[1:], self.times, self.times[1:])]
-        self.speeds = []
-        for i in range(len(self.points) - 1):
-            dt = self.times[i + 1] - self.times[i]
-            self.speeds.append((self.points[i + 1] - self.points[i]).length / dt if dt > EPS else 0.0)
+        if self.ptype == VALUE:
+            # speed colors show how fast the value changes (not how fast its drawing moves: the
+            # track also travels along the location path)
+            vs = [v[0] for v in self.sample_vals]
+            self.speeds = [abs(b - a) * self.vgain / (tb - ta) if tb - ta > EPS else 0.0
+                           for a, b, ta, tb in zip(vs, vs[1:], self.times, self.times[1:])]
+        else:
+            self.speeds = []
+            for i in range(len(self.points) - 1):
+                dt = self.times[i + 1] - self.times[i]
+                self.speeds.append((self.points[i + 1] - self.points[i]).length / dt if dt > EPS else 0.0)
         self.keys = [k for k in keys if fs - EPS <= k.t <= fe + EPS]
         for i, k in enumerate(self.keys):
             self._fill_key(tg, ch, k, i)
@@ -1007,6 +1026,20 @@ def raw_values(ch, ts):
             m.mute = False
 
 
+def raw_curve_values(fc, ts):
+    """One curve's values at the times ts without its adding F-modifiers (see raw_values)."""
+    mods = [m for m in fc.modifiers if not m.mute and m.type != 'CYCLES']
+    if not mods:
+        return [fc.evaluate(t) for t in ts]
+    try:
+        for m in mods:
+            m.mute = True
+        return [fc.evaluate(t) for t in ts]
+    finally:
+        for m in mods:
+            m.mute = False
+
+
 def write_key(ch, k, vals, move_handles=True, touched=None):
     for c, fc in enumerate(ch.fcurves):
         idx = k.idx[c] if c < len(k.idx) else -1
@@ -1158,8 +1191,10 @@ def ensure_keys(tg, ptype, frames, created=None, pin=False):
                     if (prev is None or b > prev + 1e-3) and (nxt is None or b < nxt - 1e-3):
                         want[round(b, FRAME_ROUND)] = b
         added = False
-        for t in sorted(want.values()):
-            _insert(fc, t, fc.evaluate(t), sel)
+        # (the keys' own values: a Noise... modifier adds on top of them, it isn't baked in)
+        vals = raw_curve_values(fc, sorted(want.values()))
+        for t, v in zip(sorted(want.values()), vals):
+            _insert(fc, t, v, sel)
             added = True
         if added:
             fc.update()
@@ -1184,7 +1219,7 @@ class FCurveSnapshot:
             data = [(tuple(kp.co), tuple(kp.handle_left), tuple(kp.handle_right),
                      kp.handle_left_type, kp.handle_right_type, kp.interpolation,
                      kp.select_control_point, kp.select_left_handle, kp.select_right_handle,
-                     kp.type, kp.easing)
+                     kp.type, kp.easing, kp.back, kp.amplitude, kp.period)
                     for kp in kps]
             self.items.append((path, c, data))
 
@@ -1219,6 +1254,7 @@ class FCurveSnapshot:
                 kp.select_right_handle = d[8]
                 kp.type = d[9]
                 kp.easing = d[10]
+                kp.back, kp.amplitude, kp.period = d[11], d[12], d[13]
             fc.update()
 
 
@@ -1227,7 +1263,12 @@ class FCurveSnapshot:
 # ----------------------------------------------------------------------------
 
 def _pose_state(objs):
+    """What stepping through frames would overwrite with the animation: the transforms of these
+    objects and their bones, and every other animated value they have (custom properties such as
+    an IK / FK switch, constraint influences, the shape key sliders of their meshes...), as they
+    are now - changes not keyed yet included."""
     saved = []
+    values = []
     for obj in objs:
         tf = (tuple(obj.location), tuple(obj.rotation_quaternion), tuple(obj.rotation_euler),
               tuple(obj.rotation_axis_angle), tuple(obj.scale))
@@ -1237,13 +1278,81 @@ def _pose_state(objs):
                       tuple(pb.rotation_euler), tuple(pb.rotation_axis_angle), tuple(pb.scale))
                      for pb in obj.pose.bones]
         saved.append((obj.name, tf, bones))
+        data = getattr(obj, "data", None)
+        for idb in (obj, data, getattr(data, "shape_keys", None)):
+            values += _animated_values(idb)
+    saved.append(("#values", values, None))
     return saved
 
 
+def _animated_values(idb):
+    """[(ID, data path, index, value)] of the animated values of idb that aren't transforms (those
+    are kept on their own) and aren't driven (a driver sets them, not the curve)."""
+    coll = compat.get_fcurves(idb) if idb is not None else None
+    if coll is None:
+        return []
+    ad = idb.animation_data
+    driven = {(d.data_path, d.array_index) for d in ad.drivers}
+    out = []
+    for fc in coll:
+        dp = fc.data_path
+        if dp.rsplit(".", 1)[-1] in _TRANSFORM_NAMES or (dp, fc.array_index) in driven:
+            continue
+        try:
+            v = idb.path_resolve(dp)
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if hasattr(v, "__len__") and not isinstance(v, str):
+            if fc.array_index >= len(v):
+                continue
+            v = v[fc.array_index]
+        if isinstance(v, (int, float, bool)):
+            out.append((idb, dp, fc.array_index, v))
+    return out
+
+
+_TRANSFORM_NAMES = {"location", "rotation_quaternion", "rotation_euler", "rotation_axis_angle", "scale"}
+
+
+def _set_value(idb, dp, index, v):
+    """Set an animated value by its data path (a property or a custom property, an array item)."""
+    if dp.endswith('"]'):
+        cut = dp.rfind('["')
+        owner = idb.path_resolve(dp[:cut]) if cut > 0 else idb
+        key = dp[cut + 2:-2].replace('\\"', '"')
+        cur = owner[key]
+        if hasattr(cur, "__len__"):
+            if cur[index] != v:
+                cur[index] = v
+                return True
+        elif cur != v:
+            owner[key] = v
+            return True
+        return False
+    owner_path, _dot, attr = dp.rpartition(".")
+    owner = idb.path_resolve(owner_path) if owner_path else idb
+    cur = getattr(owner, attr)
+    if hasattr(cur, "__len__") and not isinstance(cur, str):
+        if cur[index] != v:
+            cur[index] = v
+            return True
+    elif cur != v:
+        setattr(owner, attr, v)
+        return True
+    return False
+
+
 def _restore_pose_state(saved):
-    """Put the saved transforms back; True if any had changed."""
+    """Put the saved transforms and values back; True if any had changed."""
     changed = False
     for name, tf, bones in saved:
+        if name == "#values":
+            for idb, dp, index, v in tf:
+                try:
+                    changed |= _set_value(idb, dp, index, v)
+                except (ReferenceError, ValueError, TypeError, AttributeError, KeyError, IndexError):
+                    pass
+            continue
         obj = bpy.data.objects.get(name)
         if obj is None:
             continue
@@ -1370,6 +1479,10 @@ def _meshes_not_needed(scene, objs):
             and any(m.type == 'ARMATURE' and m.show_viewport for m in o.modifiers)]
 
 
+def scene_by_name(name):
+    return bpy.data.scenes.get(name)
+
+
 class BakeJob:
     """The bake (parent spaces of the caches, frame by frame) done in steps, so a heavy scene
     can be baked in the background without freezing Blender: each step steps through as many
@@ -1377,7 +1490,8 @@ class BakeJob:
     drawn until finish() puts the new ones in."""
 
     def __init__(self, scene, caches):
-        self.scene = scene
+        # (by name: undo frees the scene, a job outlives it)
+        self.scene_name = scene.name
         self.ok_start = False
         settings = state.settings(scene)
         if not caches or settings is None:
@@ -1406,7 +1520,10 @@ class BakeJob:
         """Bake frames for up to `budget` seconds (None: all of them). Returns True when done."""
         if self.done:
             return True
-        scene = self.scene
+        scene = scene_by_name(self.scene_name)
+        if scene is None:
+            return self._abort()
+        state.flush_changes()       # (what changed a moment ago is seen as a change, not baked in quietly)
         live = []
         objs = {}
         for item in self.items:
@@ -1425,7 +1542,7 @@ class BakeJob:
             frames = max(1, min(self.fe - self.f + 1, int(budget / max(getattr(self, "pace", 0.01), 1e-4))))
         hide = [o for o in _meshes_not_needed(scene, objs) if state.can_hide(o, frames, budget is not None)]
         for o in scene.objects:
-            if o.animation_data is not None:
+            if state.is_animated(o):
                 objs.setdefault(o.name, o)      # (their unkeyed changes stay too)
         saved = _pose_state(objs.values())
         cur = scene.frame_current

@@ -254,7 +254,7 @@ def _insert_plain(cache, tg, frames):
             continue
         for t in frames:
             if not any(abs(kp.co[0] - t) < 1e-4 for kp in fc.keyframe_points):
-                fc.keyframe_points.insert(t, fc.evaluate(t), options={'FAST'})
+                fc.keyframe_points.insert(t, core.raw_curve_values(fc, [t])[0], options={'FAST'})
         fc.update()
     core.ensure_keys(tg, cache.ptype, frames)
 

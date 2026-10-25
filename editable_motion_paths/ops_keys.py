@@ -1195,7 +1195,7 @@ class EMP_OT_extrude(bpy.types.Operator):
             dt = t_new - src.t
             for fc in ch.fcurves:
                 if fc is not None and len(fc.keyframe_points):
-                    kp = fc.keyframe_points.insert(t_new, fc.evaluate(t_new), options={'FAST'})
+                    kp = fc.keyframe_points.insert(t_new, core.raw_curve_values(fc, [t_new])[0], options={'FAST'})
                     kp.interpolation = src.interp
                     fc.update()
             core.ensure_keys(tg, c.ptype, [t_new])

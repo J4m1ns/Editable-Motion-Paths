@@ -622,6 +622,23 @@ def clear_all():
     _proxies.clear()
 
 
+def meshes_changed(mesh_names):
+    """These meshes were edited (their shape, weights, normals...): their proxies are made again
+    (the vertex count alone doesn't tell)."""
+    gone = []
+    for name in list(_proxies):
+        o = bpy.data.objects.get(name)
+        if o is not None and getattr(o.data, "name", None) in mesh_names:
+            gone.append(name)
+            del _proxies[name]
+    if gone:
+        clear()
+        _schedule(0.05)
+        from . import com
+        com.meshes_changed()
+    return gone
+
+
 def changed():
     """The animation changed: the ghosts are captured again right away, the nearest first,
     also while a tool drags (the old ones stay drawn until each is renewed)."""
@@ -813,16 +830,16 @@ def _pending_keys(scene):
     return out
 
 
-def _put_keys(pending, f):
+def _put_keys(pending, f, undo):
     """The pending keys put on the curves for a moment (to capture what the neighbors will look
     like) - on a COPY of each action, assigned for the capture: the real curves are never touched,
     so a transform running elsewhere (keys dragged in the Graph Editor holds pointers into them)
-    is safe. Returns how to put the real actions back."""
+    is safe. How to put the real actions back goes into `undo` as soon as a copy is made (also if
+    something fails half way: the caller takes them all off again)."""
     from . import compat
     by_ob = {}
     for ob, fc, v in pending:
         by_ob.setdefault(ob.name, (ob, []))[1].append((fc.data_path, fc.array_index, v))
-    undo = []
     for ob, items in by_ob.values():
         ad = ob.animation_data
         orig = ad.action if ad is not None else None
@@ -851,20 +868,26 @@ def _put_keys(pending, f):
                 kp.handle_left[1] += dv
                 kp.handle_right[1] += dv
             fc.update()
-    return undo
 
 
 def _take_keys_off(undo, f):
-    """The real actions back; the copies go."""
+    """The real actions back; the copies go (each one on its own: one failing never leaves
+    another object on its copy)."""
     for ad, orig, slot_id, tmp in reversed(undo):
         try:
-            ad.action = orig
+            if ad.action != orig:
+                ad.action = orig
             if slot_id is not None and hasattr(orig, "slots"):
                 s = orig.slots.get(slot_id)
                 if s is not None and ad.action_slot != s:
                     ad.action_slot = s
-        finally:
+        except Exception as ex:
+            print("Editable Motion Paths: couldn't put the action back:", ex)
+        try:
             bpy.data.actions.remove(tmp)
+        except Exception:
+            pass
+    undo.clear()
 
 
 _shown_again = []      # the meshes the last capture hid and showed again
@@ -881,6 +904,7 @@ def _tick():
     """Build missing proxies (one object per tick, with a note), then capture missing or
     changed ghost frames, the nearest first, about 40 ms per tick."""
     global _timer_on, _busy, _sig, _cost, status
+    batch = []
     try:
         scene = bpy.context.scene
         st = state.settings(scene)
@@ -902,6 +926,9 @@ def _tick():
             return 0.1
         if (state.modal_running or editing) and _cost > 0.03 and time.time() - _changed_at < 0.15:
             return 0.05
+        # a change made a moment ago that Blender hasn't worked in yet would be worked in by the
+        # frame stepping below - where it counts as ours: work it in now, so it is seen as a change
+        state.flush_changes()
         sig = _signature(scene, st)
         if sig != _sig:
             clear()
@@ -942,9 +969,8 @@ def _tick():
         undo = []
         try:
             if preview:
-                undo = _put_keys(_pending_keys(scene), cur)
+                _put_keys(_pending_keys(scene), cur, undo)
             done = []
-            batch = []
             for f in want:
                 batch.append(f)
                 if len(batch) >= 4:
@@ -980,13 +1006,23 @@ def _tick():
         _timer_on = False
         return None
     except Exception as ex:   # never let the timer die with a traceback storm
-        import traceback
-        traceback.print_exc()
-        print("Editable Motion Paths: onion skin failed:", ex)
         _busy = False
-        _timer_on = False
         status = ""
-        return None
+        # the frames of this step weren't captured: they stay to do (else they'd stay drawn as
+        # they were, marked ready); tried again a bit later
+        _stale.update(f for f in batch if f in _frames)
+        key = (type(ex).__name__, str(ex)[:80])
+        if key not in _errors:
+            _errors.add(key)
+            import traceback
+            traceback.print_exc()
+            print("Editable Motion Paths: onion skin failed:", ex)
+            state.flash_message("Onion skin: a ghost couldn't be captured (%s) - see the console" %
+                                type(ex).__name__, 5.0)
+        return 1.0
+
+
+_errors = set()     # (kind, text) of the capture errors reported (each once)
 
 
 def ghost(f, kind):
@@ -1123,7 +1159,7 @@ def draw(scene, st, us):
         _previewed.clear()
         _schedule()
     shows = frames_to_show(scene, st)
-    if any(f not in _frames for f, _i in shows) or status:
+    if any(f not in _frames or f in _stale for f, _i in shows) or status:
         _schedule()
     mode = mode_used(scene, st)
     kind = {'SILHOUETTE': "tris", 'WIRE': "edges", 'POINTS': "points", 'BONES': "bones"}[mode]

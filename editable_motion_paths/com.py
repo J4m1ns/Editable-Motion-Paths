@@ -42,6 +42,13 @@ def clear():
     _now.clear()
 
 
+def meshes_changed():
+    """The character's meshes were edited: the masses (from their proxies) are worked out again."""
+    if _mass:
+        clear()
+        _schedule(0.05)
+
+
 def changed():
     """The animation changed: the track is worked out again (the point itself is live; the
     old track stays until each frame is renewed, so nothing blinks)."""
@@ -339,6 +346,7 @@ def _tick():
         if (screen is not None and screen.is_animation_playing) or state.modal_running or onion.busy() or \
                 state.blender_edit_running() or state.render_running():
             return 0.2
+        state.flush_changes()       # (see there: what changed a moment ago counts as a change)
         arms = armatures(scene)
         for arm in arms:
             _busy = True
@@ -369,8 +377,11 @@ def _tick():
             held = state.keep_scene_pose(scene, [arm])
             try:
                 for o in meshes:
-                    if not o.hide_viewport and state.can_hide(o, len(want)):
-                        o.hide_viewport = True      # only the bones are evaluated
+                    # only the bones are evaluated; a tick does ~40 ms of frames (not all of them),
+                    # so a mesh is left out only if showing it again costs about a frame or less
+                    # (seen the first time it is hidden)
+                    if not o.hide_viewport and state.can_hide(o, 5):
+                        o.hide_viewport = True
                         hidden.append(o)
                 for f in want:
                     scene.frame_set(f)

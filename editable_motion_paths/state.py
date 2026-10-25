@@ -2,7 +2,6 @@
 
 import re
 import time
-from array import array
 
 import bpy
 from bpy.app.handlers import persistent
@@ -251,32 +250,126 @@ def bake_all(scene=None, only=None):
 # Auto update: re-bake when animation other than a path's own channels changed
 # ----------------------------------------------------------------------------
 
-def _fcurve_hashes(obj):
-    coll = compat.get_fcurves(obj)
+def _fcurve_hashes(obj, curves=True):
+    """{(data path, index): hash} of what moves obj on the frames: its F-Curves (curves=False:
+    left out, they are what costs), and under special keys ('#...') its NLA, drivers (with the
+    values they read now) and constraints."""
     out = {}
-    if coll is None:
-        return out
-    for fc in coll:
-        kps = fc.keyframe_points
-        n = len(kps)
-        co = array('f', bytes(8 * n))
-        kps.foreach_get("co", co)
-        hl = array('f', bytes(8 * n))
-        hr = array('f', bytes(8 * n))
-        kps.foreach_get("handle_left", hl)
-        kps.foreach_get("handle_right", hr)
-        out[(fc.data_path, fc.array_index)] = hash((co.tobytes(), hl.tobytes(), hr.tobytes(),
-                                                    fc.mute, len(fc.modifiers)))
+    coll = compat.get_fcurves(obj) if curves else None
+    from .core import _fmod_signature, fc_shape
+    for fc in coll if coll is not None else ():
+        # (the interpolation and the modifiers' settings too: they change the curve as much)
+        out[(fc.data_path, fc.array_index)] = hash((fc_shape(fc), fc.mute,
+                                                    tuple(_fmod_signature(m) for m in fc.modifiers)))
+    ad = obj.animation_data
+    if ad is not None:
+        out[("#nla", 0)] = hash((ad.action_blend_type, round(ad.action_influence, 6), ad.action_extrapolation,
+                                 ad.use_nla, tuple((t.mute, t.is_solo, tuple(_strip_sig(s) for s in t.strips))
+                                                   for t in ad.nla_tracks)))
+    drv = []
+    for idb in (obj, getattr(obj, "data", None)):
+        dad = getattr(idb, "animation_data", None)
+        for d in dad.drivers if dad is not None else ():
+            drv.append((d.data_path, d.array_index, d.mute, d.driver.type, d.driver.expression, fc_shape(d),
+                        tuple(_fmod_signature(m) for m in d.modifiers),
+                        tuple((v.type, tuple((t.id.name if t.id else None, t.data_path, t.bone_target,
+                                              t.transform_type, t.transform_space, _target_value(t))
+                                             for t in v.targets)) for v in d.driver.variables)))
+    if drv:
+        out[("#drivers", 0)] = hash(tuple(drv))
+    owners = [obj] + (list(obj.pose.bones) if obj.type == 'ARMATURE' and obj.pose is not None else [])
+    cons = tuple((ow.name, tuple(_constraint_sig(c) for c in ow.constraints)) for ow in owners if len(ow.constraints))
+    if cons:
+        out[("#constraints", 0)] = hash(cons)
+    return out
+
+
+def _strip_sig(s):
+    return (s.action.name if s.action else None, s.frame_start, s.frame_end, s.action_frame_start,
+            s.action_frame_end, s.scale, s.repeat, s.mute, s.influence, s.blend_type, s.extrapolation,
+            s.use_reverse, s.blend_in, s.blend_out)
+
+
+def _target_value(t):
+    """What a driver's single-property variable reads now (an unkeyed slider moves the rig)."""
+    if t.id is None or not t.data_path:
+        return None
+    try:
+        v = t.id.path_resolve(t.data_path)
+    except (ValueError, TypeError, AttributeError):
+        return None
+    try:
+        return tuple(round(float(x), 6) for x in v)
+    except TypeError:
+        try:
+            return round(float(v), 6)
+        except (TypeError, ValueError):
+            return str(v)
+
+
+def _constraint_sig(con):
+    """A constraint's settings (its limits, targets, influence...)."""
+    out = [con.type]
+    for p in con.bl_rna.properties:
+        if p.identifier in {'rna_type', 'show_expanded', 'active', 'error_location', 'error_rotation'}:
+            continue
+        try:
+            v = getattr(con, p.identifier)
+        except AttributeError:
+            continue
+        if p.type == 'POINTER':
+            out.append(getattr(v, "name", None))
+        elif p.type in {'BOOLEAN', 'INT', 'FLOAT', 'ENUM', 'STRING'}:
+            if isinstance(v, set):
+                out.append(tuple(sorted(v)))
+            elif getattr(p, "is_array", False):
+                flat = []
+                for x in v:
+                    if hasattr(x, "__len__"):
+                        flat += [round(float(y), 6) for y in x]
+                    else:
+                        flat.append(round(float(x), 6))
+                out.append(tuple(flat))
+            elif p.type == 'FLOAT':
+                out.append(round(v, 6))
+            else:
+                out.append(v)
+    return tuple(out)
+
+
+def _depends_on(obj):
+    """The objects whose animation can move obj: obj itself, its parents, its (and its bones')
+    constraints' targets, its drivers' targets - and theirs, all the way up."""
+    out = {}
+    todo = [obj]
+    while todo:
+        o = todo.pop()
+        if o is None or o.name in out:
+            continue
+        out[o.name] = o
+        refs = [o.parent]
+        owners = [o] + (list(o.pose.bones) if o.type == 'ARMATURE' and o.pose is not None else [])
+        for ow in owners:
+            for con in ow.constraints:
+                refs.append(getattr(con, "target", None))
+                refs.append(getattr(con, "pole_target", None))
+                for t in getattr(con, "targets", ()):
+                    refs.append(getattr(t, "target", None))
+        for idb in (o, getattr(o, "data", None)):
+            ad = getattr(idb, "animation_data", None)
+            for d in ad.drivers if ad is not None else ():
+                for v in d.driver.variables:
+                    refs += [t.id for t in v.targets]
+        todo += [r for r in refs if isinstance(r, bpy.types.Object)]
     return out
 
 
 def _tracked_objects():
     objs = {}
-    for c in caches.values():
-        obj = bpy.data.objects.get(c.obj_name)
-        while obj is not None:
-            objs[obj.name] = obj
-            obj = obj.parent
+    for name in {c.obj_name for c in caches.values()}:
+        obj = bpy.data.objects.get(name)
+        if obj is not None:
+            objs.update(_depends_on(obj))
     return objs
 
 
@@ -288,18 +381,31 @@ def remember_action_hashes():
 
 _TRANSFORM_PROPS = {"location", "rotation_quaternion", "rotation_euler", "rotation_axis_angle", "scale"}
 _BONE_PATH = re.compile(r'^pose\.bones\["(.*)"\]\.(\w+)$')
+_LINEAR_CONSTRAINTS = {'CHILD_OF', 'ARMATURE'}   # (they only put a parent space in front)
+
+
+def _constrained(owner):
+    """The bone / object has a constraint that works on its own transform (Limit Rotation, Copy
+    Location...): its parent space as baked depends on its own channels."""
+    return any(c.type not in _LINEAR_CONSTRAINTS and not c.mute and getattr(c, "enabled", True) and
+               c.influence > 0.0 for c in owner.constraints)
 
 
 def _harmless(obj, data_path):
     """True if changing this channel can't move any path's parent space.
 
-    That is the case for transform channels of a path target that has no other
-    path target below it in the hierarchy.
+    That is the case for transform channels of a path target that moves no other path target
+    (by the hierarchy or by a constraint) and has no constraint working on its own transform.
     """
     targets = [c for c in caches.values() if c.obj_name == obj.name]
     if data_path.endswith('"]') and any(c.value_ref and c.value_ref[0] == data_path for c in targets) \
             and not _driven_by(obj, data_path):
         return True     # a custom property shown on a value track that moves nothing else
+    # paths of other objects that hang on this one (a parent, Child Of on a bone, a driver...)
+    for c in caches.values():
+        other = bpy.data.objects.get(c.obj_name) if c.obj_name != obj.name else None
+        if other is not None and obj.name in _depends_on(other):
+            return False
     if obj.type == 'ARMATURE' and obj.pose is not None:
         m = _BONE_PATH.match(data_path)
         if not m or m.group(2) not in _TRANSFORM_PROPS:
@@ -307,14 +413,15 @@ def _harmless(obj, data_path):
         bname = m.group(1).replace('\\"', '"').replace('\\\\', '\\')
         if not any(c.bone_name == bname for c in targets):
             return False
-        for c in targets:
-            pb = obj.pose.bones.get(c.bone_name) if c.bone_name else None
-            if pb is not None and pb.name != bname and any(p.name == bname for p in pb.parent_recursive):
-                return False
-        return True
+        pb = obj.pose.bones.get(bname)
+        if pb is None or _constrained(pb):
+            return False
+        from .onion import affected_bones
+        moved = affected_bones(obj, {bname})
+        return not any(c.bone_name and c.bone_name != bname and c.bone_name in moved for c in targets)
     if data_path not in _TRANSFORM_PROPS or not any(not c.bone_name for c in targets):
         return False
-    return not any(c.obj_name != obj.name and _is_child(c.obj_name, obj) for c in caches.values())
+    return not _constrained(obj)
 
 
 def _driven_by(obj, data_path):
@@ -333,16 +440,6 @@ def _driven_by(obj, data_path):
     return False
 
 
-def _is_child(name, parent):
-    o = bpy.data.objects.get(name)
-    o = o.parent if o else None
-    while o is not None:
-        if o == parent:
-            return True
-        o = o.parent
-    return False
-
-
 def _range_changed():
     """True if the frame range to calculate changed (e.g. a key was slid past the end)."""
     from . import core
@@ -354,24 +451,34 @@ def _range_changed():
     return any(c.fs != fs or c.fe != fe for c in cs)
 
 
-def _needs_rebake():
-    """True if some F-Curve that is not a path's own channel changed since the bake."""
+def _needs_rebake(curves=True):
+    """True if something that moves a path's parent space changed since the bake: an F-Curve
+    that is not a path's own channel, an NLA strip, a driver (or what it reads), a constraint.
+    curves=False: only the latter (no curve changed, an object did)."""
     for name, obj in _tracked_objects().items():
-        new = _fcurve_hashes(obj)
+        new = _fcurve_hashes(obj, curves)
         old = _action_hashes.get(name)
         if old is None:
             return True
-        for k in set(new) | set(old):
+        keys = set(new) | set(old) if curves else {k for k in set(new) | set(old) if k[0].startswith("#")}
+        for k in keys:
             if new.get(k) != old.get(k) and not _harmless(obj, k[0]):
                 return True
         # only own channels changed: keep hashes current so later comparisons stay precise
-        _action_hashes[name] = new
+        if curves:
+            _action_hashes[name] = new
+        else:
+            old.update(new)
     return False
 
 
-def schedule_rebake(delay=0.35, force=False):
-    global _bake_due, _bake_timer_on, _force_bake
+_check_curves = True     # the next check compares the curves too (an action changed)
+
+
+def schedule_rebake(delay=0.35, force=False, curves=True):
+    global _bake_due, _bake_timer_on, _force_bake, _check_curves
     _force_bake = _force_bake or force
+    _check_curves = _check_curves or curves
     _bake_due = time.time() + delay
     if not _bake_timer_on:
         _bake_timer_on = True
@@ -458,8 +565,25 @@ def keep_pose(objs):
 def keep_scene_pose(scene, objs=()):
     """keep_pose for everything stepping through frames can change: every animated object of
     the scene (its unkeyed changes - a prop moved by hand - would be lost otherwise) and `objs`."""
-    animated = [o for o in scene.objects if o.animation_data is not None]
+    animated = [o for o in scene.objects if is_animated(o)]
     return keep_pose(animated + [o for o in objs if o is not None])
+
+
+def is_animated(o):
+    """The object, its data or its shape keys have animation (a frame change sets their values)."""
+    data = getattr(o, "data", None)
+    return any(getattr(idb, "animation_data", None) is not None
+               for idb in (o, data, getattr(data, "shape_keys", None)))
+
+
+def flush_changes():
+    """Work in the changes Blender hasn't evaluated yet (a value typed a moment ago...) before our
+    timers step through frames: evaluated in there, they'd count as ours and be missed (the ghosts
+    / the center of mass wouldn't follow them)."""
+    try:
+        bpy.context.view_layer.update()
+    except Exception:
+        pass
 
 
 def put_pose_back(saved):
@@ -483,14 +607,15 @@ def _bake_timer():
     """The automatic re-bake: when something else than a path's own channels changed, the paths
     are baked again - in steps of ~40 ms (a heavy scene doesn't freeze Blender meanwhile; the old
     paths stay drawn until the new ones are ready)."""
-    global _bake_timer_on, _force_bake, _job
+    global _bake_timer_on, _force_bake, _job, _check_curves
     remaining = _bake_due - time.time()
     if remaining > 0.01 and _job is None:
         return remaining
     reconcile_modal()
     ctx = bpy.context
     screen = getattr(ctx, "screen", None)
-    if modal_running or baking or (screen is not None and screen.is_animation_playing) or _any_modal() or             render_running():
+    if modal_running or baking or (screen is not None and screen.is_animation_playing) or _any_modal() or \
+            render_running():
         return 0.3
     from . import core
     try:
@@ -504,9 +629,12 @@ def _bake_timer():
             # (what changed meanwhile is seen right away below: the job kept the hashes of its start)
         force = _force_bake
         _force_bake = False
+        curves = _check_curves
+        _check_curves = False
         st = settings()
         if st is not None and st.paths:
-            if force or any(not c.B for c in caches.values()) or sync_caches() or _range_changed()                     or _needs_rebake():
+            if force or any(not c.B for c in caches.values()) or sync_caches() or _range_changed() \
+                    or _needs_rebake(curves):
                 sync_caches()
                 _job = core.BakeJob(bpy.context.scene, list(caches.values()))
                 # quick scenes at once (as before); heavy ones in steps, without a freeze
@@ -523,6 +651,7 @@ def _bake_timer():
 
 
 _dg_frame = None
+_dg_frame_all = None
 
 
 @persistent
@@ -536,6 +665,11 @@ def _on_depsgraph(scene, depsgraph):
         return
     if st.show_onion or st.show_com:
         global _dg_frame
+        # a mesh edited (Edit Mode, weight paint, normals flipped...): its ghost shape is made again
+        edited = {u.id.original.name for u in depsgraph.updates
+                  if isinstance(u.id, bpy.types.Mesh) and u.is_updated_geometry}
+        if edited:
+            onion.meshes_changed(edited)
         f = scene.frame_current
         playing = bpy.context.screen is not None and bpy.context.screen.is_animation_playing
         if not playing and f == _dg_frame and not modal_running:
@@ -545,6 +679,9 @@ def _on_depsgraph(scene, depsgraph):
                 onion.changed()
                 com.changed()
         _dg_frame = f
+    global _dg_frame_all
+    same_frame = scene.frame_current == _dg_frame_all
+    _dg_frame_all = scene.frame_current
     if not caches or not st.auto_update:
         # no path: the ghosts and the center of mass still follow the animation
         if st.show_onion or st.show_com:
@@ -564,16 +701,70 @@ def _on_depsgraph(scene, depsgraph):
             onion.changed()
             com.changed()
             return
+    # no curve changed, but an object did (on the same frame, not while dragging or playing): a
+    # value a driver reads, an NLA strip, a constraint's setting may have changed - checked
+    # without the curves (cheap)
+    if same_frame and not modal_running and not (bpy.context.screen is not None and
+                                                 bpy.context.screen.is_animation_playing) and \
+            any(isinstance(u.id, bpy.types.Object) for u in depsgraph.updates):
+        schedule_rebake(curves=False)
+
+
+# Settings that only say how the paths are shown / edited (like Blender's overlays): Ctrl+Z
+# doesn't change them (the ghosts don't go off, the edit mode doesn't jump back), it goes to the
+# edits. What is data stays with undo: the path list, the selection, the ranges, the masses.
+_UNDONE_SETTINGS = {"rna_type", "name", "paths", "picked_handles", "select_history", "com_limb_share",
+                    "com_limb_mass", "com_body_mass", "range_mode", "frame_start", "frame_end"}
+VIEW_SETTINGS = set()       # filled in register(): every other setting of scene.emp
+_view_before = {}
+
+
+def _view_now(st):
+    out = {}
+    for name in VIEW_SETTINGS:
+        try:
+            v = getattr(st, name)
+        except AttributeError:
+            continue
+        out[name] = tuple(v) if hasattr(v, "__len__") and not isinstance(v, str) else v
+    return out
+
+
+@persistent
+def _before_undo(*_args):
+    st = settings()
+    _view_before.clear()
+    if st is not None:
+        _view_before.update(_view_now(st))
+
+
+def _keep_view():
+    """The view settings back as they were before the undo / redo."""
+    st = settings()
+    if st is None or not _view_before:
+        return
+    now = _view_now(st)
+    for name, v in _view_before.items():
+        if now.get(name) != v:
+            try:
+                setattr(st, name, v)
+            except (AttributeError, TypeError, ValueError):
+                pass
+    _view_before.clear()
 
 
 @persistent
 def _on_undo(*_args):
+    global _job
     from . import com, onion
+    try:
+        _keep_view()
+    except Exception:
+        pass
     onion.changed()
     com.changed()
-    for c in caches.values():
-        c.dirty = True
-    # hidden keys, value channels... come from the scene: take them over right away
+    # (no need to mark the paths dirty: a path rebuilds when its curves differ from what it was
+    # built from; hidden keys and value channels are taken over below)
     try:
         sync_caches()
     except Exception:
@@ -581,7 +772,10 @@ def _on_undo(*_args):
     tag_redraw()
     st = settings()
     if st is not None and st.auto_update and caches:
-        schedule_rebake(0.2)
+        # a re-bake half done was for the animation before the undo: it starts over
+        restart = _job is not None
+        _job = None
+        schedule_rebake(0.2, force=restart)
 
 
 @persistent
@@ -769,7 +963,13 @@ def register():
     onion._timer_on = False
     com._timer_on = False
     com._flash[2] = False
+    from .props import EMP_Settings
+    VIEW_SETTINGS.clear()
+    VIEW_SETTINGS.update(p.identifier for p in EMP_Settings.bl_rna.properties
+                         if p.identifier not in _UNDONE_SETTINGS and not p.is_readonly)
     bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph)
+    bpy.app.handlers.undo_pre.append(_before_undo)
+    bpy.app.handlers.redo_pre.append(_before_undo)
     bpy.app.handlers.undo_post.append(_on_undo)
     bpy.app.handlers.redo_post.append(_on_undo)
     bpy.app.handlers.load_post.append(_on_load)
@@ -780,6 +980,8 @@ def register():
 def unregister():
     for lst, fn in ((bpy.app.handlers.depsgraph_update_post, _on_depsgraph),
                     (bpy.app.handlers.undo_post, _on_undo),
+                    (bpy.app.handlers.undo_pre, _before_undo),
+                    (bpy.app.handlers.redo_pre, _before_undo),
                     (bpy.app.handlers.redo_post, _on_undo),
                     (bpy.app.handlers.load_post, _on_load)):
         if fn in lst:

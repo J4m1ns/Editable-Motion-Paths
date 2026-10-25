@@ -3,7 +3,9 @@
 Model your animation like geometry. Motion paths of bones and objects become editable curves
 in the 3D Viewport, with keys as points, Bezier handles and Blender's own modeling tools and
 hotkeys. Every edit goes straight into the F-Curves, so undo, the Graph Editor and the Dope
-Sheet stay in sync. You shouldn't need the Graph Editor at all.
+Sheet stay in sync. You shouldn't need the Graph Editor at all. Like Blender's overlays, how
+the paths are shown (the edit mode, onion skin, center of mass, display settings) isn't undone:
+Ctrl+Z goes straight to the edits.
 
 Requires Blender 4.4 or newer (tested on 5.2).
 

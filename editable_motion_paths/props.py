@@ -59,8 +59,7 @@ def _com_range(self, context):
 
 
 def _rebake(self, context):
-    for c in state.caches.values():
-        c.B = []
+    # (the old paths stay shown and editable until the new range is baked)
     state.schedule_rebake(0.05, force=True)
 
 

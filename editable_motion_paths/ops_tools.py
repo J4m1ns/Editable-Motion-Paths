@@ -3,7 +3,7 @@
 import math
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, StringProperty
 from mathutils import Quaternion, Vector
 
 from . import compat, core, pick, state
@@ -368,11 +368,33 @@ class EMP_OT_onion_update(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class EMP_OT_set_view(bpy.types.Operator):
+    """Change how the paths are shown / edited (a hotkey like 1-4, Ctrl+H): not an undo step, like
+    Blender's overlays, so Ctrl+Z goes straight to the edits"""
+    bl_idname = "emp.set_view"
+    bl_label = "Path Display"
+    bl_options = {'INTERNAL'}
+
+    name: StringProperty(options={'SKIP_SAVE'})
+    value: StringProperty(options={'SKIP_SAVE'})
+
+    def execute(self, context):
+        st = state.settings(context.scene)
+        if st is None or self.name not in state.VIEW_SETTINGS:
+            return {'CANCELLED'}
+        if self.value:
+            setattr(st, self.name, self.value)
+        else:
+            setattr(st, self.name, not getattr(st, self.name))
+        state.tag_redraw()
+        return {'FINISHED'}
+
+
 class EMP_OT_onion_mode(bpy.types.Operator):
     """How the ghosts are drawn"""
     bl_idname = "emp.onion_mode"
     bl_label = "Onion Mode"
-    bl_options = {'INTERNAL', 'UNDO'}
+    bl_options = {'INTERNAL'}
 
     mode: EnumProperty(items=[('SILHOUETTE', "Silhouette", ""), ('WIRE', "Wire", ""),
                               ('POINTS', "Points", ""), ('BONES', "Bones", "")])
@@ -1821,7 +1843,7 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
 
 classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
            EMP_OT_reset_graph_look, EMP_OT_com_limb_reset, EMP_OT_edit_limb_weight,
-           EMP_OT_smoothing_none, EMP_OT_onion_mode, EMP_OT_onion_update, EMP_OT_path_update,
+           EMP_OT_smoothing_none, EMP_OT_set_view, EMP_OT_onion_mode, EMP_OT_onion_update, EMP_OT_path_update,
            EMP_OT_edit_tool,
            EMP_OT_handle_type, EMP_OT_interpolation,
            EMP_OT_smooth, EMP_OT_exaggerate, EMP_OT_ease, EMP_OT_scale_handles,
