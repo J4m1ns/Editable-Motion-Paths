@@ -650,7 +650,12 @@ class PathCache:
             self.ptype, (tg.loc, tg.rot, tg.scale))
         self.track_mode = settings.value_track if settings else 'UP'
         self.value_side = settings.value_side if settings else 'OUTSIDE'
-        self.local = float(bpy.context.scene.frame_current) if settings and settings.path_space == 'LOCAL' else None
+        self.local = None
+        for e in (settings.paths if settings else ()):
+            if e.object is not None and e.object.name == self.obj_name and e.bone_name == self.bone_name:
+                if e.local:
+                    self.local = float(bpy.context.scene.frame_current)
+                break
         lay = (settings.layout, settings.circle_radius, settings.circle_use_range, settings.circle_start,
                settings.circle_end) if settings and self.ptype in (SCALE, VALUE) else None
         sig = (self.bake_id, self.rot_len, tg.rot_mode, self.track_mode, self.value_side, lay, self.local,

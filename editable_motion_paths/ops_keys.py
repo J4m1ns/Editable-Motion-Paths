@@ -349,6 +349,10 @@ class EMP_OT_knife(bpy.types.Operator):
             data = []
         caches = {c.key: c for c in state.editable_caches(context.scene)}
         n = 0
+        if any(fs for _k, fs in data):
+            # like the knife itself: only the new keys end up selected (the redo starts from
+            # before the knife, with the keys selected then)
+            pick.deselect_all(list(caches.values()))
         for key, fs in data:
             c = caches.get(tuple(key))
             if c is None:

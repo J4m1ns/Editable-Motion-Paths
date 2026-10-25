@@ -809,16 +809,21 @@ class EMP_OT_circle(_LoopTool, bpy.types.Operator):
                 if T.dot(pos[o.t] - pos[k.t]) < 0.0:
                     T = -T
                 hw[(k.t, side)] = pos[k.t] + T * L
-        if abs(self.rotate) > 1e-9:
-            from mathutils import Quaternion
-            q = Quaternion(n, self.rotate)
-            pos = {key: cen + q @ (p - cen) for key, p in pos.items()}
-            hw = {key: cen + q @ (p - cen) for key, p in hw.items()}
         turn = self.angle + (math.pi if self.invert else 0.0)
         if abs(turn) > 1e-9:
+            # Angle / Invert first: the arc, and its circle, turn around the line between its ends
             a, b = pos[ks[0].t].copy(), pos[ks[-1].t].copy()
             pos = _turned(pos, a, b, turn)
             hw = _turned(hw, a, b, turn)
+            cen2 = _turned({0: cen}, a, b, turn)[0]
+            n2 = _turned({0: cen + n}, a, b, turn)[0] - cen2
+            cen, n = cen2, (n2 if n2.dot(n) >= 0.0 else -n2)   # (Rotate keeps its direction)
+        if abs(self.rotate) > 1e-9:
+            # then Rotate: the keys slide along that circle, around its own middle
+            from mathutils import Quaternion
+            q = Quaternion(n.normalized(), self.rotate)
+            pos = {key: cen + q @ (p - cen) for key, p in pos.items()}
+            hw = {key: cen + q @ (p - cen) for key, p in hw.items()}
         self._write(cache, tg, ks, pos, hw)
 
 

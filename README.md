@@ -12,6 +12,10 @@ Requires Blender 4.4 or newer (tested on 5.2).
 Edit > Preferences > Get Extensions > ⌄ (top right) > **Install from Disk…** → choose
 `editable_motion_paths-2.0.0.zip`.
 
+To remove it: Edit > Preferences > **Get Extensions**, find *Editable Motion Paths* among the
+installed ones, and in the ⌄ menu at the right of its row choose **Uninstall** (Blender shows no
+Remove button for extensions in the Add-ons tab).
+
 ## Quick start
 
 1. In Pose Mode, select one or more bones (or objects in Object Mode).
@@ -31,7 +35,7 @@ to Blender's normal bone / object behaviour.
 |---|---|---|
 | **1 Location** | Trajectory of the bone head / object origin | Location keys |
 | **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. A selected key shows the bone's **X, Y and Z rings**, like Blender's rotate gizmo: drag a ring to turn around that axis only (it follows the mouse steadily even when the ring is seen edge-on); the green Y ring around the bone twists it around its own axis (like Ctrl+T). Dragging the key itself turns the tip freely, like a **trackball**. The faint circle shows how far the tip can reach; drag it to turn around the view axis (like R). A purple **ribbon** along the path, turned like the bone's X axis, shows the twist (only shown: the rings edit it; Display: width and side). **Ctrl+T** twists the bone around its own axis |
-| **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale; their color shows the Y scale (blue below 1, red above). A box at the current frame shows the current scale | Scale keys: a selected key shows a **scale gizmo** whose X and Z handles sit on the ribbon edges (drag an edge to make that ribbon wider; Y along the bone; the white one scales all). **Click** a gizmo handle to show that channel's handles as **whiskers** along the ribbon (time along the path, value across it) and pick both of them; drag a whisker to edit it. **V** and **T** (handle type, interpolation) work on the selected keys of that channel only, like on one curve in the Graph Editor. Clicking a whisker picks that handle (Shift: add another; undo brings the picking back). **Alt+S** makes the picked handles longer or shorter, **Alt+Shift+S** moves them up or down (both handles of a smooth key tilt together; one handle: the other one follows in line); with none picked, the channel's handles of the selected keys; I / O / B: before the key, after it, both. So the handles can be shaped from the keyboard alone. **S** scales all axes (X / Y / Z: one) |
+| **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale; their color shows the Y scale (blue below 1, red above) - or, in the preferences (*Scale Y: Ribbon*), a third green ribbon beside them, as wide as the Y scale, with its own gizmo handles on its edges. A box at the current frame shows the current scale | Scale keys: a selected key shows a **scale gizmo** whose X and Z handles sit on the ribbon edges (drag an edge to make that ribbon wider; Y along the bone; the white one scales all). **Click** a gizmo handle to show that channel's handles as **whiskers** along the ribbon (time along the path, value across it) and pick both of them; drag a whisker to edit it. **V** and **T** (handle type, interpolation) work on the selected keys of that channel only, like on one curve in the Graph Editor. Clicking a whisker picks that handle (Shift: add another; undo brings the picking back). **Alt+S** makes the picked handles longer or shorter, **Alt+Shift+S** moves them up or down (both handles of a smooth key tilt together; one handle: the other one follows in line); with none picked, the channel's handles of the selected keys; I / O / B: before the key, after it, both. So the handles can be shaped from the keyboard alone. **S** scales all axes (X / Y / Z: one) |
 | **4 Value** | A **track** for one animated value (IK/FK switch, custom property, constraint influence…), *above the path* or *beside the path* (follows its shape in the plane of the motion, *outside* or *inside* its curves, and stays put when the view turns) | That value: move its keys away from / toward the path. Pick the value in the sidebar or tool header |
 
 Scale and Value paths of something that stays in place are drawn around a **circle** like a
@@ -149,13 +153,15 @@ That is Blender's own behaviour. To keep edits local, turn it off:
 1. For new animation: *Edit > Preferences > Animation > F-Curves > Default Smoothing*: **None**.
 2. For curves that already exist (it is a setting of each curve): the **Smoothing: None**
    button in the sidebar (*Motion Paths > Display*) sets it on every curve of the selected
-   bones / objects. By hand: Graph Editor sidebar > *F-Curve* tab > *Auto Handle Smoothing*,
+   bones / objects; it says how many of them still use Continuous Acceleration (grayed out when
+   none do), and whether new curves will get it. By hand: Graph Editor sidebar > *F-Curve* tab > *Auto Handle Smoothing*,
    one curve at a time.
 
 ## Timing and speed
 
 * **Frame dots** are handles for the spacing: drag one along the path. The **timing chart** in
-  the bottom right corner of the viewport shows where every frame lies between the selected
+  the bottom right corner of the viewport (a dark block like the speed graph's; with both on,
+  one block) shows where every frame lies between the selected
   keys, like an animator's chart; drag its ticks the same way. An optional **speed graph** sits
   right above it, as wide as the chart: for the selected keys, the segments on both sides of a
   single selected key, or the keys around the current frame (*Segment*), a set frame range
@@ -242,9 +248,11 @@ path follows every change of a modifier's settings right away.
 ## Clean Up and loops
 
 * **Clean Up** (Keys panel, or X > Limited Dissolve) reduces keys while keeping the motion:
-  where the bone is on every frame stays within a tolerance (so the timing is kept too, not
-  only the shape). Drag left / right to set how close it stays and watch the result live (the
-  original path stays as a ghost); M switches Clean / Adaptive, H keeps holds, P keeps poses.
+  with **Keep Timing** (on by default, T while dragging) where the bone is on every frame stays
+  within a tolerance; off, only the shape of the path counts - keys go as long as the path keeps
+  its shape, and the timing along it may change (fewer keys, a cleaner path). Drag left / right
+  to set how close it stays and watch the result live (the original path stays as a ghost); M
+  switches Clean / Adaptive, H keeps holds, P keeps poses.
   It refits handles and keeps corners, the two ends of every hold, the poses (where the motion
   stops for a moment or turns back), and loops intact. *Clean* removes keys; *Adaptive*
   rebuilds them with as few as possible.
@@ -263,8 +271,8 @@ the mouse), in the tool header, or with a **right click** (brushes, radius, stre
   **Push** (drag the frames along the path), **Slow Down** (the frames gather under the brush),
   **Speed Up** (they spread out), **Even** (even spacing). While you paint, the new frame dots
   are shown; when you let go, the keys follow;
-* shape brushes: **Grab** (pull the path with the mouse), **Smooth**, **Pinch** (draw the path
-  toward the brush). With **Insert Keys** (on by default) a part with too few keys under the
+* shape brushes: **Grab** (pull the path with the mouse), **Smooth** (the keys, and their handles
+  turn along the path), **Pinch** (draw the path toward the brush). With **Insert Keys** (on by default) a part with too few keys under the
   brush gets keys there first (the motion doesn't change), so the brush can shape it;
 * **Dissolve**: paint over the keys the path doesn't need and they go - one by one, the nearest
   to the brush first, each only if the motion stays within *Tolerance* (percent of the path
@@ -285,9 +293,11 @@ clears the selection, so the whole path can be painted again (A selects all).
 
 ## Onion skinning
 
-The onion button in the tool header shows ghosts of the edited bones / objects on the frames
-around the current one: on the keys, or every few frames (Display > Onion Skin: before / after,
-step, opacity, colors). Modes: *Silhouette* (the meshes in one flat color per ghost),
+The onion button in the tool header (its ⌄ arrow: the settings) shows ghosts of the edited bones
+/ objects - or, with no path shown, of the selection - on the frames around the current one: on
+the keys (with a key on every frame, at least 4 frames apart), or every few frames (before /
+after, step, opacity; colors in the preferences). **Update Ghosts** builds them again after
+editing a mesh. Modes: *Silhouette* (the meshes in one flat color per ghost),
 *Wire*, *Points* (the lightest; *Size* sets the dots and lines), *Bones* (sticks: the visible
 bones, or only the selected ones). The farther a ghost is from the current frame, the fainter.
 *Show*: the **Whole** character, only the part the edited bones move (**By Weight**: their
@@ -309,8 +319,9 @@ the number of vertices or in the modifiers does that by itself).
 
 ## Center of mass
 
-The button next to the onion one (a dot with an arrow down) shows where the character's weight
-is - a guide for believable poses; it changes nothing:
+The button next to the onion one (a ring with an arrow down; its ⌄ arrow: the settings) shows
+where the character's weight is - a guide for believable poses; it changes nothing. It works
+for the edited armature or the active one, with or without a path:
 
 * the **center of mass** of the pose, live while you pose (a white dot), and a **plumb line**
   down to the floor;
@@ -319,7 +330,9 @@ is - a guide for believable poses; it changes nothing:
   when nothing touches the floor (in the air);
 * the **velocity** (on by default): an arrow where the body is going, about 8 frames ahead;
 * the **trajectory** (off by default): the center's path over the frames - a jump's arc should
-  be a parabola.
+  be a parabola;
+* the **floor**: *Auto* (the character's lowest point over the animation), a *Height* (a
+  rooftop, a table) or the *3D Cursor*'s height.
 
 The mass of every deform bone is worked out once from its vertex weights (with a *Preparing
 center of mass* note): each vertex counts its area times its distance from the bone, about the
@@ -330,16 +343,17 @@ evaluated, like the onion ghosts) and follow your edits.
 
 ## Display
 
-**Global / Local** (the globe button in the tool header): *Global* paths are the motion in the
-world; *Local* leaves the parents' motion out - the path is drawn in the parent's space as it is
+**Global / Local** (the globe / local icon of each path in the path list): *Global* paths are the
+motion in the world; *Local* leaves the parents' motion out - the path is drawn in the parent's space as it is
 on the current frame, so it shows (and you edit) only the bone's or object's own motion, and it
 moves along with the parent when the frame changes.
 
 The color button in the tool header (or **U**) opens the display settings you change while
-animating. The ones you set once - colors, line width, key size, ribbon widths, the rotation
-path length, the Scale / Value circle, In Front, Ghost While Editing, Loop Repeats, Bone Lines -
-are in the add-on's preferences (*Colors, Sizes, Keys...* at the bottom of the display
-settings), the same in every file.
+animating, only those of the current mode (1-4); the sidebar's *Display* panel has all of them.
+The ones you set once - colors, line width, key size, ribbon widths, the rotation path length,
+Scale Y as color or ribbon, In Front, Ghost While Editing, Loop Repeats, Bone Lines - are in the
+add-on's preferences (*Colors, Sizes, Keys...* at the bottom of the sidebar's Display panel),
+the same in every file.
 
 * **Color**: *Speed* (blue slow, red fast), **Jitter**, *Before / After* and *Solid*. Jitter
   is a heat map of roughness. Smooth motion stays gray (fast smooth motion too: roughness is

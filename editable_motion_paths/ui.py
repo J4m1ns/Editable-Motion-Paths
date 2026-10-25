@@ -152,9 +152,12 @@ def _draw_tool_settings(context, layout, tool):
     layout.separator()
     layout.operator("emp.path_add", text="Add Path", icon='ADD')
     layout.prop(st, "show_all_handles")
-    layout.prop(st, "show_onion", text="", icon='ONIONSKIN_ON')
-    layout.prop(st, "show_com", text="", icon_value=ops_easing.icon_id("com"))
-    layout.prop(st, "path_space", text="", icon_only=True)
+    row = layout.row(align=True)
+    row.prop(st, "show_onion", text="", icon='ONIONSKIN_ON')
+    row.popover("EMP_PT_onion_popover", text="")
+    row = layout.row(align=True)
+    row.prop(st, "show_com", text="", icon_value=ops_easing.icon_id("com"))
+    row.popover("EMP_PT_com_popover", text="")
     layout.popover("EMP_PT_display_popover", text="", icon='COLOR')
     layout.popover("EMP_PT_modifiers_popover", text="", icon='MODIFIER')
 
@@ -494,6 +497,8 @@ class EMP_UL_paths(bpy.types.UIList):
             if cache is not None and cache.locked:
                 row.operator("emp.lock_info", text="", icon='LOCKED', emboss=False).reason = cache.lock_reason
             # isolate this path's curves in the Graph Editor (pressed while they are isolated)
+            row.prop(item, "local", text="", emboss=False,
+                     icon='ORIENTATION_LOCAL' if item.local else 'WORLD')
             from .ops_tools import graph_isolated
             on = graph_isolated(item)
             row.operator("emp.graph_isolate", text="", emboss=False,
@@ -640,21 +645,78 @@ class EMP_PT_display(_Panel, bpy.types.Panel):
         _draw_display(self.layout, state.settings(context.scene))
 
 
-def _draw_display(layout, st):
+def _draw_onion(layout, st):
+    layout.use_property_split = False
+    row = layout.row(align=True)
+    row.prop(st, "onion_mode", text="")
+    if st.onion_mode != 'BONES':
+        row.prop(st, "onion_show", text="")
+    row = layout.row(align=True)
+    row.prop(st, "onion_before")
+    row.prop(st, "onion_after")
+    layout.prop(st, "onion_step", text="Step (0: on keys)")
+    layout.prop(st, "onion_opacity", slider=True)
+    if st.onion_mode == 'BONES':
+        layout.prop(st, "onion_bones", text="")
+    if st.onion_mode in {'POINTS', 'BONES', 'WIRE'}:
+        layout.prop(st, "onion_size")
+    row = layout.row(align=True)
+    row.prop(st, "onion_max_tris")
+    row.prop(st, "onion_in_front", text="", icon='XRAY')
+    layout.operator("emp.onion_update", icon='FILE_REFRESH')
+
+
+def _draw_com(layout, st):
+    layout.use_property_split = False
+    row = layout.row(align=True)
+    row.prop(st, "com_velocity", toggle=True)
+    row.prop(st, "com_support", toggle=True)
+    row.prop(st, "com_trail", toggle=True)
+    row = layout.row(align=True)
+    row.prop(st, "com_floor", text="Floor")
+    if st.com_floor == 'HEIGHT':
+        row.prop(st, "com_floor_height", text="")
+
+
+def _draw_smoothing(layout, context):
+    """Blender's Continuous Acceleration: how many of the curves use it, and how to turn it off."""
+    from .ops_tools import cont_accel_curves
+    n = cont_accel_curves(context)
+    col = layout.column(align=True)
+    sub = col.row()
+    sub.active = n > 0
+    sub.operator("emp.smoothing_none", icon='IPO_EASE_IN_OUT')
+    if n:
+        col.label(text="%d curve%s use%s Continuous Acceleration:" % (n, "" if n == 1 else "s", "s" if n == 1 else ""),
+                  icon='INFO')
+        col.label(text="editing a key also moves its neighbors' handles")
+    pref = getattr(context.preferences.edit, "fcurve_new_auto_smoothing", 'NONE')
+    if pref != 'NONE':
+        col.label(text="New curves get it too: Preferences > Animation >", icon='ERROR')
+        col.label(text="F-Curves > Default Smoothing: None")
+
+
+def _draw_display(layout, st, popover=False, context=None):
+    """The display settings. In the U popover only the ones for the current mode (1-4); the
+    sidebar has them all."""
     layout.use_property_split = True
     layout.use_property_decorate = False
-    layout.row().prop(st, "path_space", expand=True)
+    m = st.edit_mode
+    every = not popover
     layout.prop(st, "color_mode")
     col = layout.column(heading="Show")
     col.prop(st, "show_frames")
     col.prop(st, "show_handles")
     col.prop(st, "show_frame_numbers")
     col.prop(st, "show_all_handles")
-    col.prop(st, "show_rot_rings")
-    col.prop(st, "show_reach")
-    col.prop(st, "show_rot_ribbon")
-    if st.show_rot_ribbon:
-        col.prop(st, "rot_ribbon_side", text="Side")
+    if every or m == 'ROTATION':
+        col.prop(st, "show_rot_rings")
+        col.prop(st, "show_reach")
+        col.prop(st, "show_rot_ribbon")
+        if st.show_rot_ribbon:
+            col.prop(st, "rot_ribbon_side", text="Side")
+    if every or m == 'SCALE':
+        col.prop(st, "show_scale_box")
     col.prop(st, "show_timing_chart")
     col.prop(st, "show_speed_graph")
     if st.show_speed_graph:
@@ -663,42 +725,56 @@ def _draw_display(layout, st):
             sub = col.column(align=True)
             sub.prop(st, "speed_start")
             sub.prop(st, "speed_end")
-    col.prop(st, "show_com")
-    if st.show_com:
-        box = col.box()
-        row = box.row(align=True)
-        row.prop(st, "com_velocity", toggle=True)
-        row.prop(st, "com_support", toggle=True)
-        row.prop(st, "com_trail", toggle=True)
-    col.prop(st, "show_onion")
-    if st.show_onion:
-        box = col.box()
-        row = box.row(align=True)
-        row.prop(st, "onion_mode", text="")
-        if st.onion_mode != 'BONES':
-            row.prop(st, "onion_show", text="")
-        row = box.row(align=True)
-        row.prop(st, "onion_before")
-        row.prop(st, "onion_after")
-        box.prop(st, "onion_step", text="Step (0: on keys)")
-        box.prop(st, "onion_opacity", slider=True)
-        if st.onion_mode == 'BONES':
-            box.prop(st, "onion_bones", text="")
-        if st.onion_mode in {'POINTS', 'BONES', 'WIRE'}:
-            box.prop(st, "onion_size")
-        row = box.row(align=True)
-        row.prop(st, "onion_max_tris")
-        row.prop(st, "onion_in_front", text="", icon='XRAY')
-    layout.prop(st, "show_scale_box")
-    layout.prop(st, "value_track")
-    if st.value_track == 'PATH':
-        layout.prop(st, "value_side")
-    layout.prop(st, "layout", text="Scale / Value Layout")
+    if every:
+        col.prop(st, "show_com")
+        if st.show_com:
+            _draw_com(col.box(), st)
+        col.prop(st, "show_onion")
+        if st.show_onion:
+            _draw_onion(col.box(), st)
+    if every or m == 'VALUE':
+        layout.prop(st, "value_track")
+        if st.value_track == 'PATH':
+            layout.prop(st, "value_side")
+    if every or m in {'SCALE', 'VALUE'}:
+        layout.prop(st, "layout", text="Scale / Value Layout")
+        if st.layout != 'PATH':
+            col = layout.column(align=True)
+            col.prop(st, "circle_radius", text="Radius")
+            col.prop(st, "circle_use_range")
+            sub = col.column(align=True)
+            sub.active = st.circle_use_range
+            sub.prop(st, "circle_start")
+            sub.prop(st, "circle_end")
     layout.prop(st, "pin_partial")
-    layout.operator("emp.smoothing_none", icon='IPO_EASE_IN_OUT')
-    # colors, sizes and the like are set once: in the add-on's preferences
-    op = layout.operator("preferences.addon_show", text="Colors, Sizes, Keys...", icon='PREFERENCES')
-    op.module = __package__
+    if every:
+        layout.separator()
+        _draw_smoothing(layout, context or bpy.context)
+        # colors, sizes and the like are set once: in the add-on's preferences
+        op = layout.operator("preferences.addon_show", text="Colors, Sizes, Keys...", icon='PREFERENCES')
+        op.module = __package__
+
+
+class EMP_PT_onion_popover(bpy.types.Panel):
+    """Onion skin settings, from the tool header"""
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'HEADER'
+    bl_label = "Onion Skin"
+    bl_idname = "EMP_PT_onion_popover"
+
+    def draw(self, context):
+        _draw_onion(self.layout, state.settings(context.scene))
+
+
+class EMP_PT_com_popover(bpy.types.Panel):
+    """Center of mass settings, from the tool header"""
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'HEADER'
+    bl_label = "Center of Mass"
+    bl_idname = "EMP_PT_com_popover"
+
+    def draw(self, context):
+        _draw_com(self.layout, state.settings(context.scene))
 
 
 class EMP_PT_display_popover(bpy.types.Panel):
@@ -709,7 +785,7 @@ class EMP_PT_display_popover(bpy.types.Panel):
     bl_idname = "EMP_PT_display_popover"
 
     def draw(self, context):
-        _draw_display(self.layout, state.settings(context.scene))
+        _draw_display(self.layout, state.settings(context.scene), popover=True)
 
 
 class EMP_PT_help(_Panel, bpy.types.Panel):
@@ -736,7 +812,7 @@ classes = (EMP_MT_handle_type, EMP_MT_interpolation, EMP_MT_value_channel, EMP_O
            EMP_MT_space, EMP_MT_looptools, EMP_MT_snap, EMP_MT_curves, EMP_MT_context, EMP_UL_paths,
            EMP_PT_main, EMP_PT_shape, EMP_PT_timing, ops_easing.EMP_PT_easing_sidebar, EMP_PT_keys,
            ops_fmods.EMP_PT_modifiers,
-           EMP_PT_range, EMP_PT_display, EMP_PT_display_popover, ops_fmods.EMP_PT_modifiers_popover,
+           EMP_PT_range, EMP_PT_display, EMP_PT_display_popover, EMP_PT_onion_popover, EMP_PT_com_popover, ops_fmods.EMP_PT_modifiers_popover,
            ops_easing.EMP_PT_easing_presets,
            EMP_PT_help)
 

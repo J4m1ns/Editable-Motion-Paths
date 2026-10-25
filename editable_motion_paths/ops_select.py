@@ -10,7 +10,7 @@ from . import compat, core, pick, space, state
 from .ops_keys import insert_key
 
 
-GIZMO_AXES = {'GX': 0, 'GXn': 0, 'GY': 1, 'GZ': 2, 'GZn': 2, 'GU': -1}
+GIZMO_AXES = {'GX': 0, 'GXn': 0, 'GY': 1, 'GYn': 1, 'GZ': 2, 'GZn': 2, 'GU': -1}
 
 
 def _region_mouse(context, event):
@@ -250,9 +250,18 @@ class EMP_OT_click(bpy.types.Operator):
                                           start_x=int(self.press.x), start_y=int(self.press.y),
                                           key_trackball=True)
                 elif getattr(self, "gizmo", None):
+                    extra = {}
+                    st = state.settings(context.scene)
+                    if self.gizmo in {'GY', 'GYn'} and st is not None and st.scale_y_display == 'RIBBON':
+                        # the Y ribbon's width is measured from its own middle line
+                        from . import draw
+                        cache, k = self._find_key()
+                        if k is not None:
+                            mid, _a = draw.y_ribbon(st, cache, cache.target(), k.t, k.vals)
+                            extra = dict(measure_from=mid, use_measure_from=True)
                     bpy.ops.emp.transform('INVOKE_DEFAULT', mode='SCALE', release_confirm=True,
                                           start_x=int(self.press.x), start_y=int(self.press.y),
-                                          axis_index=GIZMO_AXES[self.gizmo])
+                                          axis_index=GIZMO_AXES[self.gizmo], **extra)
                 else:
                     bpy.ops.emp.transform('INVOKE_DEFAULT', mode='TRANSLATE', release_confirm=True,
                                           start_x=int(self.press.x), start_y=int(self.press.y))
@@ -261,7 +270,8 @@ class EMP_OT_click(bpy.types.Operator):
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and getattr(self, "gizmo", None):
             # a click (no drag) on a scale gizmo handle shows that channel's handles
             st = state.settings(context.scene)
-            st.scale_channel = {'GX': 'X', 'GXn': 'X', 'GY': 'Y', 'GZ': 'Z', 'GZn': 'Z'}.get(self.gizmo, 'NONE')
+            st.scale_channel = {'GX': 'X', 'GXn': 'X', 'GY': 'Y', 'GYn': 'Y', 'GZ': 'Z', 'GZn': 'Z'}.get(
+                self.gizmo, 'NONE')
             # ... and picks both of them (Alt+S / Alt+Shift+S work on them right away)
             ch = {'X': 0, 'Y': 1, 'Z': 2}.get(st.scale_channel)
             state.set_whisker_sel(set() if ch is None else

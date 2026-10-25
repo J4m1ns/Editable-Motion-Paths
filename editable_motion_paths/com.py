@@ -286,13 +286,21 @@ def state_now(scene, arm):
     tr = _track.get(arm.name) or {}
     lows = [v[1] for v in tr.values() if v is not None and v[1] is not None]
     Ma, Bs = onion.bone_mats(arm, d["names"], d["rest_inv"])
-    key = hash(Bs.tobytes()) ^ hash(Ma.tobytes()) ^ hash(len(lows))
+    st_ = state.settings(scene)
+    key = hash(Bs.tobytes()) ^ hash(Ma.tobytes()) ^ hash(len(lows)) ^ hash(
+        (st_.com_floor, round(st_.com_floor_height, 5), round(scene.cursor.location.z, 5)) if st_ else 0)
     old = _now.get(arm.name)
     if old is not None and old[0] == key:
         _k, floor, poly, bal = old
     else:
         low, pts = _lowest(scene, arm)
-        floor = min(lows + ([low] if low is not None else [])) if (lows or low is not None) else 0.0
+        st = state.settings(scene)
+        if st is not None and st.com_floor == 'HEIGHT':
+            floor = st.com_floor_height
+        elif st is not None and st.com_floor == 'CURSOR':
+            floor = scene.cursor.location.z
+        else:
+            floor = min(lows + ([low] if low is not None else [])) if (lows or low is not None) else 0.0
         tol = 0.02 * d["height"]
         poly = []
         if pts is not None:

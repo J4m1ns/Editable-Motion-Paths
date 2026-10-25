@@ -88,6 +88,11 @@ class EMP_PathEntry(bpy.types.PropertyGroup):
     value_index: IntProperty(name="Index", update=_mode_changed)
     hidden_keys: StringProperty(options={'HIDDEN'}, update=_mode_changed,
                                 description="Frames of hidden keys (H / Alt+H)")
+    local: BoolProperty(name="Local", default=False, update=_refresh,
+                        description="Global: the motion in the world (the parents' motion is in the path). "
+                                    "Local: only this bone's / object's own motion - the path is drawn in its "
+                                    "parent's space as it is on the current frame, so it moves along with the "
+                                    "parent and the parent's motion isn't in it")
 
 
 class EMP_Settings(bpy.types.PropertyGroup):
@@ -200,13 +205,15 @@ class EMP_Settings(bpy.types.PropertyGroup):
     com_support: BoolProperty(name="Support", default=True, update=_redraw,
                               description="Center of mass: the outline of what touches the floor; the plumb "
                                           "point is green inside it (stable), red outside, gray in the air")
-    path_space: EnumProperty(
-        name="Path Space", update=_refresh,
-        items=[('GLOBAL', "Global", "The motion in the world: the parents' motion is in the path", 'WORLD', 0),
-               ('LOCAL', "Local", "Only the bone's / object's own motion: the path is drawn in its parent's "
-                                  "space as it is on the current frame, so it moves along with the parent "
-                                  "and the parent's motion isn't in it", 'ORIENTATION_LOCAL', 1)],
-        default='GLOBAL')
+    com_floor: EnumProperty(
+        name="Floor", update=_redraw,
+        items=[('AUTO', "Auto", "The lowest point of the character over the whole animation"),
+               ('HEIGHT', "Height", "A floor at this height (a rooftop, a table...)"),
+               ('CURSOR', "3D Cursor", "A floor at the height of the 3D cursor")],
+        default='AUTO', description="Center of mass: where the floor is (the plumb line ends there, the "
+                                    "support is what touches it)")
+    com_floor_height: FloatProperty(name="Floor Height", default=0.0, subtype='DISTANCE', unit='LENGTH',
+                                    update=_redraw)
     onion_show: EnumProperty(
         name="Show", update=_redraw,
         items=[('WHOLE', "Whole", "The whole character (every mesh the armature moves, and what is on it)"),
@@ -290,6 +297,13 @@ class EMP_Settings(bpy.types.PropertyGroup):
         items=[('NONE', "None", ""), ('X', "X", "On the X ribbon's edges"),
                ('Y', "Y", "On the path (Y is the ribbons' color)"), ('Z', "Z", "On the Z ribbon's edges")],
         default='NONE', update=_redraw)
+    circle_radius: FloatProperty(name="Circle Radius", default=0.0, min=0.0, soft_max=10.0,
+                                 subtype='DISTANCE', unit='LENGTH', update=_refresh,
+                                 description="Size of the circle (0: automatic)")
+    circle_use_range: BoolProperty(name="Custom Range", default=False, update=_refresh,
+                                   description="Frames around the circle (off: the scene's frame range)")
+    circle_start: IntProperty(name="Start", default=1, update=_refresh)
+    circle_end: IntProperty(name="End", default=100, update=_refresh)
     layout: EnumProperty(
         name="Layout",
         description="Scale (3) and Value (4) paths: draw them along the motion path, or around a "
@@ -362,13 +376,12 @@ class EMP_Preferences(bpy.types.AddonPreferences):
     rot_ribbon_width: FloatProperty(name="Ribbon Width", default=1.0, min=0.05, soft_max=4.0,
                                     update=_redraw, description="Rotation ribbon: how wide it is")
     scale_box_size: FloatProperty(name="Box Size", default=1.0, min=0.05, soft_max=5.0, update=_redraw)
-    circle_radius: FloatProperty(name="Circle Radius", default=0.0, min=0.0, soft_max=10.0,
-                                 subtype='DISTANCE', unit='LENGTH', update=_refresh,
-                                 description="Size of the circle (0: automatic)")
-    circle_use_range: BoolProperty(name="Custom Range", default=False, update=_refresh,
-                                   description="Frames around the circle (off: the scene's frame range)")
-    circle_start: IntProperty(name="Start", default=1, update=_refresh)
-    circle_end: IntProperty(name="End", default=100, update=_refresh)
+    scale_y_display: EnumProperty(
+        name="Scale Y", update=_redraw,
+        items=[('COLOR', "Color", "The Y scale is the color of the ribbons (blue below 1, red above)"),
+               ('RIBBON', "Ribbon", "The Y scale is a third ribbon beside the other two, as wide as it; drag "
+                                    "its edge like the others")],
+        default='COLOR')
     onion_color_before: FloatVectorProperty(name="Before", subtype='COLOR', size=3, min=0.0, max=1.0,
                                             default=(1.0, 0.35, 0.3), update=_redraw)
     onion_color_after: FloatVectorProperty(name="After", subtype='COLOR', size=3, min=0.0, max=1.0,
@@ -403,15 +416,7 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         col.prop(self, "rot_ribbon_width", text="Rotation Ribbon Width")
         col.prop(self, "ribbon_width", text="Scale Ribbon Width")
         col.prop(self, "scale_box_size", text="Scale Box Size")
-        layout.separator()
-        col = layout.column()
-        col.label(text="Scale / Value Circle")
-        col.prop(self, "circle_radius", text="Radius")
-        col.prop(self, "circle_use_range")
-        sub = col.column(align=True)
-        sub.active = self.circle_use_range
-        sub.prop(self, "circle_start")
-        sub.prop(self, "circle_end")
+        col.prop(self, "scale_y_display")
         layout.separator()
         col = layout.column()
         col.label(text="Onion Skin")
@@ -443,8 +448,8 @@ def _pref_property(name):
 
 
 PREF_NAMES = ("color", "jitter_threshold", "show_ghost", "show_spokes", "show_repeats", "on_top", "line_width",
-              "key_size", "rot_length", "ribbon_width", "rot_ribbon_width", "scale_box_size", "circle_radius",
-              "circle_use_range", "circle_start", "circle_end", "onion_color_before", "onion_color_after")
+              "key_size", "rot_length", "ribbon_width", "rot_ribbon_width", "scale_box_size", "scale_y_display",
+              "onion_color_before", "onion_color_after")
 for _n in PREF_NAMES:
     setattr(EMP_Settings, _n, _pref_property(_n))
 

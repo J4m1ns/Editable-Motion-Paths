@@ -268,6 +268,42 @@ def button_context_entry(self, context):
     self.layout.operator(EMP_OT_reset_button.bl_idname, text="Reset to Default (Motion Paths)", icon='LOOP_BACK')
 
 
+def _anim_curves(context):
+    """The F-Curves of the selected bones / objects' paths (each once)."""
+    seen, out = set(), []
+    for cache in state.editable_caches(context.scene):
+        tg = cache.target()
+        if tg is None:
+            continue
+        for ptype in (core.LOCATION, core.ROTATION, core.SCALE):
+            for fc in tg.channels(ptype).fcurves:
+                if fc is not None and fc.as_pointer() not in seen:
+                    seen.add(fc.as_pointer())
+                    out.append(fc)
+    return out
+
+
+def cont_accel_curves(context):
+    """How many of them use Blender's Continuous Acceleration smoothing."""
+    try:
+        return sum(1 for fc in _anim_curves(context) if fc.auto_smoothing != 'NONE')
+    except Exception:
+        return 0
+
+
+class EMP_OT_onion_update(bpy.types.Operator):
+    """Build the onion ghosts (and the center of mass) again, e.g. after editing a mesh's shape"""
+    bl_idname = "emp.onion_update"
+    bl_label = "Update Ghosts"
+
+    def execute(self, context):
+        from . import com, onion
+        onion.clear_all()
+        com.clear()
+        state.tag_redraw()
+        return {'FINISHED'}
+
+
 class EMP_OT_smoothing_none(bpy.types.Operator):
     """Turn off Blender's Continuous Acceleration smoothing on every curve of the selected bones """ \
         """/ objects (Auto Handle Smoothing: None): editing a key then changes only its own """ \
@@ -1040,6 +1076,11 @@ class EMP_OT_cleanup(bpy.types.Operator):
     bl_label = "Clean Up Path"
     bl_options = {'REGISTER', 'UNDO'}
 
+    keep_timing: BoolProperty(
+        name="Keep Timing", default=True,
+        description="Where the bone is on every frame stays (within the tolerance). Off: only the shape "
+                    "of the path counts - keys go as long as the path keeps its shape, and the timing "
+                    "along it may change (fewer keys, a cleaner path)")
     method: EnumProperty(name="Method", items=[
         ('CLEAN', "Clean", "Remove keys that are not needed and refit the handles of the rest"),
         ('ADAPTIVE', "Adaptive", "Rebuild the keys from scratch: as few as possible, on the frames "
@@ -1093,10 +1134,10 @@ class EMP_OT_cleanup(bpy.types.Operator):
         self._restore()
         self.execute(context)
         txt = "Clean Up (%s): tolerance %.2f%%   %s   drag left / right: closer / fewer keys   " \
-              "M: method   H: keep holds %s   P: keep poses %s   LMB / Enter: done   Esc: cancel" % (
+              "T: keep timing %s   M: method   H: keep holds %s   P: keep poses %s   LMB / Enter: done   "               "Esc: cancel" % (
                   "Clean" if self.method == 'CLEAN' else "Adaptive", self.tolerance,
-                  getattr(self, "result_text", ""), "ON" if self.keep_holds else "off",
-                  "ON" if self.keep_poses else "off")
+                  getattr(self, "result_text", ""), "ON" if self.keep_timing else "off (shape only)",
+                  "ON" if self.keep_holds else "off", "ON" if self.keep_poses else "off")
         if self.area is not None:
             self.area.header_text_set(txt)
         state.hud = ("%.2f%%  %s" % (self.tolerance, getattr(self, "result_text", "")),
@@ -1107,8 +1148,10 @@ class EMP_OT_cleanup(bpy.types.Operator):
         t, v = event.type, event.value
         if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             self._preview(context, event)
-        elif v == 'PRESS' and t in {'M', 'H', 'P'}:
-            if t == 'M':
+        elif v == 'PRESS' and t in {'M', 'H', 'P', 'T'}:
+            if t == 'T':
+                self.keep_timing = not self.keep_timing
+            elif t == 'M':
                 self.method = 'ADAPTIVE' if self.method == 'CLEAN' else 'CLEAN'
             elif t == 'H':
                 self.keep_holds = not self.keep_holds
@@ -1169,6 +1212,13 @@ class EMP_OT_cleanup(bpy.types.Operator):
                 fixed |= fitter.hold_keys([t for t in inside])
             if self.keep_poses:
                 fixed |= fitter.pose_keys([t for t in inside])
+            if not self.keep_timing:
+                b, a, w = _clean_shape(cache, tg, inside, fixed, self.tolerance)
+                before += b
+                after += a
+                worst = max(worst, w)
+                cache.dirty = True
+                continue
             if self.method == 'CLEAN':
                 knots, slopes = fitter.prune(inside, fixed, tol)
             else:
@@ -1192,6 +1242,76 @@ class EMP_OT_cleanup(bpy.types.Operator):
             self.report({'INFO'}, "Clean Up: %d -> %d keys, max deviation %.2f%% of the path size" % (
                 before, after, worst))
         return {'FINISHED'}
+
+
+def _poly_dist(p, poly):
+    best = 1e18
+    for a, b in zip(poly, poly[1:]):
+        ab = b - a
+        L = ab.length_squared
+        f = 0.0 if L < 1e-12 else max(0.0, min(1.0, (p - a).dot(ab) / L))
+        best = min(best, (a + ab * f - p).length_squared)
+    return best ** 0.5
+
+
+def _clean_shape(cache, tg, inside, fixed, tolerance):
+    """Clean Up without Keep Timing: dissolve the keys the shape of the path doesn't need (the
+    least needed first), each only if the path stays within the tolerance of its old shape (both
+    ways: no point of either path farther than that from the other). The timing may change.
+    Returns (keys before, keys after, worst deviation in percent of the path size)."""
+    from . import keys as _keys
+    r0, r1 = inside[0], inside[-1]
+    old = [p.copy() for t, p in zip(cache.times, cache.points) if r0 - 1e-6 <= t <= r1 + 1e-6]
+    lo = [min(p[i] for p in old) for i in range(3)]
+    hi = [max(p[i] for p in old) for i in range(3)]
+    size = max(sum((h - l) ** 2 for h, l in zip(hi, lo)) ** 0.5, 1e-6)
+    ch = tg.channels(cache.ptype)
+
+    def dissolve(t):
+        n = 0
+        for fc in ch.fcurves:
+            if fc is not None and len(fc.keyframe_points) > 2:
+                n += _keys.dissolve_channel(fc, [t])
+        if n:
+            core.update_fcurves([fc for fc in ch.fcurves if fc is not None])
+            cache.dirty = True
+            cache.refresh(force=True)
+        return n
+
+    def deviation():
+        new = [p for t, p in zip(cache.times, cache.points) if r0 - 1e-6 <= t <= r1 + 1e-6]
+        if len(new) < 2:
+            return 1e18
+        a = max(_poly_dist(p, old) for p in new)
+        b = max(_poly_dist(p, new) for p in old[::2])
+        return max(a, b) / size * 100.0
+
+    cands = [t for t in inside if t not in fixed]
+    # how much each key is needed on its own (the path without just that key)
+    need = []
+    for t in cands:
+        snap = core.FCurveSnapshot(tg, ch)
+        if dissolve(t):
+            need.append((deviation(), t))
+        snap.restore()
+        cache.dirty = True
+        cache.refresh(force=True)
+    removed, worst = 0, 0.0
+    for d, t in sorted(need):
+        if d > tolerance:
+            break
+        snap = core.FCurveSnapshot(tg, ch)
+        if not dissolve(t):
+            continue
+        dev = deviation()
+        if dev > tolerance:
+            snap.restore()
+            cache.dirty = True
+            cache.refresh(force=True)
+        else:
+            removed += 1
+            worst = max(worst, dev)
+    return len(inside), len(inside) - removed, worst
 
 
 class _EaseTimingJob:
@@ -1605,7 +1725,7 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
 
 
 classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
-           EMP_OT_smoothing_none, EMP_OT_path_update,
+           EMP_OT_smoothing_none, EMP_OT_onion_update, EMP_OT_path_update,
            EMP_OT_edit_tool,
            EMP_OT_handle_type, EMP_OT_interpolation,
            EMP_OT_smooth, EMP_OT_exaggerate, EMP_OT_ease, EMP_OT_scale_handles,

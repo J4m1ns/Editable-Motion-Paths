@@ -264,13 +264,18 @@ class EMP_OT_scale_whisker(bpy.types.Operator):
         dt = max(abs(t - self.x), 0.05)
         base = c.head(tg, t)
         ax = c.axes(tg, t)
-        a3 = ax[2] if self.ch == 1 else ax[self.ch] * self.sign
+        y_rib = self.ch == 1 and st.scale_y_display == 'RIBBON'
+        if y_rib:
+            base, across = draw.y_ribbon(st, c, tg, t)
+            a3 = across * self.sign
+        else:
+            a3 = ax[2] if self.ch == 1 else ax[self.ch] * self.sign
         s0 = proj(region, rv3d, base)
         s1 = proj(region, rv3d, base + a3 * half)
         if s0 is None or s1 is None or (s1 - s0).length < 1e-6:
             return
         u = (m - s0).dot(s1 - s0) / (s1 - s0).length_squared     # in units of the ribbon half width
-        if self.ch == 1:
+        if self.ch == 1 and not y_rib:
             v = self.y + u
         else:
             v = u if self.y >= 0.0 else -u

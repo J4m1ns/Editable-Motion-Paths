@@ -483,6 +483,7 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
 
     def _shape_dab(self, context, st, region, rv3d, m, sign):
         by_cache = {}
+        smooth_handles = []
         for c in self.caches:
             if st.insert_keys:
                 self._add_keys(c, region, rv3d, m)
@@ -502,11 +503,48 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                         continue        # the ends of the path stay
                     target = (ks[i - 1].co + ks[i + 1].co) * 0.5
                     W = k.co.lerp(target, min(1.0, wt * 0.5))
+                    smooth_handles.append((c, k.t, wt))
                 else:   # PINCH
                     center = region_2d_to_location_3d(region, rv3d, m, k.co)
                     W = k.co.lerp(center, max(-1.0, min(1.0, wt * 0.3 * sign)))
                 by_cache.setdefault(c, []).append((k.t, W))
         self._write(context, by_cache)
+        if smooth_handles:
+            self._smooth_handles(context, smooth_handles)
+
+    def _smooth_handles(self, context, items):
+        """Smooth also turns the keys' handles toward the direction of the path there (from the
+        key before to the key after), keeping their lengths: the path flows through the key.
+        (Auto handles do that by themselves; vector handles stay as they are.)"""
+        by_cache = {}
+        for c, t, wt in items:
+            by_cache.setdefault(c, []).append((t, wt))
+        for c, items in by_cache.items():
+            c.refresh(force=True)
+            tg = c.target()
+            ks = [k for k in c.keys if not k.hidden]
+            at = {round(k.t, 3): i for i, k in enumerate(ks)}
+            w = edit.Writer([t for t, _w in items])
+            for t, wt in items:
+                i = at.get(round(t, 3))
+                if i is None or i == 0 or i == len(ks) - 1:
+                    continue
+                k = ks[i]
+                tang = ks[i + 1].co - ks[i - 1].co
+                if tang.length < 1e-9:
+                    continue
+                tang.normalize()
+                f = min(1.0, wt * 0.5)
+                for side, h, kind in (('R', k.hr, k.type_r), ('L', k.hl, k.type_l)):
+                    if h is None or kind not in {'FREE', 'ALIGNED'}:
+                        continue
+                    off = h - k.co
+                    L = off.length
+                    if L < 1e-9:
+                        continue
+                    want = tang * (L if side == 'R' else -L)
+                    w.handle(c, tg, k, side, k.co + off.lerp(want, f))
+            w.done([c])
 
     def _deviation(self, c):
         """How far the path is now from where it was when the stroke began (percent of its size):
@@ -727,9 +765,10 @@ def draw_brushes(layout, context):
     col.prop(bs, "dissolve_tolerance")
     col.prop(bs, "dissolve_keep_timing")
     col = layout.column(align=True)
-    col.label(text="F: radius   Shift+F: strength   Ctrl: the opposite effect")
-    col.label(text="Shift: Smooth   Ctrl+Shift: Even   Alt: Dissolve   right click: these settings")
-    col.label(text="Selected keys mask the path (only that part changes)   Alt+A: clear the mask")
+    for line in ("F: radius    Shift+F: strength", "Ctrl: the opposite effect",
+                 "Shift: Smooth    Ctrl+Shift: Even    Alt: Dissolve", "Right click: these settings",
+                 "Selected keys mask the path (only that part changes)", "Alt+A: clear the mask"):
+        col.label(text=line)
 
 
 class EMP_PT_sculpt_brushes(bpy.types.Panel):

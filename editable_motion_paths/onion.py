@@ -498,8 +498,20 @@ def frames_to_show(scene, st):
             step = 5
             return [(cur - step * (i + 1), -(i + 1)) for i in range(st.onion_before)] + \
                 [(cur + step * (i + 1), i + 1) for i in range(st.onion_after)]
-        before = [t for t in reversed(keys) if t < cur][:st.onion_before]
-        after = [t for t in keys if t > cur][:st.onion_after]
+        # baked motion (a key on every frame): ghosts on neighboring frames would overlap, so
+        # keep the keys at least 4 frames apart
+        gaps = sorted(b - a for a, b in zip(keys, keys[1:]))
+        gap = 4 if gaps and gaps[len(gaps) // 2] <= 1.5 else 1
+
+        def spaced(ts):
+            out, last = [], cur
+            for t in ts:
+                if abs(t - last) >= gap:
+                    out.append(t)
+                    last = t
+            return out
+        before = spaced([t for t in reversed(keys) if t < cur])[:st.onion_before]
+        after = spaced([t for t in keys if t > cur])[:st.onion_after]
     return [(f, -(i + 1)) for i, f in enumerate(before)] + [(f, i + 1) for i, f in enumerate(after)]
 
 

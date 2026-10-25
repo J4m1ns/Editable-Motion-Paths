@@ -399,6 +399,9 @@ class EMP_OT_transform(bpy.types.Operator):
                                          description="Measure the distance on the screen")
     release_confirm: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
     axis_index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
+    # scaling: measure the mouse from here instead of the pivot (the Y scale ribbon's middle line)
+    measure_from: FloatVectorProperty(size=3, options={'HIDDEN', 'SKIP_SAVE'})
+    use_measure_from: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
     axis_plane: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
     ring_axis: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
     key_trackball: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'},
@@ -757,7 +760,8 @@ class EMP_OT_transform(bpy.types.Operator):
 
     def _reset_mode_state(self, context):
         region, rv3d = context.region, context.region_data
-        self.pivot_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, self.pivot) or self.mouse_start
+        p = Vector(self.measure_from) if self.use_measure_from and self.mode == 'SCALE' else self.pivot
+        self.pivot_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, p) or self.mouse_start
         # with the mouse right on the key (you just clicked it), angles around the key are
         # unstable: measure them around a point a bit to the left instead
         us = compat.ui_scale()

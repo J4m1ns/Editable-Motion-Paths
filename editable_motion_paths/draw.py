@@ -260,7 +260,9 @@ COL_SCALE_HIGH = (1.0, 0.25, 0.35)
 GIZMO_COLORS = {'GX': (1.0, 0.25, 0.3, 1.0), 'GY': (0.45, 0.9, 0.2, 1.0), 'GZ': (0.25, 0.5, 1.0, 1.0),
                 'GU': (1.0, 1.0, 1.0, 1.0)}
 GIZMO_COLORS['GXn'] = GIZMO_COLORS['GX']
+GIZMO_COLORS['GYn'] = GIZMO_COLORS['GY']
 GIZMO_COLORS['GZn'] = GIZMO_COLORS['GZ']
+COL_Y_RIBBON = (0.45, 0.9, 0.3)
 
 
 def scale_color(sy):
@@ -274,9 +276,19 @@ def ribbon_half(st, cache):
     return cache.vgain * 0.12 * st.ribbon_width
 
 
+def y_ribbon(st, cache, tg, t, vals=None):
+    """Scale Y shown as a ribbon (preferences): (middle line point, across direction) of the Y
+    ribbon at frame t - beside the X ribbon, in its plane."""
+    half = ribbon_half(st, cache)
+    v = vals if vals is not None else tg.scale.values(t)
+    ax = cache.axes(tg, t)
+    return cache.head(tg, t) + ax[0] * (half * (abs(v[0]) + abs(v[1]) + 0.35)), ax[0]
+
+
 def _draw_ribbon(st, cache, rv3d, lo, hi, editable, us):
     """Scale paths: two crossed ribbons along the target's own X and Z axes, as wide as the
-    X and Z scale; their color shows the Y scale."""
+    X and Z scale; their color shows the Y scale (or, in the preferences, a third ribbon beside
+    them, as wide as the Y scale)."""
     pts = cache.points
     n = len(pts)
     if len(cache.sample_vals) != n or len(cache.sample_axes) != n:
@@ -285,10 +297,19 @@ def _draw_ribbon(st, cache, rv3d, lo, hi, editable, us):
     half = ribbon_half(st, cache)
     alpha = 0.22 if editable else 0.1
     sh = gpu.shader.from_builtin('SMOOTH_COLOR')
-    for axis, comp in ((0, 0), (2, 2)):
+    y_rib = st.scale_y_display == 'RIBBON'
+    for axis, comp in ((0, 0), (2, 2)) + (((1, 1),) if y_rib else ()):
         run = []
         runs = []
         for i, t in enumerate(cache.times):
+            if axis == 1 and vis[i] and _in(t, lo, hi):
+                # the Y ribbon: beside the X one, as wide as the Y scale
+                v = cache.sample_vals[i]
+                ax0 = cache.sample_axes[i][0]
+                mid = pts[i] + ax0 * (half * (abs(v[0]) + abs(v[1]) + 0.35))
+                d = ax0 * (half * abs(v[1]))
+                run.append((mid + d, mid - d, COL_Y_RIBBON))
+                continue
             if not _in(t, lo, hi) or not vis[i]:
                 if len(run) > 1:
                     runs.append(run)
@@ -297,7 +318,7 @@ def _draw_ribbon(st, cache, rv3d, lo, hi, editable, us):
             v = cache.sample_vals[i]
             w = half * abs(v[comp])
             d = cache.sample_axes[i][axis] * w
-            col = scale_color(v[1]) if len(v) > 1 else COL_RIBBON
+            col = scale_color(v[1]) if len(v) > 1 and not y_rib else COL_RIBBON
             run.append((pts[i] + d, pts[i] - d, col))
         if len(run) > 1:
             runs.append(run)
@@ -357,8 +378,15 @@ def scale_gizmo_points(st, cache, k, region=None, rv3d=None):
     h = ribbon_half(st, cache)
     mn = pick.handle_min_world(region, rv3d, k.co) * 0.7
     out = {}
+    y_rib = st.scale_y_display == 'RIBBON'
     for i, part in enumerate(('GX', 'GY', 'GZ')):
         ln = max(h * abs(k.vals[i]), mn)
+        if part == 'GY' and y_rib:
+            # on the edges of the Y ribbon (beside the X one)
+            mid = k.co + ax[0] * (h * (abs(k.vals[0]) + abs(k.vals[1]) + 0.35))
+            out['GY'] = mid + ax[0] * ln
+            out['GYn'] = mid - ax[0] * ln
+            continue
         out[part] = k.co + ax[i] * ln
         if part != 'GY':
             out[part + 'n'] = k.co - ax[i] * ln
@@ -387,7 +415,8 @@ def scale_whiskers(st, cache, k):
         dt = h[0] - x
         if abs(dt) < 1e-6:
             continue
-        signs = (1.0, -1.0) if c != 1 else (1.0,)
+        y_rib = c == 1 and st.scale_y_display == 'RIBBON'
+        signs = (1.0, -1.0) if c != 1 or y_rib else (1.0,)
         for s in signs:
             pts = []
             for i in range(WHISKER_STEPS + 1):
@@ -395,7 +424,10 @@ def scale_whiskers(st, cache, k):
                 t = k.t + dt * f
                 v = y + (h[1] - y) * f
                 ax = cache.axes(tg, t)
-                if c == 1:
+                if y_rib:
+                    mid, across = y_ribbon(st, cache, tg, t)
+                    pts.append(mid + across * (s * half * abs(v)))
+                elif c == 1:
                     pts.append(cache.head(tg, t) + ax[2] * (half * (v - y)))
                 else:
                     pts.append(cache.head(tg, t) + ax[c] * (s * half * abs(v)))
@@ -462,11 +494,11 @@ def _draw_scale_gizmos(st, cache, keys, us):
         if not k.sel:
             continue
         g = scale_gizmo_points(st, cache, k)
-        for a, b in (('GXn', 'GX'), ('GZn', 'GZ')):
+        for a, b in (('GXn', 'GX'), ('GZn', 'GZ'), ('GYn', 'GY')):
             if a in g:
                 lines += [g[a], g[b]]       # across the ribbon: its width at this key
                 cols += [GIZMO_COLORS[b]] * 2
-        if 'GY' in g:
+        if 'GY' in g and 'GYn' not in g:
             lines += [k.co, g['GY']]
             cols += [GIZMO_COLORS['GY']] * 2
         part = {'X': 'GX', 'Y': 'GY', 'Z': 'GZ'}.get(st.scale_channel)
@@ -817,13 +849,48 @@ def speed_window(scene, st, cache):
     return before[-1], after[0]
 
 
+def _chart_cache(ctx, st):
+    """The path the timing chart shows (2+ selected keys), or None."""
+    if not st.show_timing_chart or ctx.area is None:
+        return None
+    return next((c for c in state.editable_caches(ctx.scene) if sum(1 for k in c.keys if k.sel) >= 2), None)
+
+
+def _speed_shown(ctx, st):
+    """Whether the speed graph has something to show."""
+    if not st.show_speed_graph:
+        return False
+    caches = state.editable_caches(ctx.scene)
+    cache = next((c for c in caches if sum(1 for k in c.keys if k.sel) >= 2), None) or next(iter(caches), None)
+    if cache is None or not cache.speeds:
+        return False
+    win = speed_window(ctx.scene, st, cache)
+    return win is not None and sum(1 for t in cache.times if win[0] - 1e-6 <= t <= win[1] + 1e-6) >= 2
+
+
+CHART_BOTTOM, CHART_TOP, SPEED_TOP = 46.0, 112.0, 178.0
+
+
+def _draw_chart_blocks(ctx, st, us):
+    """The dark blocks behind the timing chart and the speed graph, in one style; one block when
+    both show."""
+    chart = _chart_cache(ctx, st) is not None
+    speed = _speed_shown(ctx, st)
+    if not chart and not speed:
+        return
+    x0, x1 = chart_span(ctx.region, us, ctx.area)
+    lo = CHART_BOTTOM if chart else 118.0
+    hi = SPEED_TOP if speed else CHART_TOP
+    _rounded_rect(x0, lo * us, x1 - x0, (hi - lo) * us, 7.0 * us, (0.08, 0.08, 0.1, 0.62))
+    if chart and speed:
+        _flat([(x0 + 8 * us, 115.0 * us), (x1 - 8 * us, 115.0 * us)], (1.0, 1.0, 1.0, 0.08))
+
+
 def _draw_chart(ctx, st, us):
     """Timing chart of the selected keys: a ruler with a tick where every frame is along the
     path between the first and the last selected key (like an animator's timing chart)."""
     state.chart = None
-    if not st.show_timing_chart or ctx.area is None:
-        return
-    cache = next((c for c in state.editable_caches(ctx.scene) if sum(1 for k in c.keys if k.sel) >= 2), None)
+    cache = _chart_cache(ctx, st)
     if cache is None:
         return
     sel = [k.t for k in cache.keys if k.sel]
@@ -837,7 +904,9 @@ def _draw_chart(ctx, st, us):
     total = arc[-1] or 1.0
     region = ctx.region
     x0, x1 = chart_span(region, us, ctx.area)
-    y = 80.0 * us
+    pad = 12.0 * us                     # inside its block, like the speed graph
+    x0, x1 = x0 + pad, x1 - pad
+    y = 84.0 * us
     keys = {round(k.t, 3) for k in cache.keys}
     ticks = []
     lines = [(x0, y), (x1, y)]
@@ -859,8 +928,10 @@ def _draw_chart(ctx, st, us):
             lines += [(x, y - 5 * us), (x, y + 5 * us)]
     _flat(lines, (1.0, 1.0, 1.0, 0.75))
     _flat(key_lines, (1.0, 0.6, 0.15, 1.0))
-    blf.position(font, x0, y - 22 * us, 0)
-    blf.draw(font, "Timing chart: drag a tick to move that frame along the path")
+    blf.size(font, 9 * us)
+    blf.color(font, 1.0, 1.0, 1.0, 0.55)
+    blf.position(font, x0, CHART_BOTTOM * us + 8 * us, 0)
+    blf.draw(font, "Timing  \u00b7  %s   (drag a tick: move that frame along the path)" % cache.label)
     state.chart = {"area": ctx.area.as_pointer(), "cache": cache.key, "r0": r0, "r1": r1,
                    "x0": x0, "x1": x1, "y": y, "ticks": ticks}
 
@@ -901,7 +972,7 @@ def _draw_speed_graph(ctx, st, us):
     # speed of a step, drawn in the middle of it
     pts = [((t + tn) * 0.5, s) for (t, s), (tn, _s) in zip(data, data[1:])]
     pts = [(t0, pts[0][1])] + pts + [(t1, pts[-1][1])]     # the curve reaches the end keys
-    _rounded_rect(x0, y0, w, h, 7.0 * us, (0.08, 0.08, 0.1, 0.62))
+    # (its block is drawn with the timing chart's: _draw_chart_blocks)
     # soft fill under the curve, fading out at the bottom
     tris, cols = [], []
     top, bottom = (0.45, 0.8, 1.0, 0.32), (0.45, 0.8, 1.0, 0.03)
@@ -1184,6 +1255,7 @@ def _draw_pixel():
         _draw_sculpt(ctx, us)       # the brush strip and circle show even before there's a path
     if st is not None and st.paths and not state.overlays_hidden():
         _draw_points(ctx, st, us)
+        _draw_chart_blocks(ctx, st, us)
         _draw_chart(ctx, st, us)
         _draw_speed_graph(ctx, st, us)
         _draw_prop_circle(ctx, us)

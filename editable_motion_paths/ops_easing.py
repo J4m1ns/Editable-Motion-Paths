@@ -397,7 +397,7 @@ def draw_gallery(ctx, us):
             f = st.easing_strength
             if f > 0.0:
                 draw._rounded_rect(x, y, max(bw * f, 8.0 * us), bh, 4.0 * us, (0.28, 0.45, 0.78, 0.95))
-            text("Strength  %d%%   (wheel)" % round(f * 100), x + bw * 0.5, y + bh * 0.5)
+            text("Strength  %d%%" % round(f * 100), x + bw * 0.5, y + bh * 0.5)
         else:
             draw._rounded_rect(x, y, bw, bh, 6.0 * us, (0.32, 0.32, 0.34, 0.95) if over else (0.15, 0.15, 0.16, 0.95))
             name = "ease_LINEAR" if val == 'LINEAR' else "ease_%s_%s" % (val, st.easing_direction)
@@ -417,7 +417,7 @@ def draw_gallery(ctx, us):
                 sh.uniform_sampler("image", tex)
                 batch.draw(sh)
             text(label, lx, ly, size=12 if val == 'LINEAR' else 11)
-    text("Click a picture: apply      wheel: strength      Esc: close", g['x0'] + w * 0.5, g['y0'] + h + 12.0 * us,
+    text("Click a picture: apply      Wheel: strength      Esc: close", g['x0'] + w * 0.5, g['y0'] + h + 12.0 * us,
          size=11, col=(1.0, 1.0, 1.0, 0.7))
 
 
