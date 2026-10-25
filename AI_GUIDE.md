@@ -29,7 +29,33 @@ print(emp.list_paths())
 
 `mode` is `'LOCATION'` (the head / origin trajectory, which edits location keys) or
 `'ROTATION'` (the bone-tip trajectory, which edits rotation keys). Use
-`emp.set_mode(...)` to switch.
+`emp.set_mode(...)` to switch; a `mode=` given to one call is used for that call only.
+
+## Find the controls first
+
+A production rig has thousands of bones; most of them are machinery hidden from the animator
+(keying those does little or fights the rig). Ask the add-on which bones an animator works
+with:
+
+```python
+print(emp.controls("RIG-rain"))   # {bone collection shown: [bones]}, plus 'keyed': bones with keys now
+```
+
+`analyze()` says so in its summary when a bone is hidden machinery. A wrong name raises
+`ValueError` with the closest names ("Did you mean 'IK-Hand_Parent.L'?"); a frame without a key
+raises `ValueError` listing the frames of the path's keys.
+
+## Animate in world space
+
+`move_key(..., target=(x, y, z))` keys a control exactly there, also on a control without
+keys yet: the rig's parents and constraints are worked out, no bone-local axes to deal with.
+
+```python
+for f, p in ((1, (0.5, 0.0, 1.2)), (12, (0.4, -0.3, 1.6)), (24, (0.5, -0.6, 1.2))):
+    emp.move_key("RIG-rain", "IK-Hand_Parent.L", f, target=p, mode='LOCATION')
+```
+
+Every edit works on the one path named (other paths and Blender's selection are left alone).
 
 ## Read the motion
 
@@ -54,7 +80,7 @@ The add-on draws its overlay with Python, and the MCP screenshot does not show t
 real preview objects instead, then take the screenshot:
 
 ```python
-emp.setup_view("Zombie_Rig", "CTRL_Foot_L", angle=(1.3, 0, 1.2))  # Solid shading, framed
+emp.setup_view("Zombie_Rig", "CTRL_Foot_L", angle=(1.3, 0, 1.2), show_bones=False)  # Solid, framed, no rig shapes
 emp.preview_objects()        # curve colored by speed, octahedra on keys and on every frame
 # ... take the viewport screenshot with the MCP tool ...
 emp.preview_objects(False)   # remove them when done

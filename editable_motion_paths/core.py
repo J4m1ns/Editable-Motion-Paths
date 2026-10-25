@@ -1584,7 +1584,10 @@ class BakeJob:
             t_back = time.time()
             scene.frame_set(cur, subframe=sub)
             state.unhide_cost(hidden, time.time() - t_back)
-            _restore_pose_state(saved)
+            if _restore_pose_state(saved):
+                # worked in now, while it counts as ours: later it would look like an edit (the
+                # ghosts, the center of mass and the auto update would start again - a loop)
+                bpy.context.view_layer.update()
             state.baking = False
             if budget is None and self.f > self.fe:
                 state.bake_seconds = time.time() - t0      # (all of it, showing meshes again too)

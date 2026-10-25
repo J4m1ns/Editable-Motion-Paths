@@ -446,8 +446,8 @@ recalculate on their own (*Auto Update*).
 ## Scripting and AI assistants
 
 `emp = next(m for n, m in sys.modules.items() if n.endswith("editable_motion_paths.api"))`
-gives a Python API: add paths, read and `analyze()`
-trajectories, `jitter()`, move keys in world space, smooth, exaggerate, ease, slide, `space`,
+gives a Python API: find a rig's animator `controls()`, add paths, read and `analyze()`
+trajectories, key controls in world space, `jitter()`, move keys in world space, smooth, exaggerate, ease, slide, `space`,
 `subdivide`, `dissolve_keys`, `bevel`, `extrude`, `loop_tool`, `path_to_curve`,
 `follow_curve`, Clean Up and more. `preview_objects()` builds the paths as real geometry so
 they show up in screenshots. See [AI_GUIDE.md](AI_GUIDE.md); you can give it to Claude in a

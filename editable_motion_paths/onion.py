@@ -971,9 +971,12 @@ def _tick():
             if preview:
                 _put_keys(_pending_keys(scene), cur, undo)
             done = []
+            # as many frames as fit in ~40 ms (a heavy character: one a tick, so Blender keeps
+            # answering; a light one: up to 4)
+            most = max(1, min(4, int(0.04 / _cost))) if _cost > 0 else 1
             for f in want:
                 batch.append(f)
-                if len(batch) >= 4:
+                if len(batch) >= most:
                     break
             t1 = time.time()
             for f in batch:

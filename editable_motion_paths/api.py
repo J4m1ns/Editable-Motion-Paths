@@ -3,16 +3,25 @@
     import sys
     emp = next(m for n, m in sys.modules.items() if n.endswith("editable_motion_paths.api"))
 
+    print(emp.controls("Rig"))                      # the animator's bones, by bone collection
     emp.add_paths("Rig", ["CTRL_Foot_L"])           # show paths
     print(emp.analyze("Rig", "CTRL_Foot_L")["summary"])   # read the motion like an animator
     emp.preview_objects()                           # make the paths visible in screenshots
     emp.move_key("Rig", "CTRL_Foot_L", 25, offset=(0, 0, 0.05))
+    emp.move_key("Rig", "CTRL_Hand_R", 12, target=(0.4, -0.3, 1.5))   # key it there, in world space
 
 Every function takes object names / bone names (not RNA references) and works no matter
 which tool, mode or selection is active. `mode` is 'LOCATION' or 'ROTATION' (default: the
-current edit mode); 'SCALE' and 'VALUE' are the scale ribbon and the value track.
+current edit mode); 'SCALE' and 'VALUE' are the scale ribbon and the value track. A `mode`
+given to one call is used for that call only (the edit mode shown in Blender stays).
+
+An edit works on the one path named, at the keys of `frames` (frame numbers of its keys; None:
+all of them): other paths and the selection in Blender aren't touched. A wrong name or a frame
+without a key raises ValueError saying what there is.
 """
 
+import contextlib
+import difflib
 import math
 import statistics
 
@@ -34,21 +43,65 @@ def _scene():
     return bpy.context.scene
 
 
-def _mode(mode):
+MODES = ('LOCATION', 'ROTATION', 'SCALE', 'VALUE')
+
+
+def _valid_mode(mode):
+    if mode is not None and mode not in MODES:
+        raise ValueError("mode %r: use one of %s" % (mode, ", ".join(MODES)))
     return mode or state.settings(_scene()).edit_mode
+
+
+def _suggest(name, names):
+    near = difflib.get_close_matches(name, list(names), n=3, cutoff=0.6)
+    return (" Did you mean %s?" % " / ".join(repr(n) for n in near)) if near else ""
+
+
+def _object(obj):
+    """The object by name, or ValueError with the closest names."""
+    if not isinstance(obj, str):
+        return obj
+    o = bpy.data.objects.get(obj)
+    if o is None:
+        raise ValueError("No object %r.%s" % (obj, _suggest(obj, bpy.data.objects.keys())))
+    return o
+
+
+def _check_bone(o, bone):
+    if bone and (o.type != 'ARMATURE' or o.pose is None or o.pose.bones.get(bone) is None):
+        names = o.pose.bones.keys() if o.type == 'ARMATURE' and o.pose is not None else []
+        raise ValueError("No bone %r in %r.%s" % (bone, o.name, _suggest(bone, names)))
+
+
+@contextlib.contextmanager
+def _in_mode(mode):
+    """The edit mode for one call, put back after it."""
+    st = state.settings(_scene())
+    before = st.edit_mode
+    if mode and mode != before:
+        st.edit_mode = mode
+        state.sync_caches(_scene())
+    try:
+        yield
+    finally:
+        if st.edit_mode != before:
+            st.edit_mode = before
+            state.sync_caches(_scene())
 
 
 def _cache(obj, bone=None, mode=None):
     """Path cache for obj/bone, adding and calculating the path if needed."""
-    name = obj if isinstance(obj, str) else obj.name
-    mode = _mode(mode)
-    key = (name, bone or "", mode)
+    o = _object(obj)
+    _check_bone(o, bone)
+    mode = _valid_mode(mode)
+    key = (o.name, bone or "", mode)
     c = state.caches.get(key)
     if c is None or not c.B:
-        add_paths(name, [bone] if bone else None, mode=mode)
+        with _in_mode(mode):       # (a mode asked for this call only: the one shown stays)
+            add_paths(o.name, [bone] if bone else None)
         c = state.caches.get(key)
     if c is None:
-        raise ValueError("No path for %s %s" % (name, bone or ""))
+        raise ValueError("No path for %s %s" % (o.name, bone or ""))
     c.refresh(force=True)
     return c
 
@@ -71,11 +124,14 @@ def _view3d():
 # ----------------------------------------------------------------------------
 
 def add_paths(obj, bones=None, mode=None):
-    """Show editable paths for an object, or for bones of an armature. Returns path keys."""
-    o = bpy.data.objects[obj] if isinstance(obj, str) else obj
+    """Show editable paths for an object, or for bones of an armature (calculated now).
+    Returns the path keys (object, bone, mode). mode: also switches the edit mode shown."""
+    o = _object(obj)
+    for b in bones or ():
+        _check_bone(o, b)
     st = state.settings(_scene())
     if mode:
-        st.edit_mode = mode
+        st.edit_mode = _valid_mode(mode)
     existing = {(e.object.name if e.object else None, e.bone_name) for e in st.paths}
     for b in (bones or [""]):
         if (o.name, b) not in existing:
@@ -113,7 +169,31 @@ def update():
     state.bake_all(_scene())
 
 
+def controls(obj):
+    """The bones an animator works with on an armature: {bone collection: [bone names]} of the
+    collections shown (hidden ones hold the rig's machinery: keying those does little or fights
+    the rig), and 'keyed': the bones that have keys now. Start here on a rig you don't know."""
+    o = _object(obj)
+    if o.type != 'ARMATURE':
+        raise ValueError("%r is a %s, not an armature" % (o.name, o.type.lower()))
+    out = {}
+    for coll in o.data.collections_all:
+        if not coll.is_visible_effectively:
+            continue
+        names = [b.name for b in coll.bones if not b.hide and not b.use_deform]
+        if names:
+            out[coll.name] = names
+    keyed = set()
+    for fc in compat.get_fcurves(o) or []:
+        m = state._BONE_PATH.match(fc.data_path)
+        if m and len(fc.keyframe_points):
+            keyed.add(m.group(1).replace('\\"', '"'))
+    out["keyed"] = sorted(keyed)
+    return out
+
+
 def list_paths():
+    """[{object, bone, mode, frames: [first, last], keys: count}] of the paths calculated."""
     return [{"object": k[0], "bone": k[1], "mode": k[2], "frames": [c.fs, c.fe], "keys": len(c.keys)}
             for k, c in state.caches.items() if c.B]
 
@@ -133,14 +213,31 @@ def get_path(obj, bone=None, mode=None):
             "handle_types": [k.type_l, k.type_r], "interpolation": k.interp,
         })
     return {"object": c.obj_name, "bone": c.bone_name, "mode": c.ptype,
-            "what": "bone head / object origin" if c.ptype == core.LOCATION else "bone tip",
+            "what": {core.LOCATION: "bone head / object origin", core.ROTATION: "bone tip",
+                     core.SCALE: "bone head / object origin (scale as ribbons)",
+                     core.VALUE: "the value, drawn above the location path"}[c.ptype],
             "frames": [int(round(f)) for f in frames], "points": [_v(p) for p in pts],
+            "key_frames": [round(k.t, 3) for k in c.keys],
             "speed_per_frame": [round(s, 5) for s in speeds], "keys": keys}
 
 
 # ----------------------------------------------------------------------------
 # reading the motion
 # ----------------------------------------------------------------------------
+
+def _hidden_note(c):
+    """A word when the bone isn't one an animator sees (rig machinery)."""
+    obj, owner = core.resolve(c.obj_name, c.bone_name)
+    if not c.bone_name or owner is None:
+        return ""
+    b = owner.bone
+    colls = list(b.collections)
+    if b.hide or (colls and not any(col.is_visible_effectively for col in colls)):
+        return ("note: %s is hidden from the animator (bone collection %s): rig machinery, whose keys the "
+                "rig may override - see controls() for the bones to animate" %
+                (c.bone_name, ", ".join(col.name for col in colls) or "-"))
+    return ""
+
 
 def analyze(obj, bone=None, mode=None):
     """Animator-style reading of a path. Returns a dict; dict['summary'] is plain text.
@@ -201,7 +298,7 @@ def analyze(obj, bone=None, mode=None):
     lines = [
         "%s %s, %s path (%s), frames %d-%d, %d keys" % (
             c.obj_name, c.bone_name, c.ptype.lower(),
-            "head/origin" if c.ptype == core.LOCATION else "bone tip", frames[0], frames[-1], len(ks)),
+            "bone tip" if c.ptype == core.ROTATION else "head/origin", frames[0], frames[-1], len(ks)),
         "distance %.3f, average speed %.4f/frame, fastest %.4f at frame %d" % (
             arc, arc / len(spd), vmax, fast),
         "holds (no motion): %s" % (", ".join("%d-%d" % tuple(h) for h in holds) or "none"),
@@ -211,6 +308,9 @@ def analyze(obj, bone=None, mode=None):
             ", ".join("%d (%.0f deg)" % (t["frame"], t["angle_deg"]) for t in turns) or "none"),
         "keys: " + ", ".join("%g %s" % (e["frame"], e["key"]) for e in eases),
     ]
+    note = _hidden_note(c)
+    if note:
+        lines.append(note)
     return {"object": c.obj_name, "bone": c.bone_name, "mode": c.ptype, "distance": round(arc, 4),
             "speed_per_frame": [round(s, 5) for s in spd], "holds": holds, "pops": pops,
             "sharp_turns": turns, "keys": eases, "summary": "\n".join(lines)}
@@ -221,6 +321,8 @@ def analyze(obj, bone=None, mode=None):
 # ----------------------------------------------------------------------------
 
 def _select_owner_and_keys(c, frames):
+    """The path's keys at `frames` selected - and nothing else: the keys of every other path are
+    deselected, so an operator works on this path only. ValueError if no key is at `frames`."""
     obj, owner = core.resolve(c.obj_name, c.bone_name)
     if c.bone_name:
         if obj.mode != 'POSE':
@@ -230,17 +332,48 @@ def _select_owner_and_keys(c, frames):
     else:
         obj.select_set(True)
     c.refresh(force=True)
-    pick.deselect_all([c])
+    pick.deselect_all([o for o in state.caches.values() if o.B])
     c.refresh(force=True)
-    want = None if frames is None else {round(float(f), 3) for f in frames}
+    # (None or []: every key)
+    want = {round(float(f), 3) for f in frames} if frames else None
+    if want is not None and not any(round(k.t, 3) in want for k in c.keys):
+        raise ValueError("No key of the %s path of %s %s at frames %s; its keys are at %s" % (
+            c.ptype.lower(), c.obj_name, c.bone_name, sorted(want), [round(k.t, 3) for k in c.keys]))
     for k in c.keys:
         if want is None or round(k.t, 3) in want:
             pick.select_part(c, k, 'KEY', True)
     c.refresh(force=True)
 
 
+@contextlib.contextmanager
+def _only(c):
+    """Only this path's bone / object selected while an operator runs (operators work on the paths
+    of the selected bones / objects); the selection is put back after."""
+    obj, owner = core.resolve(c.obj_name, c.bone_name)
+    bones = []
+    if c.bone_name and obj.pose is not None:
+        bones = [(pb, compat.bone_selected(pb)) for pb in obj.pose.bones]
+        for pb, _s in bones:
+            if pb is not owner and _s:
+                compat.bone_select_set(pb, False)
+    objs = [(o, o.select_get()) for o in bpy.context.view_layer.objects]
+    for o, sel in objs:
+        if sel and o is not obj:
+            o.select_set(False)
+    try:
+        yield
+    finally:
+        for pb, sel in bones:
+            if compat.bone_selected(pb) != sel:
+                compat.bone_select_set(pb, sel)
+        for o, sel in objs:
+            if o.select_get() != sel:
+                o.select_set(sel)
+
+
 def select_keys(obj, bone=None, frames=None, mode=None):
-    """Select keys of a path (frames=None: all) and its bone/object, so operators act on them."""
+    """Select keys of a path (frames=None: all) and its bone/object, so the tools in Blender act
+    on them (the keys of other paths get deselected)."""
     c = _cache(obj, bone, mode)
     _select_owner_and_keys(c, frames)
     state.tag_redraw()
@@ -250,8 +383,20 @@ def move_key(obj, bone=None, frame=None, target=None, offset=None, mode=None):
     """Move one path key in world space: to `target` (x, y, z) or by `offset`.
 
     Location paths move the bone head / object origin; rotation paths turn the bone so its
-    tip points at the target. Missing channel keys are added. Returns the new position.
+    tip points at the target. No key at `frame`: one is inserted there first (the motion doesn't
+    change), likewise missing channel keys. Returns the new position.
+
+    It is also the easy way to animate in world space: on a control with no keys yet, call it with
+    target=(x, y, z) for each frame - the parents and constraints of the rig are worked out, the
+    bone ends up exactly there (no bone-local axes to deal with).
     """
+    with _in_mode(_valid_mode(mode)):
+        return _move_key(obj, bone, frame, target, offset, mode)
+
+
+def _move_key(obj, bone, frame, target, offset, mode):
+    if frame is None or (target is None) == (offset is None):
+        raise ValueError("move_key needs a frame and either target=(x, y, z) or offset=(x, y, z)")
     c = _cache(obj, bone, mode)
     tg = c.target()
     core.ensure_keys(tg, c.ptype, [float(frame)], None, state.settings(_scene()).pin_partial)
@@ -276,24 +421,30 @@ def move_key(obj, bone=None, frame=None, target=None, offset=None, mode=None):
 def insert_key(obj, bone=None, frame=None, mode=None):
     """Insert a key on the path at `frame` without changing the motion."""
     from .ops_keys import insert_key as _insert
-    c = _cache(obj, bone, mode)
-    k = _insert(c, float(frame))
+    with _in_mode(_valid_mode(mode)):
+        c = _cache(obj, bone, mode)
+        k = _insert(c, float(frame))
     _push("Insert Path Key")
     return k is not None
 
 
 def _run_op(_op, _frames, _obj, _bone, _mode, **props):
+    """Run a path operator on this path's keys at `frames` only. Returns the operator's result,
+    e.g. {'FINISHED'} ({'CANCELLED'}: it had nothing to do)."""
     # (underscored names: operator properties like `frames` or `mode` go through **props)
-    c = _cache(_obj, _bone, _mode)
-    _select_owner_and_keys(c, _frames)
-    win, area, region = _view3d()
-    if area is not None:
-        with bpy.context.temp_override(window=win, area=area, region=region):
-            r = _op('EXEC_DEFAULT', **props)
-    else:
-        r = _op('EXEC_DEFAULT', **props)
-    c.refresh(force=True)
-    return r
+    with _in_mode(_valid_mode(_mode)):
+        c = _cache(_obj, _bone, _mode)
+        with _only(c):
+            _select_owner_and_keys(c, _frames)
+            win, area, region = _view3d()
+            if area is not None:
+                with bpy.context.temp_override(window=win, area=area, region=region):
+                    r = _op('EXEC_DEFAULT', **props)
+            else:
+                r = _op('EXEC_DEFAULT', **props)
+        c = state.caches.get(c.key) or c
+        c.refresh(force=True)
+        return r
 
 
 def smooth(obj, bone=None, frames=None, factor=1.0, method='SHAPE', mode=None):
@@ -339,6 +490,7 @@ def cleanup(obj, bone=None, frames=None, method='CLEAN', tolerance=1.0, mode=Non
 
 
 def set_handle_type(obj, bone=None, frames=None, handle_type='AUTO_CLAMPED', mode=None):
+    """Handle type of the keys at `frames`: 'FREE', 'ALIGNED', 'VECTOR', 'AUTO', 'AUTO_CLAMPED'."""
     return _run_op(bpy.ops.emp.handle_type, frames, obj, bone, mode, type=handle_type)
 
 
@@ -351,6 +503,8 @@ def space(obj, bone=None, frames=None, profile='EVEN', factor=1.0, strength=2.0,
 
 
 def delete_keys(obj, bone=None, frames=None, mode=None):
+    """Delete the keys at `frames` (the motion between their neighbors changes; dissolve_keys keeps
+    the shape instead)."""
     return _run_op(bpy.ops.emp.delete_keys, frames, obj, bone, mode)
 
 
@@ -577,16 +731,19 @@ def render_view(filepath, overlays=True):
     return filepath
 
 
-def setup_view(obj=None, bone=None, mode=None, solid=True, angle=None):
+def setup_view(obj=None, bone=None, mode=None, solid=True, angle=None, show_bones=None):
     """Get the largest 3D viewport ready for screenshots: Solid shading (preview objects
     are drawn in front of the character only there), optional view angle (x, y, z euler in
-    radians) and framed on a path."""
+    radians) and framed on a path. show_bones=False hides the rig's bones / control shapes
+    (a big rig's controls cover the paths; the paths are drawn either way)."""
     win, area, region = _view3d()
     if area is None:
         return
     space = area.spaces.active
     if solid:
         space.shading.type = 'SOLID'
+    if show_bones is not None:
+        space.overlay.show_bones = show_bones
     if angle is not None:
         from mathutils import Euler
         space.region_3d.view_rotation = Euler(angle).to_quaternion()

@@ -298,42 +298,62 @@ def _target_value(t):
         v = t.id.path_resolve(t.data_path)
     except (ValueError, TypeError, AttributeError):
         return None
+    if isinstance(v, (bool, int, float)):
+        return round(float(v), 6)
+    if isinstance(v, str):
+        return v            # (a text property: 'L' / 'R'...)
     try:
-        return tuple(round(float(x), 6) for x in v)
-    except TypeError:
-        try:
-            return round(float(v), 6)
-        except (TypeError, ValueError):
-            return str(v)
+        if len(v) <= 32:
+            return tuple(round(float(x), 6) for x in v)
+    except (TypeError, ValueError):
+        pass
+    return getattr(v, "name", None) or type(v).__name__     # (a datablock, a collection...: by its name)
+
+
+_con_props = {}     # constraint type -> [(identifier, kind)] of the settings read for its signature
+
+
+def _constraint_props(con):
+    props = _con_props.get(con.type)
+    if props is None:
+        props = []
+        for p in con.bl_rna.properties:
+            if p.identifier in {'rna_type', 'show_expanded', 'active', 'error_location', 'error_rotation',
+                                'name'}:
+                continue
+            if p.type == 'POINTER':
+                props.append((p.identifier, 'POINTER'))
+            elif p.type in {'BOOLEAN', 'INT', 'FLOAT', 'ENUM', 'STRING'}:
+                props.append((p.identifier, 'ARRAY' if getattr(p, "is_array", False) else
+                              'SET' if getattr(p, "is_enum_flag", False) else p.type))
+        _con_props[con.type] = props
+    return props
 
 
 def _constraint_sig(con):
     """A constraint's settings (its limits, targets, influence...)."""
     out = [con.type]
-    for p in con.bl_rna.properties:
-        if p.identifier in {'rna_type', 'show_expanded', 'active', 'error_location', 'error_rotation'}:
-            continue
+    for ident, kind in _constraint_props(con):
         try:
-            v = getattr(con, p.identifier)
+            v = getattr(con, ident)
         except AttributeError:
             continue
-        if p.type == 'POINTER':
+        if kind == 'POINTER':
             out.append(getattr(v, "name", None))
-        elif p.type in {'BOOLEAN', 'INT', 'FLOAT', 'ENUM', 'STRING'}:
-            if isinstance(v, set):
-                out.append(tuple(sorted(v)))
-            elif getattr(p, "is_array", False):
-                flat = []
-                for x in v:
-                    if hasattr(x, "__len__"):
-                        flat += [round(float(y), 6) for y in x]
-                    else:
-                        flat.append(round(float(x), 6))
-                out.append(tuple(flat))
-            elif p.type == 'FLOAT':
-                out.append(round(v, 6))
-            else:
-                out.append(v)
+        elif kind == 'SET':
+            out.append(tuple(sorted(v)))
+        elif kind == 'ARRAY':
+            flat = []
+            for x in v:
+                if hasattr(x, "__len__"):
+                    flat += [round(float(y), 6) for y in x]
+                else:
+                    flat.append(round(float(x), 6))
+            out.append(tuple(flat))
+        elif kind == 'FLOAT':
+            out.append(round(v, 6))
+        else:
+            out.append(v)
     return tuple(out)
 
 
@@ -391,7 +411,7 @@ def _constrained(owner):
                c.influence > 0.0 for c in owner.constraints)
 
 
-def _harmless(obj, data_path):
+def _harmless(obj, data_path, memo=None):
     """True if changing this channel can't move any path's parent space.
 
     That is the case for transform channels of a path target that moves no other path target
@@ -402,9 +422,15 @@ def _harmless(obj, data_path):
             and not _driven_by(obj, data_path):
         return True     # a custom property shown on a value track that moves nothing else
     # paths of other objects that hang on this one (a parent, Child Of on a bone, a driver...)
+    memo = {} if memo is None else memo
     for c in caches.values():
         other = bpy.data.objects.get(c.obj_name) if c.obj_name != obj.name else None
-        if other is not None and obj.name in _depends_on(other):
+        if other is None:
+            continue
+        deps = memo.get(("deps", other.name))
+        if deps is None:
+            deps = memo[("deps", other.name)] = _depends_on(other)
+        if obj.name in deps:
             return False
     if obj.type == 'ARMATURE' and obj.pose is not None:
         m = _BONE_PATH.match(data_path)
@@ -417,7 +443,12 @@ def _harmless(obj, data_path):
         if pb is None or _constrained(pb):
             return False
         from .onion import affected_bones
-        moved = affected_bones(obj, {bname})
+        memo = {} if memo is None else memo
+        moved = memo.get((obj.name, bname))
+        if moved is None:
+            moved = memo[(obj.name, bname)] = affected_bones(obj, {bname})
+        if any(p.name in moved for p in pb.parent_recursive):
+            return False    # (it moves a bone it hangs from: a neck sharing the head's turn...)
         return not any(c.bone_name and c.bone_name != bname and c.bone_name in moved for c in targets)
     if data_path not in _TRANSFORM_PROPS or not any(not c.bone_name for c in targets):
         return False
@@ -455,6 +486,7 @@ def _needs_rebake(curves=True):
     """True if something that moves a path's parent space changed since the bake: an F-Curve
     that is not a path's own channel, an NLA strip, a driver (or what it reads), a constraint.
     curves=False: only the latter (no curve changed, an object did)."""
+    memo = {}
     for name, obj in _tracked_objects().items():
         new = _fcurve_hashes(obj, curves)
         old = _action_hashes.get(name)
@@ -462,7 +494,7 @@ def _needs_rebake(curves=True):
             return True
         keys = set(new) | set(old) if curves else {k for k in set(new) | set(old) if k[0].startswith("#")}
         for k in keys:
-            if new.get(k) != old.get(k) and not _harmless(obj, k[0]):
+            if new.get(k) != old.get(k) and not _harmless(obj, k[0], memo):
                 return True
         # only own channels changed: keep hashes current so later comparisons stay precise
         if curves:
@@ -596,6 +628,8 @@ _BLOCKING_MODALS = {"TRANSFORM", "EMP", "ANIM", "GRAPH", "ACTION", "VIEW3D", "PO
 
 
 _job = None        # the automatic re-bake running in steps (core.BakeJob), or None
+STEP = 0.08        # how long a step of the background re-bake goes on (seconds)
+QUICK_BAKE = 0.15  # a whole re-bake quicker than this is done at once (else in steps: no hitch)
 bake_seconds = 0.0  # how long the last whole bake took (a quick one is done at once)
 
 
@@ -620,8 +654,8 @@ def _bake_timer():
     from . import core
     try:
         if _job is not None:
-            # (a step: ~0.12 s with putting the frame back, which costs about one frame)
-            if not _job.step(max(0.02, 0.12 - 2.0 * getattr(_job, "pace", 0.0))):
+            # (a step: ~0.08 s with putting the frame back, which costs about one frame)
+            if not _job.step(max(0.02, STEP - 2.0 * getattr(_job, "pace", 0.0))):
                 return 0.01
             _job.finish()
             _job = None
@@ -637,8 +671,12 @@ def _bake_timer():
                     or _needs_rebake(curves):
                 sync_caches()
                 _job = core.BakeJob(bpy.context.scene, list(caches.values()))
-                # quick scenes at once (as before); heavy ones in steps, without a freeze
-                if not _job.step(None if bake_seconds < 0.5 else 0.12):
+                # quick scenes at once (as before); heavy ones in steps, without a freeze - the
+                # first of them on the next tick (this one checked what changed: on a big rig that
+                # takes a moment already)
+                if bake_seconds >= QUICK_BAKE:
+                    return 0.01
+                if not _job.step(None):
                     return 0.01
                 _job.finish()
                 _job = None
