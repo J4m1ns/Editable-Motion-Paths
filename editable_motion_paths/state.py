@@ -384,10 +384,17 @@ def _bake_timer():
 def _on_depsgraph(scene, depsgraph):
     from . import onion
     from . import com
-    if baking or not caches or onion.busy() or com.busy():
+    if baking or onion.busy() or com.busy():
         return
     st = settings(scene)
-    if st is None or not st.auto_update:
+    if st is None:
+        return
+    if not caches or not st.auto_update:
+        # no path: the ghosts and the center of mass still follow the animation
+        if st.show_onion or st.show_com:
+            if any(isinstance(u.id, bpy.types.Action) for u in depsgraph.updates):
+                onion.changed()
+                com.changed()
         return
     for u in depsgraph.updates:
         if isinstance(u.id, bpy.types.Action):

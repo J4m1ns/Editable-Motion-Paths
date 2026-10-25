@@ -56,7 +56,46 @@ def _edited(scene):
                 arms[obj.name].add(c.bone_name)
         elif obj not in objs:
             objs.append(obj)
+    if not arms and not objs:
+        # no path shown: the selection (the ghosts don't need a path)
+        from . import compat
+        vl = bpy.context.view_layer
+        ob = vl.objects.active if vl else None
+        if ob is not None and ob.type == 'ARMATURE' and ob.mode == 'POSE':
+            arms[ob.name] = {pb.name for pb in ob.pose.bones if compat.bone_selected(pb)}
+        else:
+            for o in getattr(bpy.context, "selected_objects", None) or []:
+                if o.type == 'ARMATURE':
+                    arms.setdefault(o.name, set())
+                elif o not in objs:
+                    objs.append(o)
     return arms, objs
+
+
+def _key_frames(scene):
+    """The key frames of what is ghosted: the paths' keys, or (no path) the keys of the selected
+    bones / objects."""
+    from . import compat
+    cs = state.editable_caches(scene)
+    if cs:
+        return sorted({round(k.t) for c in cs for k in c.keys})
+    arms, objs = _edited(scene)
+
+    def collect(only_selected):
+        frames = set()
+        for name, bones in arms.items():
+            ob = bpy.data.objects.get(name)
+            for fc in (compat.get_fcurves(ob) or []) if ob is not None else []:
+                if only_selected and bones and not any(('pose.bones["%s"]' % b) in fc.data_path for b in bones):
+                    continue
+                frames.update(round(kp.co[0]) for kp in fc.keyframe_points)
+        for ob in objs:
+            for fc in compat.get_fcurves(ob) or []:
+                frames.update(round(kp.co[0]) for kp in fc.keyframe_points)
+        return frames
+    # the selected bones' keys; with fewer than two (a mechanism bone), the whole rig's
+    sel = collect(True)
+    return sorted(sel if len(sel) >= 2 else collect(False))
 
 
 def affected_bones(arm, edited):
@@ -369,7 +408,7 @@ def _weights(p, o, arm, me, inv, K=4):
     # so the proxy also follows an armature object that moves
     p.rest_inv = rest_inverses(arm, p.bones)
     Ma, Bs = bone_mats(arm, p.bones, p.rest_inv)
-    A = np.einsum('pk,pkij->pij', w, Ma @ Bs[idx])          # (P, 4, 4)
+    A = np.einsum('pk,pkij->pij', w, Ma @ Bs[p.idx])        # (P, 4, 4)
     A[p.free] = Ma
     v = np.concatenate([p.co.astype(np.float64), np.ones((P, 1))], axis=1)
     try:
@@ -453,7 +492,12 @@ def frames_to_show(scene, st):
         before = [cur - st.onion_step * i for i in range(1, st.onion_before + 1)]
         after = [cur + st.onion_step * i for i in range(1, st.onion_after + 1)]
     else:
-        keys = sorted({round(k.t) for c in state.editable_caches(scene) for k in c.keys})
+        keys = _key_frames(scene)
+        if not keys:
+            # nothing keyed: every 5 frames
+            step = 5
+            return [(cur - step * (i + 1), -(i + 1)) for i in range(st.onion_before)] + \
+                [(cur + step * (i + 1), i + 1) for i in range(st.onion_after)]
         before = [t for t in reversed(keys) if t < cur][:st.onion_before]
         after = [t for t in keys if t > cur][:st.onion_after]
     return [(f, -(i + 1)) for i, f in enumerate(before)] + [(f, i + 1) for i, f in enumerate(after)]

@@ -517,22 +517,26 @@ def _draw_view():
     ctx = bpy.context
     scene = ctx.scene
     st = state.settings(scene)
-    if st is None or not st.paths or state.overlays_hidden():
+    if st is None or state.overlays_hidden():
+        return
+    us = compat.ui_scale()
+    # the ghosts and the center of mass don't need a path (the selection is enough)
+    if st.show_onion or st.show_com:
+        from . import com, onion
+        gpu.state.blend_set('ALPHA')
+        gpu.state.depth_mask_set(False)
+        onion.draw(scene, st, us)
+        com.draw(scene, st, us)
+    if not st.paths:
         return
     caches = state.visible_caches(scene)
     if not caches:
         return
     region, rv3d = ctx.region, ctx.region_data
-    us = compat.ui_scale()
     gpu.state.blend_set('ALPHA')
     gpu.state.depth_test_set('NONE' if st.on_top else 'LESS_EQUAL')
     gpu.state.depth_mask_set(False)
     cur = scene.frame_current + scene.frame_subframe
-
-    from . import onion
-    onion.draw(scene, st, us)
-    from . import com
-    com.draw(scene, st, us)
     gpu.state.depth_test_set('NONE' if st.on_top else 'LESS_EQUAL')
     gpu.state.depth_mask_set(False)
 
