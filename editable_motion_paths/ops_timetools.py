@@ -822,10 +822,11 @@ class EMP_OT_speed_drag(bpy.types.Operator):
         state.speed_hold = None
         self.area.header_text_set(None)
         if self.mode == 'SCRUB':
+            state.tag_redraw()
             if not ok:
                 context.scene.frame_set(self.frame0)
-            state.tag_redraw()
-            return {'CANCELLED'}        # (a frame change isn't an undo step, like the timeline)
+                return {'CANCELLED'}
+            return {'FINISHED'}         # (going to a frame is an undo step: Ctrl+Z goes back to where you were)
         if not ok:
             self.snapshot.restore()
             self.c.dirty = True

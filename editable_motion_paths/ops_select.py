@@ -99,7 +99,7 @@ class EMP_OT_click(bpy.types.Operator):
             return {'FINISHED'}
         if hit.part == 'KEY' and not event.shift and not event.ctrl and self._is_double(context, event, hit):
             context.scene.frame_set(int(round(hit.t)))
-            return {'CANCELLED'}        # (going to a frame isn't an undo step, like the timeline)
+            return {'FINISHED'}         # (going to a frame is an undo step: Ctrl+Z goes back to where you were)
         if not cache.owner_selected():
             if not pick.select_owner(context, cache, event.shift):
                 return {'PASS_THROUGH'}
@@ -244,7 +244,7 @@ class EMP_OT_click(bpy.types.Operator):
                 return {'RUNNING_MODAL'}
             if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
                 context.scene.frame_set(int(frame))
-                return {'CANCELLED'}    # (going to a frame isn't an undo step, like the timeline)
+                return {'FINISHED'}     # (going to a frame is an undo step)
             if event.type in {'ESC', 'RIGHTMOUSE'}:
                 return {'CANCELLED'}
             return {'RUNNING_MODAL'}
