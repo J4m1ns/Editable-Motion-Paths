@@ -58,6 +58,12 @@ def _com_range(self, context):
     state.tag_redraw()
 
 
+def _onion_rebuild(self, context):
+    from . import onion
+    onion.clear_all()
+    state.tag_redraw()
+
+
 def _rebake(self, context):
     # (the old paths stay shown and editable until the new range is baked)
     state.schedule_rebake(0.05, force=True)
@@ -352,6 +358,13 @@ class EMP_Settings(bpy.types.PropertyGroup):
                                                     "switch several; one always stays on)")
     easing_strength: FloatProperty(name="Strength", default=1.0, min=0.0, max=1.0, subtype='FACTOR',
                                    description="How much of the easing (0: the timing as it was)")
+    easing_from: FloatProperty(name="From", default=0.0, min=0.0, max=1.0, subtype='FACTOR',
+                               description="Keep the Path: where in the selected part the easing begins "
+                                           "(before it the timing stays; e.g. Out from 60%: only the end "
+                                           "slows down, the start keeps its speed)")
+    easing_to: FloatProperty(name="To", default=1.0, min=0.0, max=1.0, subtype='FACTOR',
+                             description="Keep the Path: where in the selected part the easing ends "
+                                         "(after it the timing stays)")
     show_speed_graph: BoolProperty(name="Speed Graph", default=False, update=_redraw,
                                    description="A graph of the speed of the active path, above the "
                                                "timing chart")
@@ -474,10 +487,10 @@ class EMP_Preferences(bpy.types.AddonPreferences):
     scale_box_size: FloatProperty(name="Box Size", default=1.0, min=0.05, soft_max=5.0, update=_redraw)
     scale_y_display: EnumProperty(
         name="Scale Y", update=_redraw,
-        items=[('COLOR', "Color", "The Y scale is the color of the ribbons (blue below 1, red above)"),
-               ('RIBBON', "Ribbon", "The Y scale is a third ribbon beside the other two, as wide as it; drag "
-                                    "its edge like the others")],
-        default='COLOR')
+        items=[('RIBBON', "Ribbon", "The Y scale is a third ribbon beside the other two, as wide as it; drag "
+                                    "its edge like the others"),
+               ('COLOR', "Color", "The Y scale is the color of the ribbons (blue below 1, red above)")],
+        default='RIBBON')
     onion_color_before: FloatVectorProperty(name="Before", subtype='COLOR', size=3, min=0.0, max=1.0,
                                             default=(1.0, 0.35, 0.3), update=_redraw)
     onion_color_after: FloatVectorProperty(name="After", subtype='COLOR', size=3, min=0.0, max=1.0,
@@ -486,6 +499,15 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         name="Ghosts Ahead", default=10, min=0, soft_max=100, update=_redraw,
         description="Onion skin: the ghosts are captured ahead of time this many frames before and after the "
                     "current frame (the ones shown always are); more: smoother playback, more work")
+    onion_shapes: EnumProperty(
+        name="Ghost Shapes", update=_onion_rebuild,
+        description="Onion skin: how the bent meshes are shaped on the ghosts",
+        items=[('EXACT', "Exact", "Meshes with shape keys that change (correctives, expressions) or other "
+                                  "deformers (lattices, hooks, Mesh / Surface Deform, Shrinkwrap, Geometry "
+                                  "Nodes) are taken as Blender makes them on every ghost frame - right, slower"),
+               ('FAST', "Fast (Bones Only)", "Every mesh is bent by its bones only (fastest; shape keys and "
+                                             "lattices don't show on the ghosts)")],
+        default='EXACT')
     onion_other_display: EnumProperty(
         name="Other Objects", update=_redraw,
         description="Onion skin: how objects without a shape of their own (speakers, light probes, force "
@@ -579,6 +601,7 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         col.prop(self, "onion_color_after", text="After")
         col.prop(self, "onion_other_display")
         col.prop(self, "onion_cache_range")
+        col.prop(self, "onion_shapes")
         layout.separator()
         col = layout.column()
         col.label(text="Center of Mass")

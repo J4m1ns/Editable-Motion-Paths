@@ -326,12 +326,33 @@ class _Proxy:
         self.arm = None
         self.M0 = None          # object matrix when built
         self.rest_inv = None    # DEFORM: (B, 4, 4) inverse rest matrices of the bones
+        self.exact = False      # DEFORM: shaped from the mesh Blender makes on every ghost frame
+        self.inv = None         # exact: proxy vertex of every vertex of the mesh as made
+        self.counts = None      # exact: how many vertices of the mesh make each proxy vertex
+
+
+_EXACT_MODIFIERS = {'LATTICE', 'MESH_DEFORM', 'SURFACE_DEFORM', 'HOOK', 'SHRINKWRAP', 'NODES', 'CAST',
+                    'SIMPLE_DEFORM', 'WARP', 'WAVE', 'LAPLACIANDEFORM', 'CLOTH', 'SOFT_BODY'}
+
+
+def needs_exact(o):
+    """A bent mesh whose shape on other frames isn't just its bones': shape keys that change
+    (driven or animated: correctives, expressions) or another deformer (a lattice on the face...)."""
+    from .props import prefs
+    p = prefs()
+    if o.type != 'MESH' or (p is not None and p.onion_shapes == 'FAST'):
+        return False
+    if any(m.type in _EXACT_MODIFIERS and m.show_viewport for m in o.modifiers):
+        return True
+    key = getattr(o.data, "shape_keys", None)
+    ad = getattr(key, "animation_data", None) if key is not None else None
+    return ad is not None and (len(ad.drivers) > 0 or ad.action is not None)
 
 
 def _mesh_sig(o):
     mods = tuple((m.type, m.show_viewport, getattr(m, "levels", None)) for m in o.modifiers)
     n = len(o.data.vertices) if getattr(o.data, "vertices", None) is not None else 0
-    return (o.type, n, mods)
+    return (o.type, n, mods, needs_exact(o))
 
 
 def _circle(r, n=24, axis=2, z=0.0):
@@ -507,6 +528,10 @@ def _build(o, arm, how, st, dg):
     p.M0 = Matrix(ev.matrix_world)
     if how == 'DEFORM':
         _weights(p, o, arm, me, inv)
+        if needs_exact(o):
+            p.exact = True
+            p.inv = inv
+            p.counts = np.maximum(np.bincount(inv, minlength=len(co)), 1)
     ev.to_mesh_clear()
     _proxies[o.name] = p
     return True
@@ -597,6 +622,30 @@ def _pose(p):
         v[p.free] = p.rest[p.free]          # (no weight: it goes with the armature object)
     v = v @ Ma.T
     return v[:, :3].astype(np.float32)
+
+
+def _exact_shape(o, p, dg):
+    """World positions of a proxy from the mesh Blender makes now (shape keys, lattices...), its
+    vertices melted together like the proxy's; None if the mesh changed its vertex count."""
+    import numpy as np
+    ev = o.evaluated_get(dg)
+    try:
+        me = ev.to_mesh()
+    except RuntimeError:
+        return None
+    try:
+        n = len(me.vertices)
+        if p.inv is None or n != len(p.inv):
+            return None
+        co = np.empty(n * 3, dtype=np.float64)
+        me.vertices.foreach_get("co", co)
+        co = co.reshape(-1, 3)
+        M = np.array(ev.matrix_world, dtype=np.float64)
+        co = co @ M[:3, :3].T + M[:3, 3]
+        out = np.stack([np.bincount(p.inv, weights=co[:, i], minlength=len(p.counts)) for i in range(3)], axis=1)
+        return (out / p.counts[:, None]).astype(np.float32)
+    finally:
+        ev.to_mesh_clear()
 
 
 def _shown_by_weight(p, aff):
@@ -744,13 +793,18 @@ def _capture(scene, frames, targets, st):
     # for real, or that child wouldn't follow it
     parents = {o.parent.name for o, _a, _h in targets if o.parent is not None}
     try:
+        exact = {o.name for o, _arm, how in targets if how == 'DEFORM' and
+                 getattr(_proxies.get(o.name), "exact", False)}
         for o, _arm, how in targets:
-            if how == 'DEFORM' and not o.hide_viewport and o.name not in parents and state.can_hide(o, len(frames)):
+            # (exact meshes are made by Blender on every ghost frame: they stay in)
+            if how == 'DEFORM' and not o.hide_viewport and o.name not in parents and o.name not in exact and \
+                    state.can_hide(o, len(frames)):
                 o.hide_viewport = True
                 hidden.append(o)
         arms = {a.name: a for _o, a, _h in targets if a is not None}
         for name in _edited(scene)[0]:
             arms.setdefault(name, bpy.data.objects[name])
+        dg = bpy.context.evaluated_depsgraph_get() if exact else None
         for f in frames:
             scene.frame_set(int(f))
             parts = []
@@ -759,7 +813,8 @@ def _capture(scene, frames, targets, st):
                 if p is None:
                     continue
                 if how == 'DEFORM':
-                    parts.append((p.name, _pose(p), None))
+                    pos = _exact_shape(o, p, dg) if o.name in exact else None
+                    parts.append((p.name, pos if pos is not None else _pose(p), None))
                 else:
                     parts.append((p.name, None, o.matrix_world.copy()))
             bones = []

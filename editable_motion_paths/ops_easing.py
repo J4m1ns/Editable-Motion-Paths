@@ -77,6 +77,12 @@ class EMP_OT_easing_preset(bpy.types.Operator):
                                  description="Channels mode: which channels get the easing")
     strength: FloatProperty(name="Strength", default=1.0, min=0.0, max=1.0, subtype='FACTOR',
                             description="Keep the Path: how much of the easing (0: the timing as it was)")
+    start: FloatProperty(name="From", default=0.0, min=0.0, max=1.0, subtype='FACTOR',
+                         description="Keep the Path: where in the selected part the easing begins (before "
+                                     "it the timing stays; the speed carries on smoothly into it)")
+    end: FloatProperty(name="To", default=1.0, min=0.0, max=1.0, subtype='FACTOR',
+                       description="Keep the Path: where in the selected part the easing ends (after it "
+                                   "the timing stays)")
     back: FloatProperty(name="Overshoot", default=1.70158, min=0.0, soft_max=5.0,
                         description="Back: how far it goes past the end")
     amplitude: FloatProperty(name="Amplitude", default=1.0, min=0.0, soft_max=3.0,
@@ -132,8 +138,10 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         hit = gallery_hit(context, g, mx, my)
         if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             g['hover'] = hit
-            if g['drag']:
+            if g['drag'] == 'strength':
                 _set_strength(st, g, mx)
+            elif g['drag'] in {'from', 'to'}:
+                _set_range(st, g, mx, g['drag'])
         elif t == 'LEFTMOUSE' and v == 'RELEASE':
             g['drag'] = False
         elif t == 'LEFTMOUSE' and v == 'PRESS':
@@ -149,8 +157,14 @@ class EMP_OT_easing_preset(bpy.types.Operator):
                 ch[hit[1]] = not ch[hit[1]]
                 st.easing_channels = ch
             elif hit[0] == 'strength':
-                g['drag'] = True
+                g['drag'] = 'strength'
                 _set_strength(st, g, mx)
+            elif hit[0] == 'range' and st.easing_mode == 'TIMING':
+                # the handle nearer the mouse
+                x, w = hit_box(context, g, 'range')
+                u = (mx - x) / max(w, 1.0)
+                g['drag'] = 'from' if abs(u - st.easing_from) <= abs(u - st.easing_to) else 'to'
+                _set_range(st, g, mx, g['drag'])
             elif hit[0] == 'ease':
                 self._close(context, None)
                 self.easing = hit[1]
@@ -158,6 +172,7 @@ class EMP_OT_easing_preset(bpy.types.Operator):
                 self.mode = st.easing_mode
                 self.channels = st.easing_channels
                 self.strength = st.easing_strength
+                self.start, self.end = st.easing_from, st.easing_to
                 return self.execute(context)
         elif t in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE'} and st.easing_mode == 'TIMING':
             st.easing_strength = min(1.0, max(0.0, st.easing_strength + (0.05 if t == 'WHEELUPMOUSE' else -0.05)))
@@ -179,6 +194,9 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         layout.prop(self, "mode")
         if self.mode == 'TIMING':
             layout.prop(self, "strength")
+            row = layout.row(align=True, heading="Part")
+            row.prop(self, "start", text="From", slider=True)
+            row.prop(self, "end", text="To", slider=True)
         else:
             labels = channel_labels(context) or ["1", "2", "3", "4"]
             row = layout.row(align=True, heading="Channels")
@@ -242,11 +260,22 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         pts, vals = job.pts, job.vals
         d0 = (pts[1] - pts[0]).normalized() if len(pts) > 1 else None
         d1 = (pts[-1] - pts[-2]).normalized() if len(pts) > 1 else None
+        # the part the easing works on (From / To): outside it the timing stays; where the motion
+        # goes on past the part, the easing starts / ends with the speed it had there
+        lo, hi = sorted((self.start, self.end))
+        if hi - lo < 0.02:
+            lo, hi = 0.0, 1.0
+        A, B = r0 + (r1 - r0) * lo, r0 + (r1 - r0) * hi
+        sA, sB = job._at(job.arc, A), job._at(job.arc, B)
+        G = window_easing(fn, B - A, sB - sA,
+                          _speed(job, A) if lo > 1e-3 else None,
+                          _speed(job, B) if hi < 1.0 - 1e-3 else None)
 
         def target(t):
-            u = (t - r0) / (r1 - r0)
             s0 = job._at(job.arc, t)
-            s = s0 + (total * fn(u) - s0) * w
+            if t <= A or t >= B:
+                return cache.solve(tg, t, job._at(pts, t), job._at(vals, t))
+            s = s0 + (sA + (sB - sA) * G((t - A) / (B - A)) - s0) * w
             if s > total and d1 is not None:
                 # Back / Elastic overshoot: on along the direction of the motion
                 return cache.solve(tg, t, pts[-1] + d1 * (s - total), vals[-1])
@@ -260,6 +289,7 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         return 1
 
     def _channels(self, cache, rng):
+        # (From / To: Keep the Path only - Blender's easing interpolation spans a whole segment)
         tg = cache.target()
         ch = tg.channels(cache.ptype)
         use = list(self.channels)
@@ -300,6 +330,36 @@ class EMP_OT_easing_preset(bpy.types.Operator):
 _COLS, _TILE, _GAP, _PAD, _ROW, _WIDE = 5, 86.0, 6.0, 10.0, 24.0, 40.0
 
 
+def _speed(job, t):
+    """Distance along the path per frame at frame t of the part, as it is now."""
+    return (job._at(job.arc, t + 0.5) - job._at(job.arc, t - 0.5))
+
+
+def window_easing(fn, frames, dist, v_in=None, v_out=None):
+    """The easing on a part of the selected range: G(u) from 0 to 1 over the part. Where the motion
+    goes on past the part (v_in: the speed coming in at its start; v_out: the speed going on after
+    its end, distance per frame) the part's time is bent a little (u -> phi(u)) so that the speed
+    there is the same as before - no jolt where the easing begins; the easing's own shape stays
+    elsewhere."""
+    if dist <= 1e-9 or frames <= 1e-6 or (v_in is None and v_out is None):
+        return fn
+    h = 1e-3
+    c0 = c1 = 0.0
+    if v_in is not None:
+        g0 = (fn(h) - fn(0.0)) / h * dist / frames     # the easing's own speed there
+        k = v_in / g0 if g0 > 1e-9 else 4.0
+        c0 = min(max(k - 1.0, -0.95), 3.0)
+    if v_out is not None:
+        g1 = (fn(1.0) - fn(1.0 - h)) / h * dist / frames
+        k = v_out / g1 if g1 > 1e-9 else 4.0
+        c1 = min(max(1.0 - k, -3.0), 0.95)
+
+    def G(u):
+        phi = u + c0 * u * (1.0 - u) ** 2 + c1 * u * u * (1.0 - u)
+        return fn(min(max(phi, 0.0), 1.0))
+    return G
+
+
 def _ui_scale():
     from . import compat
     return compat.ui_scale()
@@ -308,7 +368,7 @@ def _ui_scale():
 def gallery_size(us):
     w = _COLS * _TILE + (_COLS - 1) * _GAP + 2 * _PAD
     rows = (len(easing.TYPES) + _COLS - 1) // _COLS
-    h = 2 * _PAD + 3 * (_ROW + _GAP) + _WIDE + _GAP + rows * _TILE + (rows - 1) * _GAP
+    h = 2 * _PAD + 4 * (_ROW + _GAP) + _WIDE + _GAP + rows * _TILE + (rows - 1) * _GAP
     return w * us, h * us
 
 
@@ -336,6 +396,8 @@ def gallery_items(context, g, us):
         segments('chan', list(enumerate(labels[:4])), y)
     else:
         out.append(('strength', None, x0 + pad, y, inner, row, "Strength"))
+    y -= row + gap
+    out.append(('range', None, x0 + pad, y, inner, row, "Part"))
     y -= _WIDE * us + gap
     out.append(('ease', 'LINEAR', x0 + pad, y, inner, _WIDE * us, "Linear"))
     tile = _TILE * us
@@ -355,6 +417,23 @@ def gallery_hit(context, g, mx, my):
         if x <= mx <= x + w and y <= my <= y + h:
             return (kind, val)
     return None
+
+
+def hit_box(context, g, kind):
+    """(x, width) of a gallery item."""
+    for k, _v, x, _y, w, _h, _l in gallery_items(context, g, _ui_scale()):
+        if k == kind:
+            return x, w
+    return 0.0, 1.0
+
+
+def _set_range(st, g, mx, which):
+    x, w = hit_box(bpy.context, g, 'range')
+    u = min(1.0, max(0.0, (mx - x) / max(w, 1.0)))
+    if which == 'from':
+        st.easing_from = min(u, st.easing_to - 0.05) if st.easing_to > 0.05 else 0.0
+    else:
+        st.easing_to = max(u, st.easing_from + 0.05) if st.easing_from < 0.95 else 1.0
 
 
 def _set_strength(st, g, mx):
@@ -400,6 +479,18 @@ def draw_gallery(ctx, us):
             if f > 0.0:
                 draw._rounded_rect(x, y, max(bw * f, 8.0 * us), bh, 4.0 * us, (0.28, 0.45, 0.78, 0.95))
             text("Strength  %d%%" % round(f * 100), x + bw * 0.5, y + bh * 0.5)
+        elif kind == 'range':
+            timing = st.easing_mode == 'TIMING'
+            draw._rounded_rect(x, y, bw, bh, 4.0 * us, (0.3, 0.3, 0.3, 0.95) if over and timing else (0.18, 0.18, 0.18, 0.95))
+            a, b = st.easing_from, st.easing_to
+            if timing:
+                draw._rounded_rect(x + bw * a, y, max(bw * (b - a), 8.0 * us), bh, 4.0 * us, (0.28, 0.45, 0.78, 0.95))
+                for f in (a, b):
+                    draw._rounded_rect(x + bw * f - 2.0 * us, y - 2.0 * us, 4.0 * us, bh + 4.0 * us, 2.0 * us,
+                                       (1.0, 1.0, 1.0, 0.9))
+                text("Part  %d%% - %d%%" % (round(a * 100), round(b * 100)), x + bw * 0.5, y + bh * 0.5)
+            else:
+                text("Part: Keep the Path only", x + bw * 0.5, y + bh * 0.5, col=(1.0, 1.0, 1.0, 0.45))
         else:
             draw._rounded_rect(x, y, bw, bh, 6.0 * us, (0.32, 0.32, 0.34, 0.95) if over else (0.15, 0.15, 0.16, 0.95))
             name = "ease_LINEAR" if val == 'LINEAR' else "ease_%s_%s" % (val, st.easing_direction)
@@ -446,12 +537,17 @@ def draw_presets(layout, context):
                 row.prop(st, "easing_channels", index=i, text=label, toggle=True)
     else:
         layout.prop(st, "easing_strength", slider=True)
+        row = layout.row(align=True, heading="Part")
+        row.prop(st, "easing_from", text="From", slider=True)
+        row.prop(st, "easing_to", text="To", slider=True)
+
     def setup(op, kind):
         op.easing = kind
         op.direction = st.easing_direction
         op.mode = st.easing_mode
         op.channels = st.easing_channels
         op.strength = st.easing_strength
+        op.start, op.end = st.easing_from, st.easing_to
     setup(layout.operator("emp.easing_preset", text="Linear", icon_value=icon_id("ease_LINEAR")), 'LINEAR')
     grid = layout.grid_flow(row_major=True, columns=5, even_columns=True, even_rows=True, align=False)
     for kind, name in easing.TYPES:
