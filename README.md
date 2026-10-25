@@ -334,6 +334,10 @@ the missing ones are captured a frame at a time (the fps drops a little until th
 there). The Timeline / Dope Sheet shows it: a thin bar under every ready frame, and a dot at
 the ghosts shown now (filled: ready, hollow: being captured). Changes renew them: the
 animation, and also an object changed on the same frame (a reset scale, a moved child).
+While you drag a bone or an object with Blender's own G / R / S and *Auto Keying* is on, the
+ghosts show what the neighboring frames will look like once the key is in (the pose is put on
+the curves only for a moment; Esc leaves everything as it was). Without Auto Keying nothing
+changes on the other frames until you key, so the ghosts stay as they are.
 
 ## Center of mass
 

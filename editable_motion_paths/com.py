@@ -181,7 +181,8 @@ def _tick():
             _timer_on = False
             return None
         screen = bpy.context.screen
-        if (screen is not None and screen.is_animation_playing) or state.modal_running or onion.busy():
+        if (screen is not None and screen.is_animation_playing) or state.modal_running or onion.busy() or \
+                state.blender_edit_running():
             return 0.2
         arms = armatures(scene)
         for arm in arms:
@@ -210,6 +211,7 @@ def _tick():
             t0 = time.time()
             _busy = True
             hidden = []
+            held = state.keep_pose([arm])
             try:
                 for o in meshes:
                     if not o.hide_viewport:
@@ -227,6 +229,8 @@ def _tick():
                 for o in hidden:
                     o.hide_viewport = False
                 scene.frame_set(cur, subframe=sub)
+                if state.put_pose_back(held):     # (what isn't keyed stays as it was)
+                    bpy.context.view_layer.update()
                 _busy = False
             state.tag_redraw()
             return 0.01

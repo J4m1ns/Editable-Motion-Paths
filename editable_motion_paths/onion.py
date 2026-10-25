@@ -705,6 +705,75 @@ def _capture(scene, frames, targets, st):
             o.hide_viewport = False
 
 
+_TF = {"location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "scale"}
+
+
+def _pending_keys(scene):
+    """Auto keying during Blender's own G / R / S: [(F-Curve, value)] that the drag will key on
+    the current frame once confirmed - the channels of the selected bones / objects whose pose
+    differs from their curve now."""
+    from . import compat
+    f = scene.frame_current
+    arms, objs = _edited(scene)
+    owners = [bpy.data.objects.get(n) for n in arms] + [o for o in objs if o.select_get()]
+    out = []
+    for ob in owners:
+        if ob is None:
+            continue
+        for fc in compat.get_fcurves(ob) or []:
+            dp = fc.data_path
+            prop = dp.rsplit(".", 1)[-1]
+            if prop not in _TF or fc.mute:
+                continue
+            if dp.startswith('pose.bones["'):
+                pb = ob.pose.bones.get(dp[12:dp.find('"]')]) if ob.pose else None
+                if pb is None or not compat.bone_selected(pb):
+                    continue
+                owner = pb
+            elif "." in dp:
+                continue
+            else:
+                owner = ob
+            try:
+                v = getattr(owner, prop)[fc.array_index]
+            except (AttributeError, IndexError, TypeError):
+                continue
+            if abs(v - fc.evaluate(f)) > 1e-5:
+                out.append((fc, v))
+    return out
+
+
+def _put_keys(pending, f):
+    """The pending keys put on their curves for a moment (to capture what the neighbors will
+    look like); returns how to take them off again."""
+    undo = []
+    for fc, v in pending:
+        kp = next((k for k in fc.keyframe_points if abs(k.co[0] - f) < 1e-3), None)
+        if kp is None:
+            fc.keyframe_points.insert(f, v, options={'FAST'})
+            undo.append((fc, None))
+        else:
+            undo.append((fc, (tuple(kp.co), tuple(kp.handle_left), tuple(kp.handle_right))))
+            dv = v - kp.co[1]
+            kp.co[1] = v
+            kp.handle_left[1] += dv
+            kp.handle_right[1] += dv
+        fc.update()
+    return undo
+
+
+def _take_keys_off(undo, f):
+    for fc, old in reversed(undo):
+        kp = next((k for k in fc.keyframe_points if abs(k.co[0] - f) < 1e-3), None)
+        if kp is None:
+            continue
+        if old is None:
+            fc.keyframe_points.remove(kp, fast=True)
+        else:
+            kp.co, kp.handle_left, kp.handle_right = old
+        fc.update()
+
+
 def _schedule(delay=0.05):
     global _timer_on
     if not _timer_on:
@@ -725,7 +794,13 @@ def _tick():
             return None
         screen = bpy.context.screen
         playing = screen is not None and screen.is_animation_playing
-        if state.modal_running and _cost > 0.03 and time.time() - _changed_at < 0.15:
+        # Blender's own G / R / S: the dragged pose isn't keyed yet. With auto keying the ghosts
+        # show what the neighbors will look like once it is (the pose put on the curves for a
+        # moment); without it nothing changes on the other frames, so they wait
+        editing = state.blender_edit_running()
+        if editing and not scene.tool_settings.use_keyframe_insert_auto:
+            return 0.1
+        if (state.modal_running or editing) and _cost > 0.03 and time.time() - _changed_at < 0.15:
             return 0.05
         sig = _signature(scene, st)
         if sig != _sig:
@@ -748,7 +823,7 @@ def _tick():
         status = ""
         shows = sorted(frames_to_show(scene, st), key=lambda x: abs(x[1]))
         want = [f for f, _i in shows if f not in _frames] + [f for f, _i in shows if f in _stale]
-        if not want and not state.modal_running:
+        if not want and not state.modal_running and not editing:
             # ahead of time: every frame a ghost can be on (playback then finds them ready),
             # the nearest first
             cur_f = scene.frame_current
@@ -762,7 +837,11 @@ def _tick():
         cur, sub = scene.frame_current, scene.frame_subframe
         t0 = time.time()
         _busy = True
+        held = state.keep_pose([o for o, _a, _h in targets] + [bpy.data.objects[n] for n in _edited(scene)[0]])
+        undo = []
         try:
+            if editing:
+                undo = _put_keys(_pending_keys(scene), cur)
             done = []
             batch = []
             for f in want:
@@ -777,12 +856,15 @@ def _tick():
             per = (time.time() - t1) / max(len(batch), 1)
             _cost = per if not _cost else _cost * 0.7 + per * 0.3
         finally:
+            _take_keys_off(undo, cur)
             scene.frame_set(cur, subframe=sub)
+            if state.put_pose_back(held):     # (what isn't keyed stays as it was)
+                bpy.context.view_layer.update()     # (now, so it doesn't count as an edit)
             _busy = False
         state.tag_redraw()
         if len(done) < len(want) or time.time() - t0 > 0.04:
             return 0.01
-        if not state.modal_running and any(f not in _frames or f in _stale for f in all_frames(scene, st)):
+        if not state.modal_running and not editing and any(f not in _frames or f in _stale for f in all_frames(scene, st)):
             return 0.02             # the ghosts shown are ready: on with the rest, ahead of time
         _timer_on = False
         return None

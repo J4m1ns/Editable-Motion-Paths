@@ -1187,6 +1187,8 @@ def _pose_state(objs):
 
 
 def _restore_pose_state(saved):
+    """Put the saved transforms back; True if any had changed."""
+    changed = False
     for name, tf, bones in saved:
         obj = bpy.data.objects.get(name)
         if obj is None:
@@ -1195,6 +1197,7 @@ def _restore_pose_state(saved):
                             "rotation_axis_angle", "scale"), tf):
             if tuple(getattr(obj, prop)) != v:
                 setattr(obj, prop, v)
+                changed = True
         if bones:
             pbs = obj.pose.bones
             for bname, *vals in bones:
@@ -1205,6 +1208,8 @@ def _restore_pose_state(saved):
                                     "rotation_axis_angle", "scale"), vals):
                     if tuple(getattr(pb, prop)) != v:
                         setattr(pb, prop, v)
+                        changed = True
+    return changed
 
 
 def bake_range(scene, settings, caches):

@@ -340,7 +340,7 @@ def schedule_rebake(delay=0.35, force=False):
         bpy.app.timers.register(_bake_timer, first_interval=delay)
 
 
-def _any_modal():
+def _any_modal(skip=()):
     """True while an interactive edit (Blender's transform, scrubbing, graph editing...)
     is running. Other add-ons' permanent modal operators are ignored."""
     wm = bpy.context.window_manager
@@ -348,9 +348,36 @@ def _any_modal():
         return False
     for win in wm.windows:
         for op in getattr(win, "modal_operators", ()):
-            if op.bl_idname.split("_OT_")[0] in _BLOCKING_MODALS:
+            pre = op.bl_idname.split("_OT_")[0]
+            if pre in _BLOCKING_MODALS and pre not in skip:
                 return True
     return False
+
+
+def blender_edit_running():
+    """True while one of Blender's own interactive edits runs (G / R / S, graph editing...): the
+    pose being dragged isn't keyed yet, so nothing may change frames then (frame_set would put
+    the animation back and the drag would snap back every time). Scrubbing the timeline isn't
+    one: the ghosts are still captured meanwhile."""
+    return _any_modal(skip=("EMP", "ANIM"))
+
+
+def keep_pose(objs):
+    """The poses of these objects and their parents, as they are now (also what isn't keyed),
+    to put back after stepping through frames."""
+    from . import core
+    seen = {}
+    for o in objs:
+        while o is not None and o.name not in seen:
+            seen[o.name] = o
+            o = o.parent
+    return core._pose_state(seen.values())
+
+
+def put_pose_back(saved):
+    """Put the kept poses back; True if anything had changed."""
+    from . import core
+    return core._restore_pose_state(saved)
 
 
 _BLOCKING_MODALS = {"TRANSFORM", "EMP", "ANIM", "GRAPH", "ACTION", "VIEW3D", "POSE", "OBJECT", "WM"}
