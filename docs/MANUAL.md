@@ -49,7 +49,9 @@ Path / Circle, with radius and frame range).
 
 In the path list, a click on a path's name edits only that path (its bone / object gets
 selected, also from the other mode), **Shift+click** adds it or takes it out; the paths being
-edited are highlighted (the active one is the list's highlighted row). The arrow button next to a path isolates its curves of the current mode in
+edited are highlighted, like selected rows in the Outliner (the active one is also the list's
+highlighted row); **−** takes all the highlighted paths out of the list (with none, the active one).
+The arrow button next to a path isolates its curves of the current mode in
 the **Graph Editor** (the bone's other curves are hidden); it stays pressed while they are
 isolated, and a second click shows them all again.
 

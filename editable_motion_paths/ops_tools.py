@@ -88,10 +88,13 @@ class EMP_OT_path_remove(bpy.types.Operator):
     bl_label = "Remove Motion Paths"
     bl_options = {'REGISTER', 'UNDO'}
 
-    TIPS = {'ACTIVE': "Remove the selected motion path from the list",
+    TIPS = {'PICKED': "Remove the highlighted motion paths (the edited ones) from the list - or, with none, "
+                      "the active one",
+            'ACTIVE': "Remove the active motion path from the list",
             'SELECTED': "Remove the motion paths of the selected bones / objects from the list",
             'ALL': "Remove all motion paths from the list"}
     scope: EnumProperty(items=[
+        ('PICKED', "Highlighted", TIPS['PICKED']),
         ('ACTIVE', "Active", TIPS['ACTIVE']),
         ('SELECTED', "Selected", TIPS['SELECTED']),
         ('ALL', "All", TIPS['ALL'])], default='ACTIVE')
@@ -102,9 +105,19 @@ class EMP_OT_path_remove(bpy.types.Operator):
 
     def execute(self, context):
         st = state.settings(context.scene)
+        picked = []
+        if self.scope == 'PICKED':
+            for i, e in enumerate(st.paths):
+                c = state.caches.get(state.entry_key(e)) if e.object is not None else None
+                if c is not None and c.owner_selected():
+                    picked.append(i)
         if self.scope == 'ALL':
             st.paths.clear()
-        elif self.scope == 'ACTIVE':
+        elif picked:
+            for i in reversed(picked):
+                st.paths.remove(i)
+            st.active_index = min(max(picked[0], 0), len(st.paths) - 1)
+        elif self.scope in {'ACTIVE', 'PICKED'}:
             if 0 <= st.active_index < len(st.paths):
                 st.paths.remove(st.active_index)
                 st.active_index = min(st.active_index, len(st.paths) - 1)

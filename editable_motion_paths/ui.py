@@ -536,10 +536,11 @@ class EMP_UL_paths(bpy.types.UIList):
         # the paths being edited (their bone / object selected) stand out; a click edits only that
         # one, Shift+click adds it / takes it out (like selecting in the Outliner)
         editable = cache is not None and cache.owner_selected()
+        # (like the Outliner: the edited ones filled across the row - the whole row picks; the active
+        # one is also the list's highlighted row)
         sub = row.row(align=True)
-        sub.alignment = 'LEFT'
-        # (no box: the edited ones are highlighted, the active one is the list's own highlighted row)
-        op = sub.operator("emp.path_pick", text=name, emboss=False, depress=editable,
+        sub.emboss = 'PULLDOWN_MENU'
+        op = sub.operator("emp.path_pick", text=name, depress=editable,
                           icon='BONE_DATA' if item.bone_name else _object_icon(item.object))
         op.index = index
         row.separator()
@@ -590,7 +591,7 @@ class EMP_PT_main(_Panel, bpy.types.Panel):
         row.template_list("EMP_UL_paths", "", st, "paths", st, "active_index", rows=3)
         col = row.column(align=True)
         col.operator("emp.path_add", text="", icon='ADD')
-        col.operator("emp.path_remove", text="", icon='REMOVE').scope = 'ACTIVE'
+        col.operator("emp.path_remove", text="", icon='REMOVE').scope = 'PICKED'
         col.separator()
         col.operator("emp.path_update", text="", icon='FILE_REFRESH')
         col.operator("emp.path_remove", text="", icon='TRASH').scope = 'ALL'
