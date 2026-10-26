@@ -539,7 +539,8 @@ class EMP_UL_paths(bpy.types.UIList):
         # (like the Outliner: the edited ones filled across the row - the whole row picks; the active
         # one is also the list's highlighted row)
         sub = row.row(align=True)
-        sub.emboss = 'PULLDOWN_MENU'
+        # (the others draw no box at all: a menu item's grey hover box would sit on the active row)
+        sub.emboss = 'PULLDOWN_MENU' if editable else 'NONE'
         op = sub.operator("emp.path_pick", text=name, depress=editable,
                           icon='BONE_DATA' if item.bone_name else _object_icon(item.object))
         op.index = index
