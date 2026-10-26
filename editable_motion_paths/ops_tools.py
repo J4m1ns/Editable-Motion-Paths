@@ -275,6 +275,27 @@ class EMP_OT_com_limb_reset(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class EMP_OT_com_reset_all(bpy.types.Operator):
+    """Set every weight of this rig back to the ones worked out from the meshes"""
+    bl_idname = "emp.com_reset_all"
+    bl_label = "Reset All Weights"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        from . import com
+        from .props import _limb_target
+        arm, _pb = _limb_target(context)
+        if arm is None:
+            ob = context.active_object
+            arm = ob if ob is not None and ob.type == 'ARMATURE' else None
+        if arm is None:
+            self.report({'WARNING'}, "Select a bone of the rig")
+            return {'CANCELLED'}
+        n = com.reset_all(arm)
+        self.report({'INFO'}, "%d weight%s back to the worked out ones" % (n, "" if n == 1 else "s"))
+        return {'FINISHED'}
+
+
 class EMP_OT_edit_limb_weight(bpy.types.Operator):
     """Center of mass: how much of the body the limb the active controller moves is - set it """ \
         """in a small popup under the mouse (the limb lights up)"""
@@ -1918,7 +1939,7 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
             touched.add(fc)
 
 
-classes = (EMP_OT_path_pick, EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
+classes = (EMP_OT_com_reset_all, EMP_OT_path_pick, EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
            EMP_OT_reset_graph_look, EMP_OT_com_limb_reset, EMP_OT_edit_limb_weight,
            EMP_OT_smoothing_none, EMP_OT_set_view, EMP_OT_onion_mode, EMP_OT_onion_update, EMP_OT_path_update,
            EMP_OT_edit_tool,

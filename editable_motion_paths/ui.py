@@ -812,6 +812,11 @@ def draw_limb_weight(layout, st, body_mass=True):
         sub = row.row(align=True)
         sub.enabled = stored
         sub.operator("emp.com_limb_reset", text="", icon='LOOP_BACK').part = part
+    if body_mass:
+        # (the whole rig at once - the center's panel / popover)
+        row = layout.row()
+        row.enabled = bool(com._limbs(arm))
+        row.operator("emp.com_reset_all", icon='LOOP_BACK')
 
 
 def _draw_smoothing(layout, context):

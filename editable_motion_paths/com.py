@@ -327,6 +327,19 @@ def set_limb_share(arm, bone, share, part='zone'):
     return True
 
 
+def reset_all(arm):
+    """Every weight set on this rig goes: all of them worked out from the meshes again. Returns how
+    many there were."""
+    items = _limbs(arm)
+    for bone, part, _share in items:
+        _store(arm, bone, part, None)
+    d = _mass.get(arm.name)             # (a linked rig: its file's weights are left out in the scene)
+    if d is not None:
+        _apply_limbs(arm, d, _limbs(arm))
+        changed_all(arm)
+    return len(items)
+
+
 def reset_limb(arm, bone, part=None):
     """The weight(s) set on the bone go: worked out from the meshes again."""
     pb = arm.pose.bones.get(bone)

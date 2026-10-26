@@ -428,7 +428,7 @@ keeps its weight also when a smaller part inside it gets its own (set the arm to
 to 1%: the arm stays 6%, the rest of it shares the other 5%), and the bones in no part share the
 rest of the body. So it's enough to go over the main bones; the add-on works out the rest. The part
 lights up while it changes - the bone itself and the rest of the limb in their own colors (the
-preferences: *Limb Color*, *Bone Color*); the arrow next to a weight goes back to the worked out one. With the
+preferences: *Limb Color*, *Bone Color*); the arrow next to a weight goes back to the worked out one, and **Reset All Weights** (under them) does it for every weight set on the rig. With the
 center shown, the right-click menu has **Edit Limb Weight...** (a small popup under the mouse). A
 bone that moves the whole body (the root, the torso) has no weight of its own - pick the chest,
 the hips or a limb. Space switches that are off (a head that could follow the hand, influence 0)
