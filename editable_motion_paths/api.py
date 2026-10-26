@@ -686,10 +686,24 @@ def snap_to_frames(obj, bone=None, frames=None, mode=None):
     return _run_op(bpy.ops.emp.snap_frames, frames, obj, bone, mode)
 
 
-def offset_cascade(obj, bones, frames=None, offset=2.0, mode=None):
+def shift_phase(obj, bone=None, offset=1.0, loop=True, mode=None):
+    """The whole animation of the bone / object `offset` frames later. loop: inside its loop (a Cycles
+    curve keeps its frames and length, its shape and timing - only which pose comes when moves, e.g.
+    a walk starting on the other foot); off, or no loop: all its keys simply move."""
+    from .ops_timetools import shift_phase as _phase
+    with _in_mode(_valid_mode(mode)):
+        c = _cache(obj, bone, mode)
+        _phase(c, float(offset), loop)
+        c.refresh(force=True)
+    _push("Shift Phase")
+    return [round(k.t, 3) for k in c.keys]
+
+
+def offset_cascade(obj, bones, frames=None, offset=2.0, mode=None, loop=True):
     """Overlap / follow-through: each bone in `bones` (in that order, e.g. a tail from its root)
     starts `offset` frames after the one before - its keys at `frames` (None: all) move later.
-    The first bone stays."""
+    The first bone stays. frames=None moves each bone's whole animation (loop: looping curves
+    shift inside their loop)."""
     from .ops_timetools import move_keys_in_time
     if not bones or len(bones) < 2:
         raise ValueError("offset_cascade needs 2 or more bones, in the order they follow each other")
@@ -697,10 +711,15 @@ def offset_cascade(obj, bones, frames=None, offset=2.0, mode=None):
         caches = [_cache(obj, b, mode) for b in bones]
         for i, c in enumerate(caches):
             d = offset * i
-            ts = [k.t for k in c.keys] if frames is None else _key_frames(c, frames)
-            if abs(d) > 1e-9 and ts:
+            if abs(d) < 1e-9:
+                continue
+            if frames is None:
+                from .ops_timetools import shift_phase as _phase
+                _phase(c, d, loop)
+            else:
+                ts = _key_frames(c, frames)
                 move_keys_in_time(c, {t: t + d for t in ts}, [k.t for k in c.keys if k.sel])
-                c.refresh(force=True)
+            c.refresh(force=True)
     _push("Offset Cascade")
     return {b: [round(k.t, 3) for k in c.keys] for b, c in zip(bones, caches)}
 

@@ -213,7 +213,13 @@ That is Blender's own behaviour. To keep edits local, turn it off:
     the first stays, the hip moves half as far as the foot. With keys selected those keys move;
     with none, the whole animation of each bone / object. Numbers on the paths show the order
     while you drag; box / circle selecting a path adds it as the next one, and after **A** every
-    key goes in that order;
+    key goes in that order. *Loop* (on): looping curves (Cycles) shift inside their loop - its
+    frames and length stay;
+  * *Shift Phase*: the whole animation later or earlier **inside its loop** - the loop keeps its
+    frames and length, the path its shape and timing; only which pose comes when moves (start a
+    walk on the other foot). Repeat with Offset (a walk going forward) carries on without a jump.
+    The paths with selected keys, else every path being edited; **L** or *Loop* off: all the keys
+    simply move;
   * *Snap to Frames*.
 
 * **Slide (G G)**: *Spacing* (what it starts with) keeps the frames and slides the poses along

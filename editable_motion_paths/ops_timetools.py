@@ -414,6 +414,9 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
     bl_label = "Offset Cascade"
 
     amount: FloatProperty(name="Frames per Path", default=0.0)
+    loop: BoolProperty(name="Loop", default=True,
+                       description="With no keys selected (the whole animation moves): looping curves (Cycles) "
+                                   "shift inside their loop - its frames and length stay")
 
     WHY = "Offset Cascade works across several paths: select 2 or more bones / objects with paths (or " \
           "keys on them) - each one then starts a few frames after the one before"
@@ -466,10 +469,104 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
             if abs(d) < 1e-9:
                 continue
             if getattr(self, "whole", False):
-                shift_animation(c, d)
+                shift_phase(c, d, self.loop)
                 continue
             sel = [k.t for k in c.keys if k.sel]
             move_keys_in_time(c, {t: t + d for t in sel}, sel)
+
+
+def _phase_curve(fc, d):
+    """One F-Curve d frames later inside its loop: f'(t) = f(t - d), the loop's frames and length
+    the same. The key the new loop starts with is split off exactly, every key wraps around (with
+    Repeat with Offset its value moves by the loop's step, so nothing jumps), and the last key is
+    the first one again."""
+    import math
+    from . import keys
+    cyc = core.cycle_info(fc)
+    if cyc is None:
+        for kp in fc.keyframe_points:
+            kp.co.x += d
+            kp.handle_left.x += d
+            kp.handle_right.x += d
+        fc.update()
+        return
+    a, b = cyc
+    P = b - a
+    if abs(math.remainder(d, P)) < 1e-6 and not _offset_mode(fc):
+        return                                  # (whole loops: the same motion)
+    kps = fc.keyframe_points
+    step = kps[-1].co.y - kps[0].co.y if _offset_mode(fc) else 0.0
+    t_split = a + ((-d) % P)
+    if t_split - a > 1e-4 and b - t_split > 1e-4:
+        keys.insert_channel(fc, t_split, exact=True)
+    kps.remove(kps[len(kps) - 1])               # (the last key is the first one again: made anew)
+    for kp in kps:
+        x = kp.co.x
+        k = math.floor((x + d - a) / P + 1e-6)
+        dx, dy = d - k * P, -k * step
+        kp.co.x += dx
+        kp.co.y += dy
+        kp.handle_left.x += dx
+        kp.handle_left.y += dy
+        kp.handle_right.x += dx
+        kp.handle_right.y += dy
+    fc.update()
+    first = kps[0]
+    end = kps.insert(b, first.co.y + step, options={'FAST'})
+    end.interpolation = first.interpolation
+    end.handle_left_type, end.handle_right_type = first.handle_left_type, first.handle_right_type
+    end.handle_left = (b + first.handle_left.x - first.co.x, end.co.y + first.handle_left.y - first.co.y)
+    end.handle_right = (b + first.handle_right.x - first.co.x, end.co.y + first.handle_right.y - first.co.y)
+    fc.update()
+
+
+def _offset_mode(fc):
+    return any(m.type == 'CYCLES' and not m.mute and 'REPEAT_OFFSET' in (m.mode_before, m.mode_after)
+               for m in fc.modifiers)
+
+
+def shift_phase(cache, d, loop=True):
+    """The whole animation of the path's bone / object d frames later. loop: inside its loop (Cycles)
+    - the loop's frames, length, shape and timing stay, only which pose comes when moves; curves
+    without a loop (or loop off) simply move."""
+    if not loop:
+        shift_animation(cache, d)
+        return
+    tg = cache.target()
+    for fc in _pose_fcurves(tg, cache, True):
+        _phase_curve(fc, d)
+    cache.dirty = True
+    cache.refresh(force=True)
+
+
+class EMP_OT_shift_phase(_HorizontalDrag, bpy.types.Operator):
+    """Shift the animation in time inside its loop: the loop keeps its frames and length, the path """ \
+        """its shape and timing - only which pose comes when moves (start a walk on the other foot). """ \
+        """The paths with selected keys, else every path being edited. Without a loop (or Loop off): """ \
+        """all the keys simply move"""
+    bl_idname = "emp.shift_phase"
+    bl_label = "Shift Phase"
+
+    amount: FloatProperty(name="Frames", default=0.0)
+    loop: BoolProperty(name="Loop", default=True,
+                       description="Inside the loop (Cycles): keys going past its end come back at its start, "
+                                   "its frames and length stay. Off: all the keys move")
+
+    def _caches(self, context):
+        return _selected_caches(context) or [c for c in state.editable_caches(context.scene) if c.keys]
+
+    def _label(self):
+        return "Shift Phase: %+g frames%s" % (self.amount, "  (in the loop)" if self.loop else "")
+
+    def _modal_key(self, context, event):
+        if event.type == 'L':
+            self.loop = not self.loop
+            return True
+        return False
+
+    def _apply(self, context):
+        for c in self.caches:
+            shift_phase(c, self.amount, self.loop)
 
 
 def shift_animation(cache, d):
@@ -661,6 +758,7 @@ class EMP_MT_timing(bpy.types.Menu):
         layout.operator("emp.add_frames", icon='ADD')
         layout.operator("emp.moving_hold", icon='PAUSE')
         layout.operator("emp.offset_cascade", icon='MOD_ARRAY')
+        layout.operator("emp.shift_phase", icon='FILE_REFRESH')
         layout.operator("emp.snap_frames", icon='SNAP_INCREMENT')
         layout.separator()
         layout.prop(st, "show_timing_chart")
@@ -1198,5 +1296,5 @@ class EMP_OT_graph_hover(bpy.types.Operator):
 
 
 classes = (EMP_OT_drag_frame, EMP_OT_time_scale, EMP_OT_add_frames, EMP_OT_tween,
-           EMP_OT_offset_cascade, EMP_OT_moving_hold, EMP_OT_snap_frames, EMP_MT_timing,
+           EMP_OT_offset_cascade, EMP_OT_shift_phase, EMP_OT_moving_hold, EMP_OT_snap_frames, EMP_MT_timing,
            EMP_OT_timing_menu, EMP_OT_speed_drag, EMP_OT_speed_smooth, EMP_OT_graph_hover)
