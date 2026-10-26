@@ -406,16 +406,17 @@ class EMP_OT_tween(_HorizontalDrag, bpy.types.Operator):
 
 
 class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
-    """Offset the selected keys of several paths one after another (overlap / follow through), in """ \
-        """the order the paths were selected (the first one stays, each next one waits that many """ \
-        """frames longer); the numbers on the paths show the order"""
+    """Offset several paths one after another (overlap / follow through), in the order they were """ \
+        """selected - keys, bones / objects clicked in the view, paths picked in the list: the first one """ \
+        """stays, each next one waits that many frames longer. With keys selected they move; with none, """ \
+        """the whole animation of each bone / object. The numbers on the paths show the order"""
     bl_idname = "emp.offset_cascade"
     bl_label = "Offset Cascade"
 
     amount: FloatProperty(name="Frames per Path", default=0.0)
 
-    WHY = "Offset Cascade works across several paths: select keys on 2 or more bones / objects " \
-          "(each one then starts a few frames after the one before)"
+    WHY = "Offset Cascade works across several paths: select 2 or more bones / objects with paths (or " \
+          "keys on them) - each one then starts a few frames after the one before"
 
     def _label(self):
         return "Offset Cascade: %+g frames per path (%d paths)" % (self.amount, len(self.caches))
@@ -431,8 +432,8 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
         if len(caches) < 2:
             self.report({'WARNING'}, self.WHY)
             return {'CANCELLED'}
-        # (the order, on each path's first selected key)
-        pts = [next(k.co.copy() for k in c.keys if k.sel) for c in caches]
+        # (the order, on each path's first selected key - or its first key)
+        pts = [next((k.co.copy() for k in c.keys if k.sel), c.keys[0].co.copy()) for c in caches]
         state.markers = (pts, context.area.as_pointer(), [str(i + 1) for i in range(len(caches))])
         return _HorizontalDrag.invoke(self, context, event)
 
@@ -441,7 +442,9 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
         _HorizontalDrag._finish(self, context)
 
     def _caches(self, context):
-        caches = _selected_caches(context)
+        # (keys selected: those paths; none: every path of the selected bones / objects, whole)
+        caches = _selected_caches(context) or [c for c in state.editable_caches(context.scene) if c.keys]
+        self.whole = not any(k.sel for c in caches for k in c.keys)
         order = {k: i for i, k in enumerate(state.selection_order(context.scene))}
 
         def depth(c):
@@ -455,15 +458,34 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
         listed = {(e.object.name if e.object else "", e.bone_name): i
                   for i, e in enumerate(state.settings(context.scene).paths)}
         # the order they were selected in; paths selected some other way after them, from the root
-        return sorted(caches, key=lambda c: (order.get(c.key, 10 ** 6), depth(c), listed.get(c.key[:2], 0)))
+        return sorted(caches, key=lambda c: (order.get(c.key[:2], 10 ** 6), depth(c), listed.get(c.key[:2], 0)))
 
     def _apply(self, context):
         for i, c in enumerate(self.caches):
             d = self.amount * i
             if abs(d) < 1e-9:
                 continue
+            if getattr(self, "whole", False):
+                shift_animation(c, d)
+                continue
             sel = [k.t for k in c.keys if k.sel]
             move_keys_in_time(c, {t: t + d for t in sel}, sel)
+
+
+def shift_animation(cache, d):
+    """Every key of the path's bone / object (all its channels) d frames later."""
+    tg = cache.target()
+    for fc in _pose_fcurves(tg, cache, True):
+        for kp in fc.keyframe_points:
+            kp.co.x += d
+            kp.handle_left.x += d
+            kp.handle_right.x += d
+        fc.update()
+    if cache.keys:
+        cache.extend_to(cache.keys[0].t + d)
+        cache.extend_to(cache.keys[-1].t + d)
+    cache.dirty = True
+    cache.refresh(force=True)
 
 
 class EMP_OT_moving_hold(bpy.types.Operator):

@@ -889,14 +889,15 @@ _order_cache = (None, [])
 
 
 def selection_order(scene=None):
-    """[path key] in the order the paths got selected keys (clicked, boxed, A...), oldest first."""
+    """[(object, bone)] in the order the paths got selected - keys clicked, boxed, A..., bones
+    clicked in the view, paths picked in the list - oldest first."""
     global _order_cache
     st = settings(scene)
     text = st.select_order if st is not None else ""
     if text != _order_cache[0]:
         import json
         try:
-            items = [tuple(k) for k in json.loads(text or "[]")]
+            items = [tuple(k[:2]) for k in json.loads(text or "[]")]
         except (ValueError, TypeError):
             items = []
         _order_cache = (text, items)
@@ -904,20 +905,22 @@ def selection_order(scene=None):
 
 
 def note_selected(path_key, scene=None):
-    """A key of this path got selected: the path joins the selection order (if it isn't in it)."""
+    """A key of this path got selected (or its bone / object): the path joins the selection order
+    (if it isn't in it)."""
     order = selection_order(scene)
-    if tuple(path_key) in order:
+    key = tuple(path_key[:2])
+    if key in order:
         return
     import json
     st = settings(scene)
     if st is not None:
-        st.select_order = json.dumps([list(k) for k in order + [tuple(path_key)]][-64:])
+        st.select_order = json.dumps([list(k) for k in order + [key]][-64:])
 
 
 def forget_selected(path_keys, scene=None):
     """These paths have no selected keys any more: out of the selection order."""
     order = selection_order(scene)
-    drop = {tuple(k) for k in path_keys}
+    drop = {tuple(k[:2]) for k in path_keys}
     if not any(k in drop for k in order):
         return
     import json
@@ -992,6 +995,38 @@ def reconcile_modal():
     tag_redraw()
 
 
+def _owner_selected(obj_name, bone_name):
+    from . import core
+    obj, owner = core.resolve(obj_name, bone_name)
+    if owner is None:
+        return False
+    if bone_name:
+        return obj.mode == 'POSE' and compat.bone_selected(owner)
+    return obj.select_get()
+
+
+_order_active = [None]     # the active bone / object the selection order last saw
+
+
+def _watch_order(st):
+    """The selection order follows bones / objects clicked in the view (Offset Cascade): one with a
+    path that becomes the active one (and is selected) joins it - only when it becomes active, so a
+    reset of the order isn't undone by the one that just stays active; one deselected leaves it."""
+    vl = bpy.context.view_layer
+    obj = vl.objects.active if vl is not None else None
+    if obj is not None:
+        bone = obj.data.bones.active.name if obj.type == 'ARMATURE' and obj.mode == 'POSE' and \
+            obj.data.bones.active is not None else ""
+        key = (obj.name, bone, _owner_selected(obj.name, bone))
+        if key != _order_active[0]:
+            _order_active[0] = key
+            if key[2] and any(e.object == obj and e.bone_name == bone for e in st.paths):
+                note_selected((obj.name, bone))
+    gone = [k for k in selection_order() if not _owner_selected(*k)]
+    if gone:
+        forget_selected(gone)
+
+
 def _watch_active():
     """Auto edit mode: when the active bone/object has a path but nothing to edit in the
     current mode (e.g. only location is animated while editing Rotation), switch modes."""
@@ -1007,6 +1042,10 @@ def _watch_active():
             pass
         vl = bpy.context.view_layer
         obj = vl.objects.active if vl is not None else None
+        try:
+            _watch_order(st)
+        except Exception:
+            pass
         if obj is None:
             return 0.25
         bone = ""

@@ -49,7 +49,7 @@ Path / Circle, with radius and frame range).
 
 In the path list, a click on a path's name edits only that path (its bone / object gets
 selected, also from the other mode), **Shift+click** adds it or takes it out; the paths being
-edited stand out. The arrow button next to a path isolates its curves of the current mode in
+edited are bright, the others dimmed. The arrow button next to a path isolates its curves of the current mode in
 the **Graph Editor** (the bone's other curves are hidden); it stays pressed while they are
 isolated, and a second click shows them all again.
 
@@ -207,11 +207,13 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   * *Add / Remove Frames* after the active key, moving everything after it;
   * *Moving Hold*: a hold that still drifts a little (wheel: how many frames, mouse: how far it
     drifts);
-  * *Offset Cascade*: keys selected on several bones / objects; each one starts a few frames
-    after the one before (overlap, follow-through), **in the order you selected the paths** -
-    click a key on the hand, Shift+click the hip, then the foot: the hand stays, the hip moves
-    half as far as the foot. Numbers on the paths show the order while you drag; box / circle
-    selecting a path adds it as the next one, and after **A** every key goes in that order;
+  * *Offset Cascade*: several bones / objects one after another (overlap, follow-through), **in
+    the order you selected them** - click a key on the hand, Shift+click the hip, then the foot
+    (or click the bones themselves in that order, or Shift+click their paths in the path list):
+    the first stays, the hip moves half as far as the foot. With keys selected those keys move;
+    with none, the whole animation of each bone / object. Numbers on the paths show the order
+    while you drag; box / circle selecting a path adds it as the next one, and after **A** every
+    key goes in that order;
   * *Snap to Frames*.
 
 * **Slide (G G)**: *Spacing* (what it starts with) keeps the frames and slides the poses along

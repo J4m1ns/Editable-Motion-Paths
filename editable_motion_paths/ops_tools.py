@@ -451,6 +451,9 @@ class EMP_OT_path_pick(bpy.types.Operator):
                 compat.bone_select_set(pb, on)
                 if on:
                     ob.data.bones.active = pb.bone
+                    state.note_selected((ob.name, e.bone_name))      # (Offset Cascade: picked in this order)
+                else:
+                    state.forget_selected([(ob.name, e.bone_name)])
             else:
                 for o in context.objects_in_mode or [ob]:
                     if o.pose:
@@ -459,6 +462,8 @@ class EMP_OT_path_pick(bpy.types.Operator):
                                 compat.bone_select_set(other, False)
                 compat.bone_select_set(pb, True)
                 ob.data.bones.active = pb.bone
+                state.forget_selected(state.selection_order())
+                state.note_selected((ob.name, e.bone_name))
         else:
             if context.mode != 'OBJECT':
                 bpy.ops.object.mode_set(mode='OBJECT')
@@ -467,11 +472,16 @@ class EMP_OT_path_pick(bpy.types.Operator):
                 ob.select_set(on)
                 if on:
                     vl.objects.active = ob
+                    state.note_selected((ob.name, ""))
+                else:
+                    state.forget_selected([(ob.name, "")])
             else:
                 for o in context.selected_objects:
                     o.select_set(False)
                 ob.select_set(True)
                 vl.objects.active = ob
+                state.forget_selected(state.selection_order())
+                state.note_selected((ob.name, ""))
         state.tag_redraw()
         return {'FINISHED'}
 

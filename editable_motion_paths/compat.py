@@ -27,7 +27,11 @@ def get_fcurves(id_data, create=False):
 
 
 def ensure_fcurve(id_data, data_path, index, group_name=""):
-    action = id_data.animation_data.action
+    # (no animation yet - keying a control from scratch: an action of its own)
+    ad = id_data.animation_data or id_data.animation_data_create()
+    if ad.action is None:
+        ad.action = bpy.data.actions.new(id_data.name + "Action")
+    action = ad.action
     if hasattr(action, "fcurve_ensure_for_datablock"):
         try:
             return action.fcurve_ensure_for_datablock(id_data, data_path, index=index, group_name=group_name)
