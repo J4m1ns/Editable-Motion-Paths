@@ -167,6 +167,7 @@ emp.moving_hold("Character_Rig", "CTRL_Hand_L", frame=30, frames=8)         # a 
 emp.snap_to_frames("Character_Rig", "CTRL_Hand_L")                          # keys on whole frames
 emp.offset_cascade("Character_Rig", ["Tail1", "Tail2", "Tail3"], offset=2, mode='ROTATION')   # overlap
 emp.shift_phase("Character_Rig", "CTRL_Hip", offset=12)   # a loop: same motion, 12 frames later inside it
+emp.shift_phase("Character_Rig", "CTRL_Hip", offset=3, affect='ROTATION')   # only the rotation curves
 emp.change_speed("Character_Rig", "CTRL_Hand_L", frame=24, amount=-0.02, reach=2.0)  # slower around 24
 emp.smooth_speed("Character_Rig", "CTRL_Hand_L", frames=[10, 40], radius=4)  # even out bumps in the speed
 emp.copy_pose("Character_Rig", "CTRL_Hand_L", frame=12); emp.paste_pose("Character_Rig", "CTRL_Hand_L", frame=40)

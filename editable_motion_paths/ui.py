@@ -538,8 +538,7 @@ class EMP_UL_paths(bpy.types.UIList):
         editable = cache is not None and cache.owner_selected()
         sub = row.row(align=True)
         sub.alignment = 'LEFT'
-        # (no box: the edited ones are bright, the others dimmed while some path is edited)
-        sub.active = editable or not any(c.owner_selected() for c in state.visible_caches(context.scene))
+        # (no box: the edited ones are highlighted, the active one is the list's own highlighted row)
         op = sub.operator("emp.path_pick", text=name, emboss=False, depress=editable,
                           icon='BONE_DATA' if item.bone_name else _object_icon(item.object))
         op.index = index

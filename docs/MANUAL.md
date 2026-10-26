@@ -49,7 +49,7 @@ Path / Circle, with radius and frame range).
 
 In the path list, a click on a path's name edits only that path (its bone / object gets
 selected, also from the other mode), **Shift+click** adds it or takes it out; the paths being
-edited are bright, the others dimmed. The arrow button next to a path isolates its curves of the current mode in
+edited are highlighted (the active one is the list's highlighted row). The arrow button next to a path isolates its curves of the current mode in
 the **Graph Editor** (the bone's other curves are hidden); it stays pressed while they are
 isolated, and a second click shows them all again.
 
@@ -219,7 +219,9 @@ That is Blender's own behaviour. To keep edits local, turn it off:
     frames and length, the path its shape and timing; only which pose comes when moves (start a
     walk on the other foot). Repeat with Offset (a walk going forward) carries on without a jump.
     The paths with selected keys, else every path being edited; **L** or *Loop* off: all the keys
-    simply move;
+    simply move. In the redo panel of both Shift Phase and Offset Cascade, *Affect* picks what
+    moves: *All* channels, or only *Location*, *Rotation*, *Scale* or the other *Values* - and of
+    those the channels (X / Y / Z...), like the easing presets;
   * *Snap to Frames*.
 
 * **Slide (G G)**: *Spacing* (what it starts with) keeps the frames and slides the poses along

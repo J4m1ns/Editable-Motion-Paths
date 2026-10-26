@@ -7,7 +7,7 @@ steps, Esc: cancel) and change whole poses, so the bone's other keys stay in syn
 import math
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, StringProperty
+from bpy.props import BoolProperty, BoolVectorProperty, EnumProperty, FloatProperty, StringProperty
 from mathutils import Vector
 
 from . import compat, core, pick, space, state
@@ -16,19 +16,53 @@ from .ops_timing import SpaceJob, pchip, refit, warp_target
 from .ops_transform import NumInput
 
 
+AFFECT_ITEMS = [('ALL', "All", "Every channel of the bone / object"),
+                ('LOCATION', "Location", "Only the location channels"),
+                ('ROTATION', "Rotation", "Only the rotation channels"),
+                ('SCALE', "Scale", "Only the scale channels"),
+                ('VALUE', "Value", "Only the other animated values (custom properties...)")]
+ALL4 = (True, True, True, True)
+
+
+def affected_fcurves(tg, cache, affect='ALL', channels=ALL4, whole=True):
+    """The F-Curves of the path's bone / object a timing tool moves: all of them, or one kind
+    (Location, Rotation, Scale, the other values) and of it the channels picked."""
+    fcs = _pose_fcurves(tg, cache, whole)
+    if affect == 'ALL':
+        return fcs
+    out = []
+    for fc in fcs:
+        suf = fc.data_path[len(tg.prefix):] if tg.prefix and fc.data_path.startswith(tg.prefix) else fc.data_path
+        kind = 'LOCATION' if suf == 'location' else 'ROTATION' if suf.startswith('rotation_') else \
+            'SCALE' if suf == 'scale' else 'VALUE'
+        if kind == affect and (fc.array_index >= len(channels) or channels[fc.array_index]):
+            out.append(fc)
+    return out
+
+
+def draw_affect(layout, op):
+    """The redo panel's Affect: All, or one kind of channels and which of them."""
+    layout.prop(op, "affect")
+    if op.affect in {'LOCATION', 'ROTATION', 'SCALE'}:
+        labels = ("W / X", "X / Y", "Y / Z", "Z") if op.affect == 'ROTATION' else ("X", "Y", "Z")
+        row = layout.row(align=True, heading="Channels")
+        for i, lab in enumerate(labels):
+            row.prop(op, "channels", index=i, text=lab, toggle=True)
+
+
 def pose_snapshot(cache, all_channels=True):
     tg = cache.target()
     return core.FCurveSnapshot(tg, items=[(fc.data_path, fc.array_index, fc)
                                           for fc in _pose_fcurves(tg, cache, all_channels)])
 
 
-def move_keys_in_time(cache, mapping, select=None, all_channels=True):
+def move_keys_in_time(cache, mapping, select=None, all_channels=True, affect='ALL', channels=ALL4):
     """Move keys of the path's bone / object (whole pose) in time: mapping {old: new frame}.
-    `select`: old frames whose keys are selected afterwards."""
+    `select`: old frames whose keys are selected afterwards. affect / channels: only those curves."""
     tg = cache.target()
     old = {round(a, 3): b for a, b in mapping.items()}
     sel_new = {round(old[round(t, 3)], 3) for t in (select or ()) if round(t, 3) in old}
-    for fc in _pose_fcurves(tg, cache, all_channels):
+    for fc in affected_fcurves(tg, cache, affect, channels, all_channels):
         cyc = core.cycle_info(fc)
         kps = fc.keyframe_points
         ents = [kp_entry(kp) for kp in kps if round(kp.co[0], 3) in old]
@@ -417,6 +451,15 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
     loop: BoolProperty(name="Loop", default=True,
                        description="With no keys selected (the whole animation moves): looping curves (Cycles) "
                                    "shift inside their loop - its frames and length stay")
+    affect: EnumProperty(name="Affect", items=AFFECT_ITEMS, default='ALL')
+    channels: BoolVectorProperty(name="Channels", size=4, default=ALL4)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "amount")
+        layout.prop(self, "loop")
+        draw_affect(layout, self)
 
     WHY = "Offset Cascade works across several paths: select 2 or more bones / objects with paths (or " \
           "keys on them) - each one then starts a few frames after the one before"
@@ -468,11 +511,12 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
             d = self.amount * i
             if abs(d) < 1e-9:
                 continue
+            ch = tuple(self.channels)
             if getattr(self, "whole", False):
-                shift_phase(c, d, self.loop)
+                shift_phase(c, d, self.loop, self.affect, ch)
                 continue
             sel = [k.t for k in c.keys if k.sel]
-            move_keys_in_time(c, {t: t + d for t in sel}, sel)
+            move_keys_in_time(c, {t: t + d for t in sel}, sel, affect=self.affect, channels=ch)
 
 
 def _phase_curve(fc, d):
@@ -525,15 +569,15 @@ def _offset_mode(fc):
                for m in fc.modifiers)
 
 
-def shift_phase(cache, d, loop=True):
+def shift_phase(cache, d, loop=True, affect='ALL', channels=ALL4):
     """The whole animation of the path's bone / object d frames later. loop: inside its loop (Cycles)
     - the loop's frames, length, shape and timing stay, only which pose comes when moves; curves
     without a loop (or loop off) simply move."""
     if not loop:
-        shift_animation(cache, d)
+        shift_animation(cache, d, affect, channels)
         return
     tg = cache.target()
-    for fc in _pose_fcurves(tg, cache, True):
+    for fc in affected_fcurves(tg, cache, affect, channels):
         _phase_curve(fc, d)
     cache.dirty = True
     cache.refresh(force=True)
@@ -551,6 +595,15 @@ class EMP_OT_shift_phase(_HorizontalDrag, bpy.types.Operator):
     loop: BoolProperty(name="Loop", default=True,
                        description="Inside the loop (Cycles): keys going past its end come back at its start, "
                                    "its frames and length stay. Off: all the keys move")
+    affect: EnumProperty(name="Affect", items=AFFECT_ITEMS, default='ALL')
+    channels: BoolVectorProperty(name="Channels", size=4, default=ALL4)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "amount")
+        layout.prop(self, "loop")
+        draw_affect(layout, self)
 
     def _caches(self, context):
         return _selected_caches(context) or [c for c in state.editable_caches(context.scene) if c.keys]
@@ -566,13 +619,14 @@ class EMP_OT_shift_phase(_HorizontalDrag, bpy.types.Operator):
 
     def _apply(self, context):
         for c in self.caches:
-            shift_phase(c, self.amount, self.loop)
+            shift_phase(c, self.amount, self.loop, self.affect, tuple(self.channels))
 
 
-def shift_animation(cache, d):
-    """Every key of the path's bone / object (all its channels) d frames later."""
+def shift_animation(cache, d, affect='ALL', channels=ALL4):
+    """Every key of the path's bone / object (all its channels, or those of affect / channels) d
+    frames later."""
     tg = cache.target()
-    for fc in _pose_fcurves(tg, cache, True):
+    for fc in affected_fcurves(tg, cache, affect, channels):
         for kp in fc.keyframe_points:
             kp.co.x += d
             kp.handle_left.x += d
