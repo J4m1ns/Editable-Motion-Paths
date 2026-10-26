@@ -23,6 +23,7 @@ without a key raises ValueError saying what there is.
 import contextlib
 import difflib
 import math
+import os
 import statistics
 
 import bpy
@@ -1058,7 +1059,7 @@ def _save_png(arr, filepath):
     H, W = arr.shape[:2]
     img = bpy.data.images.new("_emp_render_view", W, H, alpha=True)
     img.pixels.foreach_set(np.ascontiguousarray(arr).ravel())
-    img.filepath_raw = filepath
+    img.filepath_raw = os.path.abspath(bpy.path.abspath(filepath))    # (relative: to the working folder)
     img.file_format = 'PNG'
     img.save()
     bpy.data.images.remove(img)
