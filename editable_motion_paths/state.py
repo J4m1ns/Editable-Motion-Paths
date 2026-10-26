@@ -279,6 +279,25 @@ def _fcurve_hashes(obj, curves=True):
     if drv:
         out[("#drivers", 0)] = hash(tuple(drv))
     owners = [obj] + (list(obj.pose.bones) if obj.type == 'ARMATURE' and obj.pose is not None else [])
+    # transforms with no key and no driver stay as they are on every frame: moving one (a parent
+    # whose keys were removed) moves the paths hanging on it for the whole animation
+    # (keyed / driven ones are left out: {owner name ('' = the object): {(prop, index)}})
+    fixed = {}
+    paths = [(fc.data_path, fc.array_index) for fc in (compat.get_fcurves(obj) or ())]
+    if obj.animation_data is not None:
+        paths += [(d.data_path, d.array_index) for d in obj.animation_data.drivers]
+    for dp, i in paths:
+        m = _BONE_PATH.match(dp)
+        name, prop = (m.group(1).replace('\\"', '"').replace('\\\\', '\\'), m.group(2)) if m else ("", dp)
+        if prop in _TRANSFORM_PROPS:
+            fixed.setdefault(name, set()).add((prop, i))
+    free = []
+    for ow in owners:
+        skip = fixed.get(ow.name if ow is not obj else "", ())
+        for prop in _TRANSFORM_PROPS:
+            v = getattr(ow, prop)
+            free.append(tuple(v) if not skip else tuple(x for i, x in enumerate(v) if (prop, i) not in skip))
+    out[("#pose", 0)] = hash(tuple(free))
     cons = tuple((ow.name, tuple(_constraint_sig(c) for c in ow.constraints)) for ow in owners if len(ow.constraints))
     if cons:
         out[("#constraints", 0)] = hash(cons)

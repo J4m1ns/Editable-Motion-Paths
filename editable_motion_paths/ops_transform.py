@@ -698,7 +698,7 @@ class EMP_OT_transform(bpy.types.Operator):
         elif self.mode == 'TRACKBALL':
             col = layout.column(align=True)
             col.prop(self, "value", index=0, text="Angle")
-            col.prop(self, "value", index=1, text="")
+            col.prop(self, "value", index=1, text=" ")      # (" ": the same width as the one above)
         else:
             layout.prop(self, "angle")
             layout.prop(self, "twist")

@@ -327,6 +327,33 @@ def _part_failed(part, ex):
     state.flash_message("%s couldn't be drawn (%s) - see the console" % (part, type(ex).__name__), 5.0)
 
 
+_shift_memo = {}
+_pushed = [False]
+
+
+def live_shift(cache):
+    """While Blender's own G / R / S moves what a path hangs on (a parent without keys), the path
+    is drawn moved along with it - baked again exactly once it is let go: the matrix, or None."""
+    key = (_pass[0], cache.key)
+    if key in _shift_memo:
+        return _shift_memo[key]
+    if len(_shift_memo) > 512:
+        _shift_memo.clear()
+    D = None
+    try:
+        if cache.local is None and cache.B and state.blender_edit_running():
+            obj, owner = core.resolve(cache.obj_name, cache.bone_name)
+            if owner is not None and not state._constrained(owner):
+                W = obj.matrix_world @ owner.matrix if cache.bone_name else owner.matrix_world
+                M = W @ owner.matrix_basis.inverted_safe() @                     cache.B_at(bpy.context.scene.frame_current).inverted_safe()
+                if any(abs(M[i][j] - (1.0 if i == j else 0.0)) > 1e-5 for i in range(4) for j in range(4)):
+                    D = M
+    except (ValueError, AttributeError, ReferenceError):
+        D = None
+    _shift_memo[key] = D
+    return D
+
+
 def draw_view():
     new_pass()
     state.draw_pass = _pass[0]
@@ -335,6 +362,9 @@ def draw_view():
     except Exception as ex:
         _part_failed("The paths", ex)       # (each new error said once, with a note)
     finally:
+        if _pushed[0]:
+            gpu.matrix.pop()            # (a path drawn moved along: never left on the stack)
+            _pushed[0] = False
         state.draw_pass = None
 
 
@@ -873,6 +903,9 @@ def _draw_view():
     look = rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))
     lead = _lead_view(ctx)
     for cache in caches:
+        if _pushed[0]:
+            gpu.matrix.pop()
+            _pushed[0] = False
         if cache.ptype == core.VALUE and cache.circle is None and cache.track_mode != 'PATH' and \
                 not state.modal_running and lead and \
                 (cache.vdir.angle(up, 0.0) > 0.01 or cache.vview.angle(look, 0.0) > 0.01):
@@ -888,6 +921,11 @@ def _draw_view():
             continue
         editable = cache.owner_selected() and not cache.locked
         lo, hi = path_window(scene, st, cache)
+        D = live_shift(cache)
+        if D is not None:
+            gpu.matrix.push()
+            gpu.matrix.multiply_matrix(D)
+            _pushed[0] = True
 
         ghost = state.ghosts.get(cache.key)
         if ghost and st.show_ghost:
@@ -932,6 +970,9 @@ def _draw_view():
                 hl_coords += [k.co, h]
                 hl_cols += [col, col]
         _lines(hl_coords, hl_cols, 1.6 * us)
+    if _pushed[0]:
+        gpu.matrix.pop()
+        _pushed[0] = False
 
     if state.slide_extension is not None:
         dashed = []
@@ -973,12 +1014,18 @@ def _draw_points(ctx, st, us):
     cur = scene.frame_current + scene.frame_subframe
     ks = st.key_size * 0.5 * us
 
+    shift = [None]      # (the path drawn moved along while Blender's G moves its parent)
+
     def proj(p):
-        return location_3d_to_region_2d(region, rv3d, p)
+        return location_3d_to_region_2d(region, rv3d, p if shift[0] is None else shift[0] @ p)
+
+    def many(pts):
+        return project_many(region, rv3d, pts if shift[0] is None else [shift[0] @ p for p in pts])
 
     for cache in state.visible_caches(scene):
         if not cache.valid:
             continue
+        shift[0] = live_shift(cache)
         obj = bpy.data.objects.get(cache.obj_name)
         if obj is None or not obj.visible_get():
             continue
@@ -993,7 +1040,7 @@ def _draw_points(ctx, st, us):
                    if v and not r_ and _in(t, lo, hi) and abs(t - round(t)) < 1e-4]
             if idx:
                 import numpy as np
-                xy, ok = project_many(region, rv3d, [cache.points[i] for i in idx])
+                xy, ok = many([cache.points[i] for i in idx])
                 m = 4.0 * us
                 ok &= (xy[:, 0] > -m) & (xy[:, 0] < region.width + m) & (xy[:, 1] > -m) & (xy[:, 1] < region.height + m)
                 discs.add_many(xy[ok], r, col)
@@ -1006,7 +1053,7 @@ def _draw_points(ctx, st, us):
         active = state.get_active(scene)
         # dense keys (baked / mocap) get smaller dots, so the path stays readable
         if cache.keys:
-            xy, ok = project_many(region, rv3d, [k.co for k in cache.keys])
+            xy, ok = many([k.co for k in cache.keys])
             scr = [Vector(p) if o else None for p, o in zip(xy.tolist(), ok.tolist())]
         else:
             scr = []
