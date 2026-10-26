@@ -504,6 +504,13 @@ class EMP_OT_context_menu(bpy.types.Operator):
     bl_label = "Motion Path Menu"
 
     def invoke(self, context, event):
+        from . import draw
+        if draw.speed_hit(context.area, event.mouse_region_x, event.mouse_region_y) is not None:
+            # right-drag on the speed graph: smooth the speed under the mouse
+            c = state.caches.get(state.speed_graph["cache"])
+            if c is not None:
+                bpy.ops.emp.speed_smooth('INVOKE_DEFAULT', obj_name=c.obj_name, bone_name=c.bone_name)
+                return {'CANCELLED'}    # (the stroke is the undo step)
         caches = state.editable_caches(context.scene)
         if not caches or pick.selected_count(caches) == 0:
             return {'PASS_THROUGH'}

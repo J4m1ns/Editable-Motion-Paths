@@ -588,6 +588,11 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         name="Select New Keys", default=True, update=_redraw,
         description="Speed graph: the keys a drag of the curve adds are selected (so the graph keeps "
                     "showing the same keys)")
+    ca_notice: BoolProperty(
+        name="Continuous Acceleration Note", default=False,
+        description="When a drag starts on curves with Blender's Continuous Acceleration smoothing (the whole "
+                    "curve re-solves, so the path moves beyond the edited key), say so in the view. The "
+                    "sidebar's Curve Smoothing panel shows it either way")
     speed_keep_ends: BoolProperty(
         name="Keep the Graph's Keys", default=True, update=_redraw,
         description="Speed graph: after a drag, the keys at both ends of the graph are selected too (one "
@@ -636,6 +641,7 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         layout.use_property_decorate = False
         col = layout.column(heading="Keys")
         col.prop(self, "hotkey_priority")
+        col.prop(self, "ca_notice")
         layout.separator()
         col = layout.column()
         col.label(text="Paths")

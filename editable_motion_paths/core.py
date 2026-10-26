@@ -423,7 +423,7 @@ def _lock_state(tg, ptype):
     elif ptype == SCALE and all(tg.scale_locks()):
         return True, "Scale is locked. Press 1 to edit Location"
     elif ptype == VALUE and not tg.value.any():
-        return True, "Pick an animated value to edit (sidebar > Motion Paths > Value)"
+        return True, "Pick an animated value to edit (Sidebar > Motion Paths > Value)"
     return False, ""
 
 

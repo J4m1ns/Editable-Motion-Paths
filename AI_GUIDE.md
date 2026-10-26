@@ -23,13 +23,14 @@ import sys
 # the add-on's API (works for the extension and a plain add-on install)
 emp = next(m for n, m in sys.modules.items() if n.endswith("editable_motion_paths.api"))
 
-emp.add_paths("Zombie_Rig", ["CTRL_Foot_L", "CTRL_Hand_IK_R"], mode='LOCATION')
+emp.add_paths("Character_Rig", ["CTRL_Foot_L", "CTRL_Hand_IK_R"], mode='LOCATION')
 print(emp.list_paths())
 ```
 
 `mode` is `'LOCATION'` (the head / origin trajectory, which edits location keys) or
 `'ROTATION'` (the bone-tip trajectory, which edits rotation keys). Use
-`emp.set_mode(...)` to switch; a `mode=` given to one call is used for that call only.
+`emp.set_mode(...)` to switch what is shown (and used by calls without `mode=`); a `mode=` given
+to one call - `add_paths` too - is used for that call only.
 
 ## Find the controls first
 
@@ -60,9 +61,9 @@ Every edit works on the one path named (other paths and Blender's selection are 
 ## Read the motion
 
 ```python
-a = emp.analyze("Zombie_Rig", "CTRL_Foot_L")
+a = emp.analyze("Character_Rig", "CTRL_Foot_L")
 print(a["summary"])          # distance, speeds, holds, pops, sharp turns, how keys are hit
-p = emp.get_path("Zombie_Rig", "CTRL_Foot_L")   # frames, points, speed_per_frame, keys+handles
+p = emp.get_path("Character_Rig", "CTRL_Foot_L")   # frames, points, speed_per_frame, keys+handles
 ```
 
 How to read the result:
@@ -80,7 +81,7 @@ The add-on draws its overlay with Python, and the MCP screenshot does not show t
 real preview objects instead, then take the screenshot:
 
 ```python
-emp.setup_view("Zombie_Rig", "CTRL_Foot_L", angle=(1.3, 0, 1.2), show_bones=False)  # Solid, framed, no rig shapes
+emp.setup_view("Character_Rig", "CTRL_Foot_L", angle=(1.3, 0, 1.2), show_bones=False)  # Solid, framed, no rig shapes
 emp.preview_objects()        # curve colored by speed, octahedra on keys and on every frame
 # ... take the viewport screenshot with the MCP tool ...
 emp.preview_objects(False)   # remove them when done
@@ -98,7 +99,7 @@ frame numbers included, from the view `setup_view` / `frame_path` just set (also
 script call):
 
 ```python
-emp.setup_view("Zombie_Rig", "CTRL_Foot_L", angle=(1.3, 0, 1.2))
+emp.setup_view("Character_Rig", "CTRL_Foot_L", angle=(1.3, 0, 1.2))
 emp.render_view(r"C:\path\shot.png")     # framed on the path, close up
 ```
 
@@ -115,42 +116,74 @@ emp.render_view(r"C:\path\shot.png", frame_numbers=True)   # every key's frame w
 Each edit is one undo step, so you can try something and undo it.
 
 ```python
-emp.move_key("Zombie_Rig", "CTRL_Foot_L", frame=25, offset=(0, 0, 0.05))   # world-space nudge
-emp.move_key("Zombie_Rig", "CTRL_Foot_L", frame=25, target=(0.1, -0.2, 0.3))
-emp.insert_key("Zombie_Rig", "CTRL_Foot_L", frame=30)       # keeps the motion
-emp.set_key("Zombie_Rig", "CTRL_Torso", frame=12, values=(1.1, 0.85, 1.1), mode='SCALE')  # squash, by values
-emp.set_key("Zombie_Rig", "CTRL_Hand_L", frame=20, values=(0.0,), mode='VALUE')     # the value channel
-emp.smooth("Zombie_Rig", "CTRL_Foot_L", frames=[19, 25, 27], factor=1.0)  # shape; <0 sharpens
-emp.ease("Zombie_Rig", "CTRL_Foot_L", frames=[25], factor=0.8)            # slow in/out at a key
-emp.ease("Zombie_Rig", "CTRL_Foot_L", frames=[25], factor=0.8, side='IN') # slow in only (arrive gently)
-emp.exaggerate("Zombie_Rig", "CTRL_Foot_L", factor=0.3)     # <0 tones down, -1 flattens
-emp.slide("Zombie_Rig", "CTRL_Foot_L", frames=[33], offset=3)              # retime, keep pose (TIMING)
-emp.slide("Zombie_Rig", "CTRL_Foot_L", frames=[33], offset=3, slide_mode='SPACING')
-emp.slide("Zombie_Rig", "CTRL_Foot_L", frames=[40], offset=5, continue_motion=True)  # extend
-emp.cleanup("Zombie_Rig", "CTRL_Torso", method='ADAPTIVE', tolerance=1.0)  # fewer keys, same 3D shape
-emp.fix_loop("Zombie_Rig", "CTRL_Head", frame=1)  # close a broken loop: last key := key 1
-emp.set_handle_type("Zombie_Rig", "CTRL_Foot_L", frames=[25], handle_type='VECTOR')
+emp.move_key("Character_Rig", "CTRL_Foot_L", frame=25, offset=(0, 0, 0.05))   # world-space nudge
+emp.move_key("Character_Rig", "CTRL_Foot_L", frame=25, target=(0.1, -0.2, 0.3))
+emp.insert_key("Character_Rig", "CTRL_Foot_L", frame=30)       # keeps the motion
+emp.set_key("Character_Rig", "CTRL_Torso", frame=12, values=(1.1, 0.85, 1.1), mode='SCALE')  # squash, by values
+emp.set_key("Character_Rig", "CTRL_Hand_L", frame=20, values=(0.0,), mode='VALUE')     # the value channel
+emp.smooth("Character_Rig", "CTRL_Foot_L", frames=[19, 25, 27], factor=1.0)  # shape; <0 sharpens
+emp.ease("Character_Rig", "CTRL_Foot_L", frames=[25], factor=0.8)            # slow in/out at a key
+emp.ease("Character_Rig", "CTRL_Foot_L", frames=[25], factor=0.8, side='IN') # slow in only (arrive gently)
+emp.exaggerate("Character_Rig", "CTRL_Foot_L", factor=0.3)     # <0 tones down, -1 flattens
+emp.slide("Character_Rig", "CTRL_Foot_L", frames=[33], offset=3)              # retime, keep pose (TIMING)
+emp.slide("Character_Rig", "CTRL_Foot_L", frames=[33], offset=3, slide_mode='SPACING')
+emp.slide("Character_Rig", "CTRL_Foot_L", frames=[40], offset=5, continue_motion=True)  # extend
+emp.cleanup("Character_Rig", "CTRL_Torso", method='ADAPTIVE', tolerance=1.0)  # fewer keys, same 3D shape
+emp.fix_loop("Character_Rig", "CTRL_Head", frame=1)  # close a broken loop: last key := key 1
+emp.set_handle_type("Character_Rig", "CTRL_Foot_L", frames=[25], handle_type='VECTOR')
 emp.update()   # recalculate after you change animation by other means
 ```
 
 Timing and topology (2.0):
 
 ```python
-emp.space("Zombie_Rig", "CTRL_Hand_L", frames=[10, 30], profile='EVEN')        # constant speed, same shape
-emp.space("Zombie_Rig", "CTRL_Hand_L", frames=[10, 30], profile='SLOW_IN_OUT', strength=2.5)
-emp.dissolve_keys("Zombie_Rig", "CTRL_Torso", frames=[14, 18])  # remove keys, keep the shape
-emp.subdivide("Zombie_Rig", "CTRL_Foot_L", frames=[13, 25], cuts=2)
-emp.bevel("Zombie_Rig", "CTRL_Hand_L", frames=[20], width=3, segments=2)   # round a sharp corner
-emp.extrude("Zombie_Rig", "CTRL_Foot_L", frame=97, frames_later=6)      # continue the motion
-emp.loop_tool("Zombie_Rig", "CTRL_Hand_L", frames=[8, 12, 16, 20], tool='CIRCLE')  # clean arc
-emp.path_to_curve("Zombie_Rig", "CTRL_Foot_L")                           # -> object "Path CTRL_Foot_L"
-emp.follow_curve("Zombie_Rig", "CTRL_Foot_L", curve="MyCurve", timing='KEEP')
-print(max(emp.jitter("Zombie_Rig", "CTRL_Head"), key=lambda fv: fv[1]))  # roughest frame
-emp.set_mode('VALUE'); emp.set_value_channel("Zombie_Rig", "CTRL_Hand_L", '["ik_fk"]')
+emp.space("Character_Rig", "CTRL_Hand_L", frames=[10, 30], profile='EVEN')        # constant speed, same shape
+emp.space("Character_Rig", "CTRL_Hand_L", frames=[10, 30], profile='SLOW_IN_OUT', strength=2.5)
+emp.dissolve_keys("Character_Rig", "CTRL_Torso", frames=[14, 18])  # remove keys, keep the shape
+emp.subdivide("Character_Rig", "CTRL_Foot_L", frames=[13, 25], cuts=2)
+emp.bevel("Character_Rig", "CTRL_Hand_L", frames=[20], width=3, segments=2)   # round a sharp corner
+emp.extrude("Character_Rig", "CTRL_Foot_L", frame=97, frames_later=6)      # continue the motion
+emp.loop_tool("Character_Rig", "CTRL_Hand_L", frames=[8, 12, 16, 20], tool='CIRCLE')  # clean arc
+emp.path_to_curve("Character_Rig", "CTRL_Foot_L")                           # -> object "Path CTRL_Foot_L"
+emp.follow_curve("Character_Rig", "CTRL_Foot_L", curve="MyCurve", timing='KEEP')
+print(max(emp.jitter("Character_Rig", "CTRL_Head"), key=lambda fv: fv[1]))  # roughest frame
+emp.set_mode('VALUE'); emp.set_value_channel("Character_Rig", "CTRL_Hand_L", '["ik_fk"]')
 ```
 
 Roughness from `jitter()` above about 0.4 usually reads as a hitch or noise: smooth those
 frames.
+
+Easing, timing and the speed (what an animator does in the P gallery, the Shift+T Timing menu and on
+the speed graph):
+
+```python
+emp.apply_easing("Character_Rig", "CTRL_Hand_L", frames=[10, 30], easing='CUBIC', direction='EASE_OUT')
+emp.apply_easing("Character_Rig", "CTRL_Hand_L", frames=[10, 30], easing='BACK', direction='EASE_OUT',
+                 start=0.6, blend=0.2)        # only the last 40% of the part, joined softly
+emp.breakdown("Character_Rig", "CTRL_Hand_L", frames=[20], favor=0.3)       # -1 previous pose .. 1 next pose
+emp.scale_time("Character_Rig", "CTRL_Hand_L", frames=[10, 30], factor=1.5)  # slower (ripple=True moves the rest)
+emp.add_frames("Character_Rig", "CTRL_Hand_L", frame=30, count=4)           # everything after frame 30 later
+emp.moving_hold("Character_Rig", "CTRL_Hand_L", frame=30, frames=8)         # a hold that still drifts
+emp.snap_to_frames("Character_Rig", "CTRL_Hand_L")                          # keys on whole frames
+emp.offset_cascade("Character_Rig", ["Tail1", "Tail2", "Tail3"], offset=2, mode='ROTATION')   # overlap
+emp.change_speed("Character_Rig", "CTRL_Hand_L", frame=24, amount=-0.02, reach=2.0)  # slower around 24
+emp.smooth_speed("Character_Rig", "CTRL_Hand_L", frames=[10, 40], radius=4)  # even out bumps in the speed
+```
+
+`change_speed` and `smooth_speed` keep the path's shape and the keys' frames (the rest of each
+segment makes up for it); `amount` is in the units of `speed_per_frame`.
+
+The character's balance and the ghosts:
+
+```python
+c = emp.center_of_mass("RIG-rain")    # {"ready": False, ...} the first time: call again a moment later
+# {"ready": True, "frames": {f: {"center": [x, y, z], "lowest": z}}, "now": {"balance": 'IN' / 'OUT' / 'AIR', ...}}
+emp.onion(True, before=3, after=3, obj="RIG-rain", bones=["IK-Hand.L"])   # ghosts of those bones' frames
+# -> {"ready": False, ...} while they are captured: call onion() again a moment later, then render_view
+```
+
+`balance` 'OUT' on a planted pose means the character would fall; a jump's centers should lie on
+a parabola.
 
 In ROTATION mode, `move_key` turns the bone so its tip points at the target. Points are
 world coordinates of the bone tip (or of the head in LOCATION mode).

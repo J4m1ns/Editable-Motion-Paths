@@ -20,6 +20,7 @@ chart = None         # timing chart geometry of the last draw (see draw._draw_ch
 speed_graph = None   # where the speed graph is and what it shows (for dragging it), see draw
 speed_hold = None    # while the speed graph is dragged: {cache, lo, hi, vmax} it keeps
 speed_hot = None     # (path key, 'KEY' / 'EASE', frame / segment) under the mouse on the graph
+speed_reach = None   # while the graph's speed is dragged: (path key, frame, spread before, after) - its bar
 sculpt_cursor = None   # (x, y, radius, area pointer, painting) the sculpt brush circle
 sculpt_preview = None  # ([world points], area pointer) frame dots while a timing brush paints
 sculpt_hide = set()    # paths whose own frame dots are hidden meanwhile

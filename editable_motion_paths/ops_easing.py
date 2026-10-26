@@ -457,7 +457,8 @@ def eased_arc(job, fn, strength, start, end, blend, invert=False):
     A, B = r0 + (r1 - r0) * lo, r0 + (r1 - r0) * hi
     inside_lo, inside_hi = lo > 1e-3, hi < 1.0 - 1e-3
     total = job.arc[-1]
-    ramp = min(max(blend * (B - A), 2.0), (B - A) * 0.5)
+    # (at least two frames, or the speed would jump; Blend adds to that, so every bit of it counts)
+    ramp = min(2.0 + blend * (B - A), (B - A) * 0.5)
 
     def smooth(x):
         # (smootherstep: its slope and its bend are 0 at both ends - no kink in the speed)

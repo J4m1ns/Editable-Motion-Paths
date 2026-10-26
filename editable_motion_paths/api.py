@@ -107,7 +107,7 @@ def _cache(obj, bone=None, mode=None):
 
 
 def _v(p, nd=4):
-    return [round(x, nd) for x in p]
+    return [round(float(x), nd) for x in p]       # (plain floats: numpy ones don't go through JSON)
 
 
 def _view3d():
@@ -125,21 +125,22 @@ def _view3d():
 
 def add_paths(obj, bones=None, mode=None):
     """Show editable paths for an object, or for bones of an armature (calculated now).
-    Returns the path keys (object, bone, mode). mode: also switches the edit mode shown."""
+    Returns the path keys (object, bone, mode). mode: the kind of path to calculate for this
+    call (like every other call: the mode shown stays - set_mode() switches it)."""
     o = _object(obj)
     for b in bones or ():
         _check_bone(o, b)
     st = state.settings(_scene())
-    if mode:
-        st.edit_mode = _valid_mode(mode)
+    want = _valid_mode(mode)
     existing = {(e.object.name if e.object else None, e.bone_name) for e in st.paths}
     for b in (bones or [""]):
         if (o.name, b) not in existing:
             e = st.paths.add()
             e.object = o
             e.bone_name = b
-    update()
-    return [k for k in state.caches if k[0] == o.name and (not bones or k[1] in bones)]
+    with _in_mode(want):
+        update()
+    return [k for k in state.caches if k[0] == o.name and (not bones or k[1] in bones) and k[2] == want]
 
 
 def remove_paths(obj=None, bones=None):
@@ -155,7 +156,10 @@ def remove_paths(obj=None, bones=None):
 
 
 def set_mode(mode):
-    """'LOCATION', 'ROTATION', 'SCALE' or 'VALUE'."""
+    """The edit mode shown (and used by calls without mode=): 'LOCATION', 'ROTATION', 'SCALE' or
+    'VALUE'."""
+    if mode not in MODES:
+        raise ValueError("mode %r: use one of %s" % (mode, ", ".join(MODES)))
     state.settings(_scene()).edit_mode = mode
     state.sync_caches(_scene())
     update()
@@ -473,6 +477,9 @@ def _run_op(_op, _frames, _obj, _bone, _mode, **props):
                 r = _op('EXEC_DEFAULT', **props)
         c = state.caches.get(c.key) or c
         c.refresh(force=True)
+        if 'FINISHED' in r:
+            # (operators run from a script push no undo step of their own: one per call here)
+            _push(_op.get_rna_type().name)
         return r
 
 
@@ -562,8 +569,11 @@ def extrude(obj, bone=None, frame=None, frames_later=6, offset=(0.0, 0.0, 0.0), 
 
 def loop_tool(obj, bone=None, frames=None, tool='CIRCLE', influence=1.0, mode=None):
     """tool: 'CIRCLE', 'ARC', 'FLATTEN' or 'STRAIGHTEN' on the keys at `frames`."""
-    op = {'CIRCLE': bpy.ops.emp.circle, 'ARC': bpy.ops.emp.arc, 'FLATTEN': bpy.ops.emp.flatten,
-          'STRAIGHTEN': bpy.ops.emp.straighten}[tool]
+    ops = {'CIRCLE': bpy.ops.emp.circle, 'ARC': bpy.ops.emp.arc, 'FLATTEN': bpy.ops.emp.flatten,
+           'STRAIGHTEN': bpy.ops.emp.straighten}
+    if tool not in ops:
+        raise ValueError("tool %r: use one of %s.%s" % (tool, ", ".join(ops), _suggest(str(tool), ops)))
+    op = ops[tool]
     return _run_op(op, frames, obj, bone, mode, influence=influence)
 
 
@@ -582,12 +592,247 @@ def follow_curve(obj, bone=None, curve=None, frames=None, timing='KEEP', mode=No
 def set_value_channel(obj, bone=None, data_path='', index=0):
     """Which animated value Value mode (4) shows, e.g. '["ik_fk"]' or
     'pose.bones["Hand"].constraints["IK"].influence'."""
+    o = _object(obj)
+    _check_bone(o, bone)
+    owners = ([o.pose.bones[bone]] if bone else []) + [o]
+    ok = False
+    for owner in owners:
+        try:
+            owner.path_resolve(data_path)
+            ok = True
+            break
+        except (ValueError, TypeError, AttributeError):
+            pass
+    if not ok:
+        names = [p for p, _i, _label in core.value_candidates(o, bone or "")]
+        prefix = 'pose.bones["%s"]' % bone if bone else ""
+        short = [p[len(prefix):] if prefix and p.startswith(prefix) else p for p in names]
+        raise ValueError("%r is no value of %s %s; its animated values: %s.%s" % (
+            data_path, o.name, bone or "", ", ".join(short[:12]) or "none", _suggest(data_path, short)))
     st = state.settings(_scene())
+    found = False
     for e in st.paths:
-        if e.object is not None and e.object.name == (obj if isinstance(obj, str) else obj.name) \
-                and e.bone_name == (bone or ""):
+        if e.object is not None and e.object.name == o.name and e.bone_name == (bone or ""):
             e.value_path, e.value_index = data_path, index
+            found = True
+    if not found:
+        raise ValueError("No path for %s %s: add_paths() first" % (o.name, bone or ""))
     update()
+
+
+# ----------------------------------------------------------------------------
+# easing presets, timing tools, the speed (2.0)
+# ----------------------------------------------------------------------------
+
+EASINGS = ('LINEAR', 'SINE', 'QUAD', 'CUBIC', 'QUART', 'QUINT', 'EXPO', 'CIRC', 'BACK', 'BOUNCE', 'ELASTIC')
+
+
+def _one_of(name, value, allowed):
+    if value not in allowed:
+        raise ValueError("%s %r: use one of %s.%s" % (name, value, ", ".join(allowed), _suggest(str(value), allowed)))
+
+
+def apply_easing(obj, bone=None, frames=None, easing='SINE', direction='EASE_IN_OUT', keep_path=True,
+                 strength=1.0, start=0.0, end=1.0, blend=0.0, invert=False, mode=None):
+    """An easing curve on the part between the first and last of `frames` (the P gallery):
+    easing 'LINEAR', 'SINE', 'QUAD', 'CUBIC', 'QUART', 'QUINT', 'EXPO', 'CIRC', 'BACK', 'BOUNCE',
+    'ELASTIC'; direction 'EASE_IN' (start slow), 'EASE_OUT' (end slow), 'EASE_IN_OUT'.
+    keep_path: retime along the path (its shape stays; Back / Elastic overshoot along the motion);
+    False: Blender's easing interpolation on the channels. start / end (0..1 of the part): put the
+    easing on there only (invert: outside), blend: how softly it joins (share of the part)."""
+    _one_of("easing", easing, EASINGS)
+    _one_of("direction", direction, ('EASE_IN', 'EASE_OUT', 'EASE_IN_OUT'))
+    return _run_op(bpy.ops.emp.easing_preset, frames, obj, bone, mode, easing=easing, direction=direction,
+                   mode='TIMING' if keep_path else 'CHANNELS', strength=strength, start=start, end=end,
+                   blend=blend, invert=invert)
+
+
+def breakdown(obj, bone=None, frames=None, favor=0.0, mode=None):
+    """Blend the keys at `frames` between the poses of their neighbor keys (Tween Machine):
+    favor -1 = the previous pose, 0 = halfway, 1 = the next pose."""
+    return _run_op(bpy.ops.emp.tween, frames, obj, bone, mode, amount=max(-1.0, min(1.0, favor)))
+
+
+def scale_time(obj, bone=None, frames=None, factor=1.0, ripple=False, mode=None):
+    """Stretch (factor > 1, slower) or squash (< 1, faster) the timing of the keys at `frames`
+    around the first of them; ripple: the later keys move along."""
+    if factor <= 0:
+        raise ValueError("factor must be above 0 (1: as it is, 2: twice as long)")
+    return _run_op(bpy.ops.emp.time_scale, frames, obj, bone, mode, amount=factor, ripple=ripple)
+
+
+def add_frames(obj, bone=None, frame=None, count=1, mode=None):
+    """Add `count` frames after the key at `frame` (negative: remove, stopping at the next key):
+    everything after it moves (ripple)."""
+    _key_frames(_cache(obj, bone, mode), [frame])
+    return _run_op(bpy.ops.emp.add_frames, [frame], obj, bone, mode, amount=float(count))
+
+
+def moving_hold(obj, bone=None, frame=None, frames=0, drift=0.15, mode=None):
+    """A hold after the key at `frame` that still drifts a little in the direction of the motion
+    (frames: how long, 0 = as long as it took to get there; drift 0..0.6). It needs room: the
+    new key goes before the next one."""
+    c = _cache(obj, bone, mode)
+    t = _key_frames(c, [frame])[0]
+    later = [k.t for k in c.keys if k.t > t + 1e-3]
+    if later and frames and t + frames >= later[0] - 0.5:
+        raise ValueError("no room for a %s-frame hold after frame %s: the next key is at %s (frames < %s)" % (
+            frames, frame, later[0], round(later[0] - 0.5 - t, 2)))
+    return _run_op(bpy.ops.emp.moving_hold, [frame], obj, bone, mode, frames=float(frames), drift=drift)
+
+
+def snap_to_frames(obj, bone=None, frames=None, mode=None):
+    """Put the keys at `frames` (None: all) on whole frames."""
+    return _run_op(bpy.ops.emp.snap_frames, frames, obj, bone, mode)
+
+
+def offset_cascade(obj, bones, frames=None, offset=2.0, mode=None):
+    """Overlap / follow-through: each bone in `bones` (in that order, e.g. a tail from its root)
+    starts `offset` frames after the one before - its keys at `frames` (None: all) move later.
+    The first bone stays."""
+    from .ops_timetools import move_keys_in_time
+    if not bones or len(bones) < 2:
+        raise ValueError("offset_cascade needs 2 or more bones, in the order they follow each other")
+    with _in_mode(_valid_mode(mode)):
+        caches = [_cache(obj, b, mode) for b in bones]
+        for i, c in enumerate(caches):
+            d = offset * i
+            ts = [k.t for k in c.keys] if frames is None else _key_frames(c, frames)
+            if abs(d) > 1e-9 and ts:
+                move_keys_in_time(c, {t: t + d for t in ts}, [k.t for k in c.keys if k.sel])
+                c.refresh(force=True)
+    _push("Offset Cascade")
+    return {b: [round(k.t, 3) for k in c.keys] for b, c in zip(bones, caches)}
+
+
+def _key_frames(c, frames):
+    """The keys of path c at `frames`, or ValueError listing its keys."""
+    have = {round(k.t, 3): k.t for k in c.keys}
+    missing = [f for f in frames if round(float(f), 3) not in have]
+    if missing:
+        raise ValueError("No key of %s at frames %s; its keys are at %s" % (
+            c.label, missing, [round(k.t, 3) for k in c.keys]))
+    return [have[round(float(f), 3)] for f in frames]
+
+
+def change_speed(obj, bone=None, frame=None, amount=0.0, reach=1.0, mode=None):
+    """The speed graph, dragged: faster (amount > 0, distance per frame) or slower (< 0) around
+    `frame` - at a key, or anywhere between two keys. The path keeps its shape and the keys their
+    frames (the rest makes up for it). reach: how far it spreads (1: about a third of the
+    segment; more: into the segments around)."""
+    c = _cache(obj, bone, mode)
+    ks = [k.t for k in c.keys]
+    f = float(frame)
+    if any(abs(t - f) < 1e-3 for t in ks):
+        props = dict(mode='KEYSPEED', frame=f)
+    else:
+        before = [t for t in ks if t < f]
+        after = [t for t in ks if t > f]
+        if not before or not after:
+            raise ValueError("frame %s is outside the keys of %s (%s - %s)" % (frame, c.label, ks[0], ks[-1]))
+        props = dict(mode='EASE', frame=before[-1], frame_b=after[0], grab=f)
+    return _run_op(bpy.ops.emp.speed_drag, [], obj, bone, mode, obj_name=c.obj_name, bone_name=c.bone_name,
+                   amount=amount, reach=reach, **props)
+
+
+def smooth_speed(obj, bone=None, frames=None, radius=3.0, passes=3, mode=None):
+    """Even out the speed (bumps, dips, steps at keys) between the first and last of `frames`
+    (None: the whole path) - the right-drag brush of the speed graph, run along it `passes`
+    times. The path keeps its shape and the keys their frames."""
+    from .ops_timetools import smooth_speed as _smooth
+    with _in_mode(_valid_mode(mode)):
+        c = _cache(obj, bone, mode)
+        ks = [k.t for k in c.keys]
+        a, b = (ks[0], ks[-1]) if not frames else (min(frames), max(frames))
+        step = max(radius * 0.5, 0.5)
+        for _p in range(max(1, int(passes))):
+            t = a
+            while t <= b + 1e-6:
+                _smooth(c, t, radius)
+                t += step
+        c.refresh(force=True)
+    _push("Smooth Speed")
+    return [round(s, 5) for s in get_path(obj, bone, mode)["speed_per_frame"]]
+
+
+def onion(show=True, before=None, after=None, step=None, display=None, obj=None, bones=None):
+    """Onion skin: ghosts of the selected bones / objects on the frames around the current one
+    (render_view shows them). obj (and bones): select those first. display: 'SILHOUETTE', 'WIRE'
+    or 'POINTS'. The ghosts are captured in the background: "ready" says whether they all are -
+    if not, render a moment later (a new tool call)."""
+    from . import onion as _onion
+    sc = _scene()
+    st = state.settings(sc)
+    if obj is not None:
+        o = _object(obj)
+        for b in bones or ():
+            _check_bone(o, b)
+        for other in sc.objects:
+            if other != o and other.select_get():
+                other.select_set(False)
+        o.select_set(True)
+        bpy.context.view_layer.objects.active = o
+        if bones and o.type == 'ARMATURE':
+            if bpy.context.mode != 'POSE':
+                win, area, region = _view3d()
+                with bpy.context.temp_override(window=win, area=area, region=region):
+                    bpy.ops.object.mode_set(mode='POSE')
+            for pb in o.pose.bones:
+                compat.bone_select_set(pb, pb.name in bones)
+            o.data.bones.active = o.data.bones[bones[0]]
+    st.show_onion = bool(show)
+    if before is not None:
+        st.onion_before = int(before)
+    if after is not None:
+        st.onion_after = int(after)
+    if step is not None:
+        st.onion_step = int(step)
+    if display is not None:
+        _one_of("display", display, ('SILHOUETTE', 'WIRE', 'POINTS'))
+        st.onion_mode = display
+    out = {"show": st.show_onion, "before": st.onion_before, "after": st.onion_after, "step": st.onion_step,
+           "display": st.onion_mode}
+    if st.show_onion:
+        _onion._schedule(0.01)
+        done, shows = _onion.ready(sc, st)
+        out.update(ghost_frames=shows, ready=bool(shows) and len(done) == len(shows))
+        if not shows:
+            out["note"] = "no ghosts: select the bones / objects to ghost (obj=, bones=) - their animation is shown"
+        elif not out["ready"]:
+            out["note"] = "the ghosts are being captured: call onion() or render_view again in a moment"
+    return out
+
+
+def center_of_mass(obj, frames=None):
+    """Where the character's weight is (from its deform bones and meshes), frame by frame - to check
+    a pose is balanced, a jump's arc a parabola. It is worked out in the background once it is
+    shown; until then {"ready": False}: call again a moment later (a new tool call).
+    Returns per frame the center (x, y, z) and the floor contact height, and for the current
+    frame whether the center is over the feet ('IN'), outside them ('OUT') or in the air ('AIR')."""
+    from . import com
+    o = _object(obj)
+    if o.type != 'ARMATURE':
+        raise ValueError("%r is not an armature: the center of mass is worked out for characters" % o.name)
+    sc = _scene()
+    st = state.settings(sc)
+    if not st.show_com:
+        st.show_com = True
+    tr = com._track.get(o.name) or {}
+    f0, f1 = com._range(sc)
+    want = [int(f) for f in (frames if frames is not None else range(f0, f1 + 1))]
+    if o.name not in com._mass or any(f not in tr or tr[f] is None for f in want if f0 <= f <= f1):
+        com._schedule()
+        done = sum(1 for f in want if tr.get(f) is not None)
+        return {"ready": False, "status": com.status or "working out the frames (%d of %d done)" % (done, len(want)),
+                "note": "worked out in the background - call center_of_mass again in a moment"}
+    now = com.state_now(sc, o)
+    out = {"ready": True, "frames": {f: {"center": _v(tr[f][0]), "lowest": round(float(tr[f][1]), 4)}
+                                     for f in want if tr.get(f) is not None}}
+    if now is not None:
+        g, floor, _poly, bal, vel = now
+        out["now"] = {"frame": sc.frame_current, "center": _v(g), "floor": round(float(floor), 4), "balance": bal,
+                      "velocity": _v(vel) if vel is not None else None}
+    return out
 
 
 def jitter(obj, bone=None, mode=None):

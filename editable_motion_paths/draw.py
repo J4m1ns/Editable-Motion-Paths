@@ -1422,6 +1422,26 @@ def _draw_speed_graph(ctx, st, us):
     for quads, col in ((diamonds, kc + (1.0,)), (sel_diamonds, sc + (1.0,))):
         if quads:
             _flat([p for q in quads for p in (q[0], q[1], q[2], q[0], q[2], q[3])], col, 'TRIS')
+    reach = state.speed_reach
+    if reach is not None and reach[0] == cache.key:
+        # how far a speed drag spreads (the mouse wheel): a band, as strong as the change there
+        _key, tc, sl, sr = reach
+        a, b = max(tc - 3.0 * sl, t0), min(tc + 3.0 * sr, t1)
+        if b > a:
+            band, bar = [], []
+            n = 48
+            bh = 4.0 * us
+            for i in range(n):
+                ta, tb = a + (b - a) * i / n, a + (b - a) * (i + 1) / n
+                tm = (ta + tb) * 0.5
+                wgt = math.exp(-0.5 * ((tm - tc) / max(sl if tm < tc else sr, 1e-6)) ** 2)
+                xa, xb = X(ta), X(tb)
+                band.append(((xa, gy0), (xb, gy0 + gh), wgt))
+                bar.append(((xa, gy0), (xb, gy0 + bh), wgt))
+            for (xa, ya), (xb, yb), wgt in band:
+                _flat([(xa, ya), (xb, ya), (xb, yb), (xa, ya), (xb, yb), (xa, yb)], sc + (0.10 * wgt,), 'TRIS')
+            for (xa, ya), (xb, yb), wgt in bar:
+                _flat([(xa, ya), (xb, ya), (xb, yb), (xa, ya), (xb, yb), (xa, yb)], sc + (0.25 + 0.65 * wgt,), 'TRIS')
     cur = ctx.scene.frame_current
     fc = tuple(st.graph_frame_color)
     if t0 <= cur <= t1:
@@ -1433,13 +1453,20 @@ def _draw_speed_graph(ctx, st, us):
               fc + (1.0,), 'TRI_FAN')
     blf.size(font, 10 * us * fs)
     blf.color(font, 1.0, 1.0, 1.0, 0.75)
+    title = "Speed  ·  %s" % cache.label
     blf.position(font, x0 + 4 * us, y0 + h + 5 * us, 0)       # above the graph
-    blf.draw(font, "Speed  ·  %s" % cache.label)
+    blf.draw(font, title)
+    title_end = x0 + 4 * us + blf.dimensions(font, title)[0]
     blf.size(font, 9 * us * fs)
     blf.color(font, 1.0, 1.0, 1.0, 0.45)
-    hint = "drag: frame   a key's line: its time   its dot: its speed   the curve: ease"
-    blf.position(font, x1 - blf.dimensions(font, hint)[0] - 6 * us, y0 + h + 5 * us, 0)
-    blf.draw(font, hint)
+    # (as much of the hint as fits next to the title)
+    for hint in ("drag: frame   a key's line: its time   its dot: its speed   the curve: ease   right-drag: smooth",
+                 "drag: frame / key / ease   right-drag: smooth   wheel: reach", "right-drag: smooth"):
+        hx = x1 - blf.dimensions(font, hint)[0] - 6 * us
+        if hx > title_end + 12 * us:
+            blf.position(font, hx, y0 + h + 5 * us, 0)
+            blf.draw(font, hint)
+            break
 
 
 def speed_hit(area, mx, my):

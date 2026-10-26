@@ -430,9 +430,11 @@ class EMP_OT_transform(bpy.types.Operator):
             # Blender's Continuous Acceleration re-solves a whole curve's auto handles when one
             # key changes: say so, the path will move beyond the edited key
             from .ops_tools import cont_accel_curves
-            if cont_accel_curves(context):
+            from .props import prefs
+            p = prefs()
+            if p is not None and p.ca_notice and cont_accel_curves(context):
                 state.flash_message("Continuous Acceleration is on for these curves: the whole curve re-solves "
-                                    "(sidebar > Curve Smoothing > Smoothing: None)", 4.0)
+                                    "(Sidebar > Curve Smoothing > Smoothing: None)", 4.0)
         except Exception:
             pass
         self.pivot, individual = space.pivot_point(context, keys, handles)

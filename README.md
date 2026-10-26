@@ -180,6 +180,12 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   (both segments around it make up for it); the **curve**:
   the part of it you grab goes up (faster there) or down (slower), the rest of the segment makes
   up for it - grab it on the left to change the start of the segment, on the right for its end.
+  While dragging a key's dot or the curve, the **mouse wheel** sets the *Reach* - how far the
+  change spreads (a band along the bottom shows it): by default about a third of the segment;
+  wider, it goes on over the keys into the segments around, the spot you hold changing by the
+  full amount and the far ends making up for it. **Right-drag** on the graph **smooths** the speed
+  under the mouse - bumps, dips and steps at keys even out while you hold the button (the wheel
+  sets the radius; Esc undoes the stroke).
   The path keeps its shape and the keys their frames (keys are added where needed, like *Ease*;
   they are selected - *Select New Keys* in the preferences); after a drag the keys at both ends
   of the graph are selected too (one key selected: its neighbors - *Keep the Graph's Keys*), so
@@ -474,6 +480,13 @@ recalculate on their own (*Auto Update*).
 gives a Python API: find a rig's animator `controls()`, add paths, read and `analyze()`
 trajectories, key controls in world space, `jitter()`, move keys in world space, smooth, exaggerate, ease, slide, `space`,
 `subdivide`, `dissolve_keys`, `bevel`, `extrude`, `loop_tool`, `path_to_curve`,
-`follow_curve`, Clean Up and more. `preview_objects()` builds the paths as real geometry so
-they show up in screenshots. See [AI_GUIDE.md](AI_GUIDE.md); you can give it to Claude in a
-chat connected to Blender through MCP.
+`follow_curve`, Clean Up, easing presets (`apply_easing`), the Timing menu's tools
+(`breakdown`, `scale_time`, `add_frames`, `moving_hold`, `offset_cascade`), the speed graph's
+`change_speed` / `smooth_speed`, `onion` and `center_of_mass`. Each call is one undo step.
+`render_view()` renders the view with the overlay for an assistant that can read images;
+`preview_objects()` builds the paths as real geometry so they show up in other screenshots. See
+[AI_GUIDE.md](AI_GUIDE.md); you can give it to Claude in a chat connected to Blender through MCP.
+
+To change the add-on itself or build on it in a fork, start with
+[AI_DEV_GUIDE.md](AI_DEV_GUIDE.md): how it is built, the conventions, a worked example and how to
+test - written so an AI assistant without any other context can work on the code too.

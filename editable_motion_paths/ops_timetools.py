@@ -671,6 +671,10 @@ class EMP_OT_speed_drag(bpy.types.Operator):
     amount: FloatProperty(name="Speed Change", default=0.0,
                           description="Ease: how much faster (or slower, below 0) the motion is where the curve "
                                       "was grabbed, in the graph's units (distance per frame)")
+    reach: FloatProperty(name="Reach", default=1.0, min=0.05, soft_max=12.0, options={'SKIP_SAVE'},
+                         description="How far the speed change spreads (1: about a third of the segment, as "
+                                     "always; more: on over the keys into the segments around - each of them "
+                                     "still takes its frames). The mouse wheel while dragging")
 
     def _cache(self, context):
         for c in state.editable_caches(context.scene):
@@ -697,6 +701,8 @@ class EMP_OT_speed_drag(bpy.types.Operator):
             self.job = SpaceJob(c, tg, float(self.frame), float(self.frame_b))
             if self.job.arc[-1] < 1e-9:
                 return False        # a hold: nothing to ease
+            self.seg_jobs = {(float(self.frame), float(self.frame_b)): self.job}
+            self.key_times = [float(k.t) for k in c.keys]
         elif self.mode == 'KEYSPEED':
             ks = [k.t for k in c.keys]
             prev = max((t for t in ks if t < self.frame - 1e-3), default=None)
@@ -716,7 +722,47 @@ class EMP_OT_speed_drag(bpy.types.Operator):
                 self.jobs.append((SpaceJob(c, tg, float(self.frame), float(nxt)), 0.0))
             elif c.cyclic and len(ks) > 2:
                 self.jobs.append((SpaceJob(c, tg, float(ks[0]), float(ks[1])), 0.0))
+            self.seg_jobs = {(j.r0, j.r1): j for j, _u in self.jobs}
+            self.key_times = [float(t) for t in ks]
         return True
+
+    def _spread(self):
+        """(the frame the change is centered on, its spread before it, after it) - in frames, a
+        sixth of the segment on each side times Reach, as it always was at 1."""
+        if self.mode == 'EASE':
+            s = 0.16 * (self.frame_b - self.frame) * self.reach
+            return self.grab, s, s
+        lens = [j.r1 - j.r0 for j, _u in self.jobs]
+        left = [j.r1 - j.r0 for j, u in self.jobs if u == 1.0]
+        right = [j.r1 - j.r0 for j, u in self.jobs if u == 0.0]
+        sl = 0.16 * (left[0] if left else lens[0]) * self.reach
+        sr = 0.16 * (right[0] if right else lens[-1]) * self.reach
+        return self.frame, sl, sr
+
+    def _bumped_jobs(self):
+        """The segments the change reaches, each with the frame it is centered on in that
+        segment's own frames: its own segment(s), and with a bigger Reach the ones around."""
+        tc, sl, sr = self._spread()
+        if self.mode == 'EASE':
+            out = [(self.job, tc)]
+        else:
+            # (on a loop the other end's segment is the same pose seen from the other side)
+            out = [(j, j.r1 if u == 1.0 else j.r0) for j, u in self.jobs]
+        if self.reach <= 1.0 + 1e-6:
+            return out, sl, sr          # (as it always was: the key's / the grabbed segment only)
+        lo, hi = tc - 3.0 * sl, tc + 3.0 * sr
+        have = {(j.r0, j.r1) for j, _t in out}
+        ks = self.key_times
+        tg = None
+        for a, b in zip(ks, ks[1:]):
+            if (a, b) in have or b <= lo or a >= hi or b - a < 1e-6:
+                continue
+            job = self.seg_jobs.get((a, b))
+            if job is None:
+                tg = tg or self.c.target()
+                job = self.seg_jobs[(a, b)] = SpaceJob(self.c, tg, a, b)
+            out.append((job, tc))
+        return out, sl, sr
 
     def _apply(self):
         c = self.c
@@ -725,30 +771,20 @@ class EMP_OT_speed_drag(bpy.types.Operator):
             c.refresh(force=True)
             if abs(self.new_frame - self.frame) > 1e-6:
                 move_keys_in_time(c, {self.frame: self.new_frame}, select=self.sel)
-        elif self.mode == 'EASE':
-            self.snapshot.restore()
-            c.refresh(force=True)
-            tg = c.target()
-            if abs(self.amount) > 1e-9:
-                u0 = (self.grab - self.frame) / max(self.frame_b - self.frame, 1e-6)
-                # (Select New Keys: the segment's keys and the new ones are selected, so the
-                # graph keeps its frames)
-                from .props import prefs
-                p = prefs()
-                refit(self.job, tg, bump_target(self.job, tg, u0, self.amount),
-                      True if p is None or p.speed_select_new else self.sel)
-            c.refresh(force=True)
-        elif self.mode == 'KEYSPEED':
+        elif self.mode in {'EASE', 'KEYSPEED'}:
+            # (Select New Keys: the segment's keys and the new ones are selected, so the graph
+            # keeps its frames)
             from .props import prefs
             p = prefs()
             self.snapshot.restore()
             c.refresh(force=True)
+            jobs, sl, sr = self._bumped_jobs()     # (new segments measured before anything changes)
             if abs(self.amount) > 1e-9:
-                for job, u0 in self.jobs:
+                for job, tc in jobs:
                     if job.arc[-1] < 1e-9:
-                        continue    # (a hold on that side)
+                        continue    # (a hold there)
                     tg = c.target()
-                    refit(job, tg, bump_target(job, tg, u0, self.amount),
+                    refit(job, tg, bump_frames(job, tg, self.amount, tc, sl, sr),
                           True if p is None or p.speed_select_new else self.sel)
             c.refresh(force=True)
 
@@ -769,6 +805,7 @@ class EMP_OT_speed_drag(bpy.types.Operator):
         self.frame0 = context.scene.frame_current
         self.new_frame = self.frame
         self.amount = 0.0
+        self.reach = 1.0
         # the graph keeps its frames and its height while it is dragged
         state.speed_hold = {"cache": self.c.key, "lo": sg["lo"], "hi": sg["hi"], "vmax": sg["vmax"]}
         state.modal_running += 1
@@ -801,7 +838,10 @@ class EMP_OT_speed_drag(bpy.types.Operator):
             sg = self.sg
             self.amount = (my - self.my0) / max(sg["gh"], 1.0) * sg["vmax"] * 1.2
             at = self.frame if self.mode == 'KEYSPEED' else self.grab
-            text = "Speed at frame %.1f: %+.4f   up: faster there, down: slower" % (at, self.amount)
+            tc, sl, sr = self._spread()
+            state.speed_reach = (self.c.key, tc, sl, sr)
+            text = "Speed at frame %.1f: %+.4f   up: faster there, down: slower   Reach (wheel): %d frames" % (
+                at, self.amount, round(2.0 * (sl + sr)))
         self._apply()
         self.area.header_text_set(text + "   click / release: confirm   Esc: cancel")
         pick.tag_anim_editors()
@@ -810,6 +850,12 @@ class EMP_OT_speed_drag(bpy.types.Operator):
     def modal(self, context, event):
         t, v = event.type, event.value
         if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            self._move(context, event)
+        elif t in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'PAGE_UP', 'PAGE_DOWN', 'NUMPAD_PLUS', 'NUMPAD_MINUS'} \
+                and v == 'PRESS' and self.mode in {'EASE', 'KEYSPEED'}:
+            # how far the change spreads: up / plus wider, down / minus narrower
+            wider = t in {'WHEELUPMOUSE', 'PAGE_UP', 'NUMPAD_PLUS'}
+            self.reach = min(max(self.reach * (1.25 if wider else 0.8), 0.05), 40.0)
             self._move(context, event)
         elif (t == 'LEFTMOUSE' and v == 'RELEASE') or (t in {'RET', 'SPACE'} and v == 'PRESS'):
             return self._end(context, True)
@@ -820,6 +866,7 @@ class EMP_OT_speed_drag(bpy.types.Operator):
     def _end(self, context, ok):
         state.modal_running = max(0, state.modal_running - 1)
         state.speed_hold = None
+        state.speed_reach = None
         self.area.header_text_set(None)
         if self.mode == 'SCRUB':
             state.tag_redraw()
@@ -857,6 +904,13 @@ def bump_target(job, tg, u0, dv):
     """Target motion of one segment: the same path, its speed changed by dv around u0 (0..1 of
     the segment, a smooth bump), the rest of the segment slower / faster so it still takes the
     same frames."""
+    s = 0.16 * (job.r1 - job.r0)
+    return bump_frames(job, tg, dv, job.r0 + (job.r1 - job.r0) * u0, s, s)
+
+
+def bump_frames(job, tg, dv, tc, sl, sr):
+    """bump_target with the bump at frame tc, spreading sl frames before it and sr after (a bell
+    curve); tc may be outside the segment (a wide Reach going on into it)."""
     cache = job.cache
     r0, r1 = job.r0, job.r1
     total = job.arc[-1]
@@ -864,11 +918,197 @@ def bump_target(job, tg, u0, dv):
     dt = (r1 - r0) / n
     s0 = [job._at(job.arc, r0 + dt * i) for i in range(n + 1)]
     v0 = [max(b - a, 0.0) for a, b in zip(s0, s0[1:])]
-    sig = 0.16
-    v = []
+    v, ks = [], []
     for i, a in enumerate(v0):
-        k = math.exp(-0.5 * (((i + 0.5) / n - u0) / sig) ** 2)
+        t = r0 + dt * (i + 0.5)
+        sig = max(sl if t < tc else sr, 1e-6)
+        k = math.exp(-0.5 * ((t - tc) / sig) ** 2)
+        ks.append(k)
         v.append(max(a + dv * dt * k, a * 0.05))
+    # the segment still takes its frames: what the bump adds or takes is made up where it reaches
+    # least (so the grabbed spot changes by the full amount, also with a wide Reach); a bump over
+    # the whole segment leaves nowhere for that - then it is evened out over all of it
+    rest = [a * (1.0 - k) for a, k in zip(v0, ks)]
+    room = sum(rest)
+    if room > 0.05 * total:
+        need = total - sum(v)
+        made = [x + need * r / room for x, r in zip(v, rest)]
+        if min((m - 0.05 * a for m, a in zip(made, v0)), default=0.0) >= 0.0:
+            v = made
+    scale = total / (sum(v) or 1.0)
+    S = [0.0]
+    for x in v:
+        S.append(S[-1] + x * scale)
+
+    def fn(t):
+        u = min(max((t - r0) / dt, 0.0), float(n))
+        i = min(int(u), n - 1)
+        s = S[i] + (S[i + 1] - S[i]) * (u - i)
+        tt = job._time_at_arc(s)
+        return cache.solve(tg, t, job._at(job.pts, tt), job._at(job.vals, tt))
+    return fn
+
+
+class EMP_OT_speed_smooth(bpy.types.Operator):
+    """Right-drag on the speed graph: smooth the speed under the mouse - bumps and dips even out, """ \
+        """also across keys (the keys keep their frames, the path its shape). Mouse wheel: the """ \
+        """radius. Esc: the stroke undone"""
+    bl_idname = "emp.speed_smooth"
+    bl_label = "Smooth Speed"
+    bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
+
+    obj_name: StringProperty(options={'HIDDEN'})
+    bone_name: StringProperty(options={'HIDDEN'})
+    radius: FloatProperty(name="Radius", default=3.0, min=0.25, soft_max=30.0,
+                          description="How many frames around the mouse are smoothed (the mouse wheel while "
+                                      "smoothing)")
+
+    DAB = 0.08          # seconds between dabs while the button is held
+
+    def _cache(self, context):
+        for c in state.editable_caches(context.scene):
+            if c.obj_name == self.obj_name and c.bone_name == self.bone_name:
+                return c
+        return None
+
+    def invoke(self, context, event):
+        sg = state.speed_graph
+        c = self._cache(context)
+        if sg is None or c is None:
+            return {'CANCELLED'}
+        self.c, self.sg, self.area = c, dict(sg), context.area
+        tg = c.target()
+        self.snapshot = core.FCurveSnapshot(tg, tg.channels(c.ptype))
+        self.sel = {round(k.t, 3) for k in c.keys if k.sel}
+        self.tc = self._frame_at(event.mouse_region_x)
+        self.dabs = 0
+        state.speed_hold = {"cache": c.key, "lo": sg["lo"], "hi": sg["hi"], "vmax": sg["vmax"]}
+        state.modal_running += 1
+        self._timer = context.window_manager.event_timer_add(self.DAB, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        self._show()
+        return {'RUNNING_MODAL'}
+
+    def _frame_at(self, mx):
+        sg = self.sg
+        t = sg["t0"] + (sg["t1"] - sg["t0"]) * (mx - sg["x0"]) / max(sg["x1"] - sg["x0"], 1.0)
+        return min(max(t, sg["t0"]), sg["t1"])
+
+    def _show(self):
+        s = self.radius * 0.5
+        state.speed_reach = (self.c.key, self.tc, s, s)
+        self.area.header_text_set("Smooth Speed: hold the right button and move over the bumps   radius %.1f "
+                                  "frames (wheel)   release: done   Esc: undo the stroke" % self.radius)
+        state.tag_redraw()
+
+    def modal(self, context, event):
+        t, v = event.type, event.value
+        if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
+            self.tc = self._frame_at(event.mouse_region_x)
+            self._show()
+        elif t == 'TIMER':
+            self._dab()
+            self.dabs += 1
+            pick.tag_anim_editors()
+            state.tag_redraw()
+        elif t in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'PAGE_UP', 'PAGE_DOWN', 'NUMPAD_PLUS', 'NUMPAD_MINUS'} \
+                and v == 'PRESS':
+            wider = t in {'WHEELUPMOUSE', 'PAGE_UP', 'NUMPAD_PLUS'}
+            self.radius = min(max(self.radius * (1.25 if wider else 0.8), 0.25), 60.0)
+            self._show()
+        elif t == 'RIGHTMOUSE' and v == 'RELEASE':
+            if not self.dabs:
+                self._dab()             # (a click: one dab)
+            return self._end(context, True)
+        elif t == 'ESC' and v == 'PRESS':
+            return self._end(context, False)
+        return {'RUNNING_MODAL'}
+
+    def _dab(self):
+        smooth_speed(self.c, self.tc, self.radius, self.sel)
+
+    def _end(self, context, ok):
+        if getattr(self, "_timer", None) is not None:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+        state.modal_running = max(0, state.modal_running - 1)
+        state.speed_hold = None
+        state.speed_reach = None
+        self.area.header_text_set(None)
+        if not ok:
+            self.snapshot.restore()
+            self.c.dirty = True
+            self.c.refresh(force=True)
+        pick.tag_anim_editors()
+        state.tag_redraw()
+        return {'FINISHED'} if ok else {'CANCELLED'}
+
+
+def smooth_speed(c, tc, radius, sel=None):
+    """One dab of speed smoothing on path c around frame tc: within `radius` frames the speed
+    moves halfway to its blurred self (also across keys); every segment between keys still
+    takes its frames and the path keeps its shape. sel: the key frames to keep selected."""
+    import numpy as np
+    c.refresh(force=True)
+    sig = max(radius * 0.5, 0.1)
+    ks = [float(k.t) for k in c.keys]
+    segs = [(a, b) for a, b in zip(ks, ks[1:]) if b - a > 1e-6 and b > tc - 3 * sig and a < tc + 3 * sig]
+    if not segs:
+        return
+    tg = c.target()
+    jobs, ts, vs, owner = [], [], [], []
+    for j, (a, b) in enumerate(segs):
+        job = SpaceJob(c, tg, a, b)
+        n = int(min(400, max(8, round((b - a) * 4))))
+        dt = (b - a) / n
+        s = [job._at(job.arc, a + dt * i) for i in range(n + 1)]
+        jobs.append((job, n, dt))
+        for i in range(n):
+            ts.append(a + dt * (i + 0.5))
+            vs.append(max(s[i + 1] - s[i], 0.0) / dt)
+            owner.append(j)
+    ts, vs, owner = np.array(ts), np.array(vs), np.array(owner)
+    # (the blur reaches across keys: a step in the speed at a key evens out too)
+    sb = max(sig * 0.5, 0.35)
+    d = (ts[:, None] - ts[None, :]) / sb
+    kern = np.exp(-0.5 * d * d)
+    blur = (kern @ vs) / kern.sum(axis=1)
+    w = 0.5 * np.exp(-0.5 * ((ts - tc) / sig) ** 2)
+    new = vs + w * (blur - vs)
+    from .props import prefs
+    p = prefs()
+    for j, (job, n, dt) in enumerate(jobs):
+        if job.arc[-1] < 1e-9:
+            continue                # (a hold)
+        m = owner == j
+        v = list(new[m] * dt)
+        fn = speed_target(job, tg, v, [1.0 - x / 0.5 for x in w[m]])
+        refit(job, tg, fn, True if p is None or p.speed_select_new or sel is None else sel)
+        tg = c.target()
+    c.refresh(force=True)
+
+
+def speed_target(job, tg, v, rest_w=None):
+    """Target motion of one segment from its distance per step (n equal steps over the segment):
+    the same path, the segment still taking its frames - what's missing or too much is made up
+    where rest_w (0..1 per step) allows, else evenly."""
+    cache = job.cache
+    r0, r1 = job.r0, job.r1
+    total = job.arc[-1]
+    n = len(v)
+    dt = (r1 - r0) / n
+    v = list(v)
+    if rest_w is not None:
+        s0 = [job._at(job.arc, r0 + dt * i) for i in range(n + 1)]
+        v0 = [max(b - a, 0.0) for a, b in zip(s0, s0[1:])]
+        rest = [a * max(r, 0.0) for a, r in zip(v0, rest_w)]
+        room = sum(rest)
+        if room > 0.05 * total:
+            need = total - sum(v)
+            made = [x + need * r / room for x, r in zip(v, rest)]
+            if min((m - 0.05 * a for m, a in zip(made, v0)), default=0.0) >= 0.0:
+                v = made
+    v = [max(x, 0.0) for x in v]
     scale = total / (sum(v) or 1.0)
     S = [0.0]
     for x in v:
@@ -903,4 +1143,4 @@ class EMP_OT_graph_hover(bpy.types.Operator):
 
 classes = (EMP_OT_drag_frame, EMP_OT_time_scale, EMP_OT_add_frames, EMP_OT_tween,
            EMP_OT_offset_cascade, EMP_OT_moving_hold, EMP_OT_snap_frames, EMP_MT_timing,
-           EMP_OT_timing_menu, EMP_OT_speed_drag, EMP_OT_graph_hover)
+           EMP_OT_timing_menu, EMP_OT_speed_drag, EMP_OT_speed_smooth, EMP_OT_graph_hover)
