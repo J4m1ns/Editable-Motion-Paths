@@ -1,0 +1,119 @@
+name: Bug report
+description: Something doesn't work, works wrong, or Blender crashes
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time! The more of this you fill in, the faster the bug can be found and fixed.
+        A small .blend that shows the problem is the single most helpful thing.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+      placeholder: |
+        I dragged the key on frame 24 of the hand's path with G, and the foot's path jumped too.
+        Expected: only the hand's motion changes.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest list of steps that shows it, from opening the file.
+      placeholder: |
+        1. Open the attached file
+        2. Select the bone CTRL_Hand_L, press Ctrl+T
+        3. Click the key on frame 24, press G, move the mouse up
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how_often
+    attributes:
+      label: How often
+      options:
+        - Every time
+        - Sometimes
+        - Once, can't make it happen again
+    validations:
+      required: true
+
+  - type: input
+    id: blender
+    attributes:
+      label: Blender version
+      description: Help > About, or the bottom right of the window (e.g. 4.4.3, 5.2.1)
+    validations:
+      required: true
+
+  - type: input
+    id: addon
+    attributes:
+      label: Add-on version
+      description: Edit > Preferences > Add-ons > Editable Motion Paths (e.g. 2.0.0)
+    validations:
+      required: true
+
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and graphics card
+      placeholder: Windows 11, RTX 3060 (or macOS 14, M2 / Ubuntu 24.04, RX 6700)
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Path mode
+      description: Which kind of path was being edited
+      multiple: true
+      options:
+        - 1 Location
+        - 2 Rotation
+        - 3 Scale
+        - 4 Value
+        - Not about a path (panel, preferences, onion skin, center of mass...)
+
+  - type: dropdown
+    id: target
+    attributes:
+      label: What the path belongs to
+      multiple: true
+      options:
+        - An object
+        - A bone of a simple armature
+        - A production rig (constraints, IK, drivers)
+        - A linked rig / library override
+        - Several paths at once
+
+  - type: input
+    id: tool
+    attributes:
+      label: Tool or feature
+      placeholder: G G slide, Sculpt (Dissolve brush), speed graph, easing gallery (P), Merge, Copy / Paste...
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Errors from the console
+      description: |
+        Windows: Window > Toggle System Console. Copy the red / Traceback lines that appear when it happens.
+        If Blender crashed: the crash report (Windows: %TEMP%\blender.crash.txt, macOS / Linux: /tmp/blender.crash.txt).
+      render: text
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Screenshot, video or .blend
+      description: Drag files here. A short screen recording shows a lot; a small .blend (only what's needed) shows everything.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: It also happens with other add-ons turned off (or I couldn't check)
+        - label: I'm on the latest version of the add-on

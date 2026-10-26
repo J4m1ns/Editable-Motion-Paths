@@ -325,7 +325,7 @@ class EMP_OT_knife(bpy.types.Operator):
         """motion stays (Ctrl+K). LMB: add a point or drag to draw, RMB: fix this cut and start """ \
         """a new one, Shift: snap to """ \
         """the middle of a segment, Ctrl: no snapping, A: angle constraint, X / Y / Z: axis, """ \
-        """S: frame numbers, Ctrl+Z: undo a point, Enter / Space / double-click: cut, Esc: cancel """ \
+        """S: frame numbers, Ctrl+Z: undo a point, Enter / Space: cut, Esc: cancel """ \
         """all the cuts (like the mesh Knife)"""
     bl_idname = "emp.knife"
     bl_label = "Knife Path"
@@ -551,7 +551,7 @@ class EMP_OT_knife(bpy.types.Operator):
         context.area.header_text_set(
             "Knife: %d new key%s%s%s   LMB: point / drag   RMB: fix this cut, next cut   Shift: middle of a segment   "
             "Ctrl: no snapping   A: angle   X Y Z: axis   S: frame numbers   Ctrl+Z: undo point   "
-            "Enter / Space / double-click: cut   Esc: cancel all" % (n, "" if n == 1 else "s", cons, snap))
+            "Enter / Space: cut   Esc: cancel all" % (n, "" if n == 1 else "s", cons, snap))
         state.tag_redraw()
 
     # -- events -------------------------------------------------------------------
@@ -571,10 +571,8 @@ class EMP_OT_knife(bpy.types.Operator):
             if self.drawing and (last is None or (self.cur - last).length > 8.0 * compat.ui_scale()):
                 pts.append(self._world(context, self.cur))
             self._show(context)
-        elif t == 'LEFTMOUSE' and v == 'DOUBLE_CLICK':
-            return self._end(context, True)
         elif t == 'LEFTMOUSE':
-            if v == 'PRESS':
+            if v in {'PRESS', 'DOUBLE_CLICK'}:      # (a quick second click is just another point)
                 # a snapped point sits exactly on the path
                 self.cuts[-1].append(self.snap[0].copy() if self.snap else self._world(context, self.cur))
                 self.drawing = True
@@ -679,6 +677,10 @@ class EMP_OT_merge(bpy.types.Operator):
         ('CENTER', "At Center", "One key in the middle (frame and position)"),
         ('CURSOR', "At Cursor", "The active key, moved to the 3D cursor"),
     ], default='LAST')
+    keep_timing: BoolProperty(name="Keep Timing", default=True,
+                              description="The new shape between the keys around is travelled with the old "
+                                          "spacing (the bone covers the same share of the way on every frame: "
+                                          "only the handles change, no keys are added)")
 
     def invoke(self, context, event):
         if not any(sum(1 for k in c.keys if k.sel) >= 2 for c in state.editable_caches(context.scene)):
@@ -688,11 +690,15 @@ class EMP_OT_merge(bpy.types.Operator):
 
     def execute(self, context):
         from . import edit
+        from .ops_timing import SpaceJob, progress_target, refit
         n = 0
         for c in state.editable_caches(context.scene):
             sel = [k for k in c.keys if k.sel]
             if len(sel) < 2:
                 continue
+            times = [k.t for k in c.keys]
+            lo = max((t for t in times if t < sel[0].t - 1e-3), default=sel[0].t)
+            hi = min((t for t in times if t > sel[-1].t + 1e-3), default=sel[-1].t)
             if self.type in {'FIRST', 'LAST', 'CURSOR'}:
                 # selection order, like mesh Merge: the history of clicked keys
                 order = [t for key, t in state.select_history(context.scene) if key == c.key]
@@ -710,6 +716,12 @@ class EMP_OT_merge(bpy.types.Operator):
                     tg = c.target()
                     keys.insert_path_keys(c, tg, [keep_t])
                     c.refresh(force=True)
+            befores = []
+            if self.keep_timing:
+                # the spacing on both sides of the merged key, between the unselected keys around:
+                # the new shape is travelled with it (the merged key itself stays where it goes)
+                tg = c.target()
+                befores = [SpaceJob(c, tg, a, b) for a, b in ((lo, keep_t), (keep_t, hi)) if b - a > 1e-3]
             tg = c.target()
             ch = tg.channels(c.ptype)
             gone = [k for k in c.keys if k.sel and abs(k.t - keep_t) > 1e-3]
@@ -723,6 +735,18 @@ class EMP_OT_merge(bpy.types.Operator):
                 for k in fresh:
                     w.key(c, tg, k, W)
                 w.done([c])
+            for before in befores:
+                if before.arc[-1] < 1e-9:
+                    continue
+                c.refresh(force=True)
+                tg = c.target()
+                after = SpaceJob(c, tg, before.r0, before.r1)
+                if after.arc[-1] > 1e-9:
+                    # (a huge tolerance: the keys left get their handles fitted, none are added)
+                    core.update_fcurves(refit(after, tg, progress_target(before, after, tg),
+                                              {round(keep_t, 3)}, tolerance=1e9))
+                    c.dirty = True
+                    c.refresh(force=True)
             for k in c.keys:
                 pick.select_part(c, k, 'KEY', abs(k.t - keep_t) < 1e-3)
             state.set_active(c.key, keep_t)
@@ -821,7 +845,8 @@ def copy_keys_to(fc, frames, offset, select_new=True):
 # Copy / paste a key's pose
 # ----------------------------------------------------------------------------
 
-_clipboard = None       # {"frame": t, "items": [(data path suffix, index, entry or None, value)]}
+_clipboard = None       # {"frame": t, "main": path, "paths": {(object, bone): {"frame", "items", "rot_mode"}}}
+                        # items: [(data path suffix, index, entry or None, value)]
 
 
 def _suffix(tg, data_path):
@@ -840,9 +865,13 @@ def _copy_source(caches):
     return None
 
 
+ROT_SUFFIXES = ("rotation_euler", "rotation_quaternion", "rotation_axis_angle")
+
+
 class EMP_OT_copy_keys(bpy.types.Operator):
-    """Copy the pose of the active key (Ctrl+C). Ctrl+V pastes the channels of the current """ \
-        """mode on the current frame (Whole Pose in its redo panel: all of them)"""
+    """Copy the pose of the active key (Ctrl+C) - with several paths selected, each one's selected key. """ \
+        """Ctrl+V pastes the channels of the current mode on the current frame (Whole Pose in its redo """ \
+        """panel: all of them), each path its own copied pose (or the active one's)"""
     bl_idname = "emp.copy_keys"
     bl_label = "Copy Key Pose"
 
@@ -857,12 +886,7 @@ class EMP_OT_copy_keys(bpy.types.Operator):
             return {'PASS_THROUGH'}
         return self.execute(context)
 
-    def execute(self, context):
-        global _clipboard
-        src = _copy_source(state.editable_caches(context.scene))
-        if src is None:
-            return {'CANCELLED'}
-        c, k = src
+    def _copy(self, c, k):
         tg = c.target()
         items = []
         for fc in _pose_fcurves(tg, c, self.all_channels):
@@ -870,14 +894,52 @@ class EMP_OT_copy_keys(bpy.types.Operator):
             kp = next((kp for kp in fc.keyframe_points if abs(kp.co[0] - tt) < 1e-3), None)
             items.append((_suffix(tg, fc.data_path), fc.array_index,
                           kp_entry(kp) if kp is not None else None, fc.evaluate(k.t)))
-        _clipboard = {"frame": k.t, "items": items}
-        self.report({'INFO'}, "Copied the pose of frame %g" % k.t)
+        # (the rotation as it is, also unkeyed channels: pasted on a bone with another rotation
+        # mode it is converted)
+        rp, rn = core.rotation_prop(tg.rot_mode)
+        rot = [getattr(tg.owner, rp)[i] for i in range(rn)]
+        fcs = {fc.array_index: fc for fc in tg.coll or () if fc.data_path == tg.prefix + rp}
+        rot = [fcs[i].evaluate(k.t) if i in fcs else rot[i] for i in range(rn)]
+        return {"frame": k.t, "items": items, "rot_mode": tg.rot_mode, "rot": rot}
+
+    def execute(self, context):
+        global _clipboard
+        caches = state.editable_caches(context.scene)
+        src = _copy_source(caches)
+        if src is None:
+            return {'CANCELLED'}
+        main, k = src
+        paths = {main.key[:2]: self._copy(main, k)}
+        # every other path with a selected key: its own pose (pasted back on the same bone)
+        for c in caches:
+            if c.key[:2] in paths:
+                continue
+            sel = [kk for kk in c.keys if kk.sel]
+            if sel:
+                paths[c.key[:2]] = self._copy(c, sel[0])
+        _clipboard = {"frame": k.t, "main": main.key[:2], "paths": paths, "items": paths[main.key[:2]]["items"]}
+        self.report({'INFO'}, "Copied the pose of frame %g%s" % (
+            k.t, "" if len(paths) == 1 else " (%d bones / objects)" % len(paths)))
         return {'FINISHED'}
+
+
+def _converted_rotation(src, tg, frame):
+    """The copied rotation for a target with another rotation mode (Euler order, quaternion,
+    axis angle): [(suffix, index, None, value)], or None when the modes are the same."""
+    if src.get("rot_mode") in (None, tg.rot_mode):
+        return None
+    q = core.vals_to_quat(src["rot"], src["rot_mode"])
+    rp, rn = core.rotation_prop(tg.rot_mode)
+    fcs = {fc.array_index: fc for fc in tg.coll or () if fc.data_path == tg.prefix + rp}
+    ref = [fcs[i].evaluate(frame) if i in fcs else getattr(tg.owner, rp)[i] for i in range(rn)]
+    vals = core.quat_to_vals(q, tg.rot_mode, ref)
+    return [(rp, i, None, v) for i, v in enumerate(vals)]
 
 
 class EMP_OT_paste_keys(bpy.types.Operator):
     """Paste the copied key on the current frame (Ctrl+V): the channels of the current mode """ \
-        """(Location, Rotation, Scale or the Value), or the whole pose"""
+        """(Location, Rotation, Scale or the Value), or the whole pose. Each path gets its own copied """ \
+        """pose (else the active one's); a rotation goes over to another rotation mode"""
     bl_idname = "emp.paste_keys"
     bl_label = "Paste Key Pose"
     bl_options = {'REGISTER', 'UNDO'}
@@ -896,18 +958,28 @@ class EMP_OT_paste_keys(bpy.types.Operator):
             self.report({'WARNING'}, "Copy a key first (Ctrl+C on a selected key)")
             return {'CANCELLED'}
         frame = float(context.scene.frame_current)
-        caches = state.editable_caches(context.scene)
+        caches = [c for c in state.editable_caches(context.scene) if not c.locked]
+        paths = _clipboard.get("paths") or {None: {"items": _clipboard["items"]}}
+        main = paths.get(_clipboard.get("main")) or next(iter(paths.values()))
         for c in caches:
+            src = paths.get(c.key[:2], main)
             tg = c.target()
             ch = tg.channels(c.ptype)
             own = {(ch.path, fc.array_index if fc is not None else i) for i, fc in enumerate(ch.fcurves)}
-            for suffix, index, entry, value in _clipboard["items"]:
+            items = list(src["items"])
+            conv = _converted_rotation(src, tg, frame)
+            made = set()
+            if conv is not None:
+                # another rotation mode: the rotation converted, into the target's own channels
+                items = [i for i in items if i[0] not in ROT_SUFFIXES] + conv
+                made = {(tg.prefix + s, i) for s, i, _e, _v in conv}
+            for suffix, index, entry, value in items:
                 path = tg.prefix + suffix if tg.prefix else suffix
                 if not self.whole_pose and (path, index) not in own:
                     continue        # only the channels of the current mode
                 fc = tg.coll.find(path, index=index) if tg.coll is not None else None
                 if fc is None:
-                    if (path, index) not in own:
+                    if (path, index) not in own and (path, index) not in made:
                         continue
                     fc = compat.ensure_fcurve(tg.obj, path, index, tg.group_name)
                 x = core.wrap_time(frame, core.cycle_info(fc))
@@ -919,6 +991,9 @@ class EMP_OT_paste_keys(bpy.types.Operator):
             c.dirty = True
             c.refresh(force=True)
             state.set_active(c.key, frame)
+        if not caches:
+            self.report({'WARNING'}, "No path to paste on (select a bone / object with an editable path)")
+            return {'CANCELLED'}
         state.schedule_rebake(0.3)
         pick.tag_anim_editors()
         self.report({'INFO'}, "Pasted %s of frame %g on frame %g" % (
@@ -1347,7 +1422,8 @@ class EMP_OT_toggle_cycles(bpy.types.Operator):
                     for m in [m for m in fc.modifiers if m.type == 'CYCLES']:
                         fc.modifiers.remove(m)
                 elif not any(m.type == 'CYCLES' for m in fc.modifiers):
-                    fc.modifiers.new('CYCLES')
+                    from .ops_fmods import add_modifier
+                    add_modifier(fc, 'CYCLES')
                 fc.update()
             c.dirty = True
         self.report({'INFO'}, "Looping off" if on else "Looping on (Cycles)")

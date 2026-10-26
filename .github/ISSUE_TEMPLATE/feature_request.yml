@@ -1,0 +1,26 @@
+name: Idea or wish
+description: Something that would make animating with the add-on easier
+labels: ["idea"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you're trying to do
+      description: The animation task, and what is slow or awkward about it now.
+      placeholder: When I polish a walk, I keep switching to the Graph Editor to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: How you imagine it
+      description: Keys, mouse, where it would be. If another program or Blender tool does it well, say which.
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Sketch, video or example
+      description: Optional - a drawing over a screenshot often says more than words.

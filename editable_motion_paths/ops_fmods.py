@@ -150,20 +150,46 @@ def sync_stack(cache):
                 copy_settings(master, m)
 
 
+def add_modifier(fc, kind):
+    """A new modifier of this kind on fc (or None). Blender adds Cycles only as the first one
+    (4.4: new() gives None otherwise): then the stack is made again with it first."""
+    m = fc.modifiers.new(kind)
+    if m is None and kind == 'CYCLES' and len(fc.modifiers):
+        data = [(x.name, x.type, settings_of(x), x.show_expanded) for x in fc.modifiers]
+        for x in list(fc.modifiers):
+            fc.modifiers.remove(x)
+        m = fc.modifiers.new('CYCLES')
+        for name, t, d, shown in data:
+            x = fc.modifiers.new(t)
+            if x is not None:
+                x.name = name
+                apply_settings(x, d)
+                x.show_expanded = shown
+    return m
+
+
 def _rebuild_order(fc, names):
-    """Re-create the modifiers of fc in the order of `names`."""
+    """Re-create the modifiers of fc in the order of `names` (where Blender takes Cycles only as
+    the first one - 4.4 - it goes first)."""
     data = [(m.name, m.type, settings_of(m), m.show_expanded) for m in fc.modifiers]
     by_name = {d[0]: d for d in data}
-    for m in list(fc.modifiers):
-        fc.modifiers.remove(m)
-    for n in names:
-        d = by_name.get(n)
-        if d is None:
-            continue
-        m = fc.modifiers.new(d[1])
-        m.name = d[0]
-        apply_settings(m, d[2])
-        m.show_expanded = d[3]
+
+    def build(order):
+        for m in list(fc.modifiers):
+            fc.modifiers.remove(m)
+        for n in order:
+            d = by_name.get(n)
+            if d is None:
+                continue
+            m = fc.modifiers.new(d[1])
+            if m is None:
+                return False
+            m.name = d[0]
+            apply_settings(m, d[2])
+            m.show_expanded = d[3]
+        return True
+    if not build(names):
+        build(sorted(names, key=lambda n: by_name[n][1] != 'CYCLES' if n in by_name else True))
 
 
 def _done(cache):
@@ -199,7 +225,9 @@ class EMP_OT_fmod_add(_StackOp, bpy.types.Operator):
             return {'CANCELLED'}
         name = _unique_name(cache, dict((t[0], t[1]) for t in TYPES)[self.type])
         for fc in chans:
-            m = fc.modifiers.new(self.type)
+            m = add_modifier(fc, self.type)
+            if m is None:
+                continue
             m.name = name
             m.show_expanded = True
         _done(cache)
@@ -271,7 +299,9 @@ class EMP_OT_fmod_axis(_StackOp, bpy.types.Operator):
             if fc is None:
                 continue
             if i in want and mods[i] is None:
-                new = fc.modifiers.new(typ)
+                new = add_modifier(fc, typ)
+                if new is None:
+                    continue
                 new.name = self.name
                 apply_settings(new, data)
                 _rebuild_order(fc, names)
@@ -300,7 +330,9 @@ class EMP_OT_fmod_duplicate(_StackOp, bpy.types.Operator):
         for (_l, fc), m in zip(channels(cache), mods):
             if fc is None or m is None:
                 continue
-            new = fc.modifiers.new(typ)
+            new = add_modifier(fc, typ)
+            if new is None:
+                continue
             new.name = new_name
             apply_settings(new, settings_of(m))
             new.show_expanded = m.show_expanded
@@ -560,7 +592,9 @@ class EMP_OT_fmod_paste(_StackOp, bpy.types.Operator):
             for i, (_l, fc) in enumerate(chans):
                 if fc is None or (i < len(on) and not on[i] and any(on)):
                     continue
-                m = fc.modifiers.new(typ)
+                m = add_modifier(fc, typ)
+                if m is None:
+                    continue
                 m.name = new_name
                 apply_settings(m, data)
         _done(cache)

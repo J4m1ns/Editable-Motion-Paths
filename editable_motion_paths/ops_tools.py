@@ -3,7 +3,7 @@
 import math
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 from mathutils import Quaternion, Vector
 
 from . import compat, core, pick, state
@@ -404,6 +404,75 @@ class EMP_OT_onion_mode(bpy.types.Operator):
 
     def execute(self, context):
         state.settings(context.scene).onion_mode = self.mode
+        return {'FINISHED'}
+
+
+class EMP_OT_path_pick(bpy.types.Operator):
+    """Edit this path: its bone / object gets selected (Shift: added to the selection, or taken out """ \
+        """of it - edit several paths at once)"""
+    bl_idname = "emp.path_pick"
+    bl_label = "Pick Path"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    index: IntProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    extend: BoolProperty(name="Extend", default=False, options={'SKIP_SAVE'})
+
+    def invoke(self, context, event):
+        self.extend = event.shift
+        return self.execute(context)
+
+    def execute(self, context):
+        st = state.settings(context.scene)
+        if not 0 <= self.index < len(st.paths):
+            return {'CANCELLED'}
+        e = st.paths[self.index]
+        ob = e.object
+        if ob is None or not ob.visible_get():
+            self.report({'WARNING'}, "Its object is hidden or gone")
+            return {'CANCELLED'}
+        st.active_index = self.index
+        vl = context.view_layer
+        if e.bone_name:
+            pb = ob.pose.bones.get(e.bone_name) if ob.pose else None
+            if pb is None:
+                return {'CANCELLED'}
+            if context.mode != 'POSE' or ob not in (context.objects_in_mode or []):
+                # (its armature into Pose Mode; with Shift the other armatures already in it stay)
+                if context.mode != 'OBJECT':
+                    bpy.ops.object.mode_set(mode='OBJECT')
+                if not self.extend:
+                    for o in context.selected_objects:
+                        o.select_set(False)
+                ob.select_set(True)
+                vl.objects.active = ob
+                bpy.ops.object.mode_set(mode='POSE')
+            if self.extend:
+                on = not compat.bone_selected(pb)
+                compat.bone_select_set(pb, on)
+                if on:
+                    ob.data.bones.active = pb.bone
+            else:
+                for o in context.objects_in_mode or [ob]:
+                    if o.pose:
+                        for other in o.pose.bones:
+                            if compat.bone_selected(other):
+                                compat.bone_select_set(other, False)
+                compat.bone_select_set(pb, True)
+                ob.data.bones.active = pb.bone
+        else:
+            if context.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            if self.extend:
+                on = not ob.select_get()
+                ob.select_set(on)
+                if on:
+                    vl.objects.active = ob
+            else:
+                for o in context.selected_objects:
+                    o.select_set(False)
+                ob.select_set(True)
+                vl.objects.active = ob
+        state.tag_redraw()
         return {'FINISHED'}
 
 
@@ -1839,7 +1908,7 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
             touched.add(fc)
 
 
-classes = (EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
+classes = (EMP_OT_path_pick, EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
            EMP_OT_reset_graph_look, EMP_OT_com_limb_reset, EMP_OT_edit_limb_weight,
            EMP_OT_smoothing_none, EMP_OT_set_view, EMP_OT_onion_mode, EMP_OT_onion_update, EMP_OT_path_update,
            EMP_OT_edit_tool,

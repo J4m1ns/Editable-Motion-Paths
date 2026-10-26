@@ -359,7 +359,7 @@ class EMP_OT_add_frames(_HorizontalDrag, bpy.types.Operator):
 
 class EMP_OT_tween(_HorizontalDrag, bpy.types.Operator):
     """Breakdown: blend the selected keys between the poses of their neighbors, closer to the """ \
-        """previous one (drag left) or the next one (drag right), like Tween Machine. (To move """ \
+        """previous one (drag left) or the next one (drag right). (To move """ \
         """keys in time or along the path, use Slide, G G)"""
     bl_idname = "emp.tween"
     bl_label = "Breakdown"

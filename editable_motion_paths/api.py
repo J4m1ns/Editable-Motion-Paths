@@ -648,7 +648,7 @@ def apply_easing(obj, bone=None, frames=None, easing='SINE', direction='EASE_IN_
 
 
 def breakdown(obj, bone=None, frames=None, favor=0.0, mode=None):
-    """Blend the keys at `frames` between the poses of their neighbor keys (Tween Machine):
+    """Blend the keys at `frames` between the poses of their neighbor keys (a breakdown):
     favor -1 = the previous pose, 0 = halfway, 1 = the next pose."""
     return _run_op(bpy.ops.emp.tween, frames, obj, bone, mode, amount=max(-1.0, min(1.0, favor)))
 

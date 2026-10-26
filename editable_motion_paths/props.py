@@ -643,6 +643,8 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         layout = self.layout
         layout.use_property_split = True
         layout.use_property_decorate = False
+        layout.prop(self, "smooth_display")       # (all of the add-on's drawing)
+        layout.separator()
         col = layout.column(heading="Keys")
         col.prop(self, "hotkey_priority")
         col.prop(self, "ca_notice")
@@ -666,7 +668,6 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         col.prop(self, "ribbon_width", text="Scale Ribbon Width")
         col.prop(self, "scale_box_size", text="Scale Box Size")
         col.prop(self, "scale_y_display")
-        col.prop(self, "smooth_display")
         layout.separator()
         col = layout.column()
         col.label(text="Onion Skin")

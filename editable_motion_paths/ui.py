@@ -532,9 +532,17 @@ class EMP_UL_paths(bpy.types.UIList):
         row.prop(item, "show", text="", emboss=False,
                  icon='HIDE_OFF' if item.show else 'HIDE_ON')
         name = item.bone_name or (item.object.name if item.object else "<missing>")
-        row.label(text=name, icon='BONE_DATA' if item.bone_name else _object_icon(item.object))
+        cache = state.caches.get(state.entry_key(item)) if item.object is not None else None
+        # the paths being edited (their bone / object selected) stand out; a click edits only that
+        # one, Shift+click adds it / takes it out (like selecting in the Outliner)
+        editable = cache is not None and cache.owner_selected()
+        sub = row.row(align=True)
+        sub.alignment = 'LEFT'
+        op = sub.operator("emp.path_pick", text=name, emboss=editable, depress=editable,
+                          icon='BONE_DATA' if item.bone_name else _object_icon(item.object))
+        op.index = index
+        row.separator()
         if item.object is not None:
-            cache = state.caches.get(state.entry_key(item))
             if cache is not None and cache.locked:
                 row.operator("emp.lock_info", text="", icon='LOCKED', emboss=False).reason = cache.lock_reason
             # isolate this path's curves in the Graph Editor (pressed while they are isolated)
@@ -817,12 +825,13 @@ def _draw_smoothing(layout, context):
         col.label(text="%d curve%s use%s Continuous Acceleration:" % (n, "" if n == 1 else "s", "s" if n == 1 else ""),
                   icon='INFO')
         col.label(text="editing a key also moves its neighbors' handles")
-        col.separator()
-        col.label(text="Smoothing: None turns it off on them,")
-        col.label(text="so a key changes only its own segments")
-        col.label(text="(the path may shift a little, once).")
     else:
         col.label(text="No curve here uses Continuous Acceleration", icon='CHECKMARK')
+    col.separator()
+    # (what the button is for, also when there is nothing to do now)
+    col.label(text="Smoothing: None turns it off on the curves")
+    col.label(text="of the selection, so a key changes only its")
+    col.label(text="own segments (the path may shift a little, once).")
     pref = getattr(context.preferences.edit, "fcurve_new_auto_smoothing", 'NONE')
     if pref != 'NONE':
         col.label(text="New curves get it too: Preferences > Animation >", icon='ERROR')

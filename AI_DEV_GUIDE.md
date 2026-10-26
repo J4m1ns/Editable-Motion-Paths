@@ -2,7 +2,8 @@
 
 This file explains how the add-on is built, so you (or an AI assistant you work with) can change
 it or add features on top of it without having seen the project before. Read it once from top to
-bottom before changing code. `README.md` describes what the add-on does for an animator;
+bottom before changing code. `README.md` is the short tour for animators and `docs/MANUAL.md`
+describes every tool, setting and hotkey;
 `AI_GUIDE.md` describes the scripting API for AI assistants that *use* the add-on. This file is
 about the code.
 
@@ -50,7 +51,8 @@ editable_motion_paths/          the extension (this folder is what gets zipped)
   easing.py, keys.py            (Clean Up), easing curves, key topology on F-Curves
   onion.py, com.py              onion skinning, center of mass (background work, own draw passes)
   icons/                        PNG icons (brushes, easing gallery)
-README.md, AI_GUIDE.md, AI_DEV_GUIDE.md, LICENSE (GPL-3.0-or-later)
+README.md (the short tour), docs/MANUAL.md (everything), docs/media/ (the README's GIFs),
+AI_GUIDE.md, AI_DEV_GUIDE.md, LICENSE (GPL-3.0-or-later)
 ```
 
 | module | what it holds |
@@ -252,7 +254,8 @@ Functions an AI assistant (or a script) calls. Conventions, so it stays easy for
 2. **UI**: a line in the Timing menu (`EMP_MT_timing.draw`), maybe the sidebar.
 3. **API** (optional): `def reverse_keys(obj, bone=None, frames=None, mode=None): return
    _run_op(bpy.ops.emp.reverse_keys, frames, obj, bone, mode)` + a line in `AI_GUIDE.md`.
-4. **Docs**: a sentence in `README.md` where the Timing menu is described.
+4. **Docs**: a sentence in `docs/MANUAL.md` where the Timing menu is described (the README only
+   lists the highlights).
 5. **Test** (section 9): keys at 1, 5, 20 selected -> keys at 1, 16, 20, the pose of frame 20 now
    at 1, nothing else changed; undo puts it back.
 

@@ -29,7 +29,11 @@ def get_fcurves(id_data, create=False):
 def ensure_fcurve(id_data, data_path, index, group_name=""):
     action = id_data.animation_data.action
     if hasattr(action, "fcurve_ensure_for_datablock"):
-        return action.fcurve_ensure_for_datablock(id_data, data_path, index=index, group_name=group_name)
+        try:
+            return action.fcurve_ensure_for_datablock(id_data, data_path, index=index, group_name=group_name)
+        except TypeError:
+            # (Blender 4.4: no group yet)
+            return action.fcurve_ensure_for_datablock(id_data, data_path, index=index)
     fc = action.fcurves.find(data_path, index=index)
     if fc is None:
         fc = action.fcurves.new(data_path, index=index, action_group=group_name)
