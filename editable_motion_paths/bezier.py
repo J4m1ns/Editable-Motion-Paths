@@ -88,32 +88,51 @@ class Sampler:
         return out
 
 
+_BASIS = None
+
+
+def _basis():
+    """The cubic Bernstein weights at Sampler.N + 1 steps of u: (4, N + 1)."""
+    global _BASIS
+    if _BASIS is None:
+        import numpy as np
+        u = np.linspace(0.0, 1.0, Sampler.N + 1)
+        v = 1.0 - u
+        _BASIS = np.stack([v * v * v, 3.0 * v * v * u, 3.0 * v * u * u, u * u * u])
+    return _BASIS
+
+
 def fit_lengths(x0, y0, s0, x1, y1, s1, ts, ys):
     """Handle lengths (a, b) in frames for the segment from (x0, y0) with right slope s0 to
     (x1, y1) with left slope s1 that best follow the samples (ts, ys). The slopes stay as
-    they are, so the curve keeps its direction (C1) at both keys. Returns (a, b, max_err)."""
+    they are, so the curve keeps its direction (C1) at both keys. Returns (a, b, max_err).
+
+    (A coarse grid of lengths, evaluated all at once, then a finer search around the best; the
+    curves are tables in u like Sampler - a + b stays within the segment, so x(u) rises and the
+    samples are read off by interpolation.)"""
+    import numpy as np
     L = x1 - x0
     if L <= 1e-9:
         return L / 3.0, L / 3.0, 0.0
+    T = np.asarray(ts, dtype=np.float64)
+    Y = np.asarray(ys, dtype=np.float64)
+    B = _basis()
 
-    def cost(fa, fb):
-        a, b = fa * L, fb * L
-        s = Sampler((x0, y0), (x0 + a, y0 + s0 * a), (x1 - b, y1 - s1 * b), (x1, y1))
-        e = 0.0
-        for y, z in zip(s.values(ts), ys):
-            e += (y - z) * (y - z)
-        return e
+    def curves(cands):
+        F = np.asarray(cands, dtype=np.float64).reshape(-1, 2)
+        a, b = F[:, 0] * L, F[:, 1] * L
+        one = np.ones_like(a)
+        X = np.stack([one * x0, x0 + a, x1 - b, one * x1], axis=1) @ B
+        V = np.stack([one * y0, y0 + s0 * a, y1 - s1 * b, one * y1], axis=1) @ B
+        return [np.interp(T, X[k], V[k]) - Y for k in range(len(F))]
 
-    best = None
-    grid = [i / 10.0 for i in range(1, 10)]
-    for fa in grid:
-        for fb in grid:
-            if fa + fb > 1.0 + 1e-9:
-                continue
-            c = cost(fa, fb)
-            if best is None or c < best[0]:
-                best = (c, fa, fb)
-    c, fa, fb = best
+    def costs(cands):
+        return [float(d @ d) for d in curves(cands)]
+
+    grid = [(i / 10.0, j / 10.0) for i in range(1, 10) for j in range(1, 10) if (i + j) / 10.0 <= 1.0 + 1e-9]
+    cs = costs(grid)
+    k = min(range(len(cs)), key=cs.__getitem__)
+    c, (fa, fb) = cs[k], grid[k]
     step = 0.05
     while step > 0.001:
         improved = False
@@ -122,13 +141,11 @@ def fit_lengths(x0, y0, s0, x1, y1, s1, ts, ys):
             na, nb = fa + da, fb + db
             if na < 0.005 or nb < 0.005 or na + nb > 1.0:
                 continue
-            nc = cost(na, nb)
+            nc = costs([(na, nb)])[0]
             if nc < c:
                 c, fa, fb = nc, na, nb
                 improved = True
         if not improved:
             step *= 0.5
-    a, b = fa * L, fb * L
-    s = Sampler((x0, y0), (x0 + a, y0 + s0 * a), (x1 - b, y1 - s1 * b), (x1, y1))
-    err = max((abs(y - z) for y, z in zip(s.values(ts), ys)), default=0.0)
-    return a, b, err
+    err = float(np.abs(curves([(fa, fb)])[0]).max()) if len(T) else 0.0
+    return fa * L, fb * L, err

@@ -312,13 +312,18 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
             # the path as it was: shown as a ghost while painting, and measured against
             self.removed, self.worst = 0, 0.0
             self.orig = {}
+            import numpy as np
             for c in caches:
                 pts = list(c.points)
-                lo = [min(p[i] for p in pts) for i in range(3)]
-                hi = [max(p[i] for p in pts) for i in range(3)]
-                size = max(sum((h - l) ** 2 for h, l in zip(hi, lo)) ** 0.5, 1e-6)
-                self.orig[c.key] = (dict(zip(c.times, pts)), pts, size)
+                P = np.array([tuple(p) for p in pts], dtype=np.float64).reshape(-1, 3)
+                size = max(float(np.linalg.norm(P.max(axis=0) - P.min(axis=0))), 1e-6) if len(P) else 1e-6
+                self.orig[c.key] = (np.asarray(c.times, dtype=np.float64), P, size)
                 state.ghosts[c.key] = pts
+            # (many keys under the brush: a dab tries them for a while, a timer goes on with the
+            # rest - also those the brush has already left - so the view keeps up; keys that had
+            # to stay aren't tried again until a neighbor goes)
+            self.kept, self.todo, self.more = set(), {}, False
+            self._timer = context.window_manager.event_timer_add(0.02, window=context.window)
         state.modal_running += 1
         self._cursor(context, m)
         context.window_manager.modal_handler_add(self)
@@ -340,7 +345,15 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
             elif (m - self.last).length >= max(2.0, self.radius * 0.12):
                 self._dab(context, event, m, m - self.last)
                 self.last = m
+        elif t == 'TIMER':
+            if self.brush == 'DISSOLVE' and self.more:
+                self._dissolve_dab(context, _bs(), context.region, context.region_data, self.last)
+                state.tag_redraw()
+            return {'RUNNING_MODAL'}
         elif t == 'LEFTMOUSE' and v == 'RELEASE':
+            if self.brush == 'DISSOLVE' and self.more:
+                # (the keys under the brush not tried yet: done now, so a stroke gives the same)
+                self._dissolve_dab(context, _bs(), context.region, context.region_data, self.last, final=True)
             self._commit(context)
             if self.brush == 'DISSOLVE':
                 # one summary at the end (not a note on every dab)
@@ -357,6 +370,9 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def _end(self, context, result):
+        if getattr(self, "_timer", None) is not None:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
         state.modal_running = max(0, state.modal_running - 1)
         state.sculpt_preview = None
         state.sculpt_hide = set()
@@ -549,41 +565,78 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                     w.handle(c, tg, k, side, k.co + off.lerp(want, f))
             w.done([c])
 
-    def _deviation(self, c):
-        """How far the path is now from where it was when the stroke began (percent of its size):
-        frame by frame (Keep Timing), or only from the old shape."""
-        by_t, pts, size = self.orig[c.key]
-        worst = 0.0
+    def _deviation(self, c, lo=-1e18, hi=1e18):
+        """How far the path is now from where it was when the stroke began (percent of its size),
+        between frames lo and hi (a removed key changes the path only around it): frame by frame
+        (Keep Timing), or only from the old shape."""
+        import numpy as np
+        T0, P0, size = self.orig[c.key]
+        times = c.times
+        idx = [i for i, t in enumerate(times) if lo - 1e-6 <= t <= hi + 1e-6]
+        if not idx or not len(T0):
+            return 0.0
+        pts = c.points
+        P = np.array([tuple(pts[i]) for i in idx], dtype=np.float64)
+        T = np.array([times[i] for i in idx], dtype=np.float64)
         if _bs().dissolve_keep_timing:
-            for t, p in zip(c.times, c.points):
-                q = by_t.get(t)
-                if q is not None:
-                    worst = max(worst, (p - q).length)
+            j = np.clip(np.searchsorted(T0, T), 0, len(T0) - 1)
+            same = np.abs(T0[j] - T) < 1e-6
+            if not same.any():
+                return 0.0
+            worst = float(np.linalg.norm(P[same] - P0[j[same]], axis=1).max())
         else:
-            for p in c.points:
-                best = 1e18
-                for a, b in zip(pts, pts[1:]):
-                    ab = b - a
-                    L = ab.length_squared
-                    f = 0.0 if L < 1e-12 else max(0.0, min(1.0, (p - a).dot(ab) / L))
-                    best = min(best, (a + ab * f - p).length_squared)
-                worst = max(worst, best ** 0.5)
+            # the nearest point of the old shape: its segments around the window (and as far again
+            # on each side - the motion may slide along the path)
+            span = max(hi - lo, 1.0) if hi < 1e17 and lo > -1e17 else 1e18
+            k = np.nonzero((T0 >= lo - span) & (T0 <= hi + span))[0]
+            if len(k) < 2:
+                k = np.arange(len(T0))
+            A = P0[k[0]:k[-1] + 1]
+            if len(A) < 2:
+                worst = float(np.linalg.norm(P - A[0], axis=1).max())
+            else:
+                a, ab = A[:-1], A[1:] - A[:-1]
+                L = np.maximum((ab * ab).sum(axis=1), 1e-12)
+                f = np.clip(((P[:, None, :] - a[None]) * ab[None]).sum(axis=2) / L[None], 0.0, 1.0)
+                d = a[None] + ab[None] * f[:, :, None] - P[:, None, :]
+                worst = float(np.sqrt((d * d).sum(axis=2).min(axis=1)).max())
         return worst / size * 100.0
 
-    def _dissolve_dab(self, context, st, region, rv3d, m):
+    BUDGET = 0.05       # seconds a dab (or a timer tick) tries keys before the view is drawn again
+
+    def _dissolve_dab(self, context, st, region, rv3d, m, final=False):
         """Try the keys under the brush, the one nearest the center first: a key goes if the path
         stays within the tolerance without it (the keys around it refit their handles)."""
+        import time
+        until = time.perf_counter() + self.BUDGET
+        self.more = False
         for c in self.caches:
             mask = self.masks.get(c.key)
             ks = [k for k in c.keys if not k.hidden]
-            cands = []
+            todo = self.todo.setdefault(c.key, set())
+            alive, under = {}, {}
             for i, k in enumerate(ks):
                 if i == 0 or i == len(ks) - 1 or (mask and not mask[2](k.t)):
                     continue            # the ends of the path stay
+                r = round(k.t, 3)
+                alive[r] = k.t
                 s = location_3d_to_region_2d(region, rv3d, k.co)
                 if s is not None and (s - m).length < self.radius:
-                    cands.append(((s - m).length, k.t))
-            for _d, t in sorted(cands):
+                    under[r] = (s - m).length
+                    todo.add(r)
+            # under the brush now first (the nearest first), then those it went over before
+            cands = sorted((r not in under, under.get(r, 0.0), alive[r]) for r in todo
+                           if r in alive and (c.key, r) not in self.kept)
+            for _u, _d, t in cands:
+                if not final and time.perf_counter() > until:
+                    self.more = True
+                    return
+                # (the path changes only around the key: up to the second key on each side - the
+                # neighbors' handles are refitted)
+                now = [k.t for k in c.keys if not k.hidden]
+                i = min(range(len(now)), key=lambda j: abs(now[j] - t)) if now else 0
+                lo = now[max(i - 2, 0)] if now else -1e18
+                hi = now[min(i + 2, len(now) - 1)] if now else 1e18
                 tg = c.target()
                 ch = tg.channels(c.ptype)
                 snap = core.FCurveSnapshot(tg, ch)
@@ -592,18 +645,22 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                     if fc is not None and len(fc.keyframe_points) > 2:
                         done += keys.dissolve_channel(fc, [t])
                 if not done:
+                    self.kept.add((c.key, round(t, 3)))
                     continue
                 core.update_fcurves([fc for fc in ch.fcurves if fc is not None])
                 c.dirty = True
                 c.refresh(force=True)
-                dev = self._deviation(c)
+                dev = self._deviation(c, lo, hi)
                 if dev > st.dissolve_tolerance:
+                    self.kept.add((c.key, round(t, 3)))
                     snap.restore()
                     c.dirty = True
                     c.refresh(force=True)
                 else:
                     self.removed += 1
                     self.worst = max(self.worst, dev)
+                    # (the keys around it have new neighbors now: worth another try)
+                    self.kept = {kt for kt in self.kept if kt[0] != c.key or not lo <= kt[1] <= hi}
 
     def _write(self, context, by_cache):
         for c, moves in by_cache.items():

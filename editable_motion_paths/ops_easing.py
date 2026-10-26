@@ -223,6 +223,7 @@ class EMP_OT_easing_preset(bpy.types.Operator):
                 if not gallery_inside(g, mx, my):
                     return self._close(context, {'CANCELLED'})      # a click outside: close
                 g['move'] = (mx - g['x0'], my - g['y0'])          # its frame: drag it somewhere else
+                g['move_from'] = (g['x0'], g['y0'])
             elif hit[0] == 'mode':
                 st.easing_mode = hit[1]
             elif hit[0] == 'dir':
@@ -236,6 +237,7 @@ class EMP_OT_easing_preset(bpy.types.Operator):
                     g['edit'] = {'key': hit[1], 'text': ""}
                 else:
                     g['drag'] = hit[1]
+                    g['drag_from'] = slider_value(st, hit[1])
                     _slider_from_mouse(context, st, g, hit[1], mx)
             elif hit[0] == 'ease':
                 st.easing_type = hit[1]                 # picked: the preview shows it, Apply puts it on
@@ -247,6 +249,14 @@ class EMP_OT_easing_preset(bpy.types.Operator):
             return self._apply(context)
         elif t in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE'} and st.easing_mode == 'TIMING':
             st.easing_strength = min(1.0, max(0.0, st.easing_strength + (0.05 if t == 'WHEELUPMOUSE' else -0.05)))
+        elif t in {'ESC', 'RIGHTMOUSE'} and v == 'PRESS' and (g['drag'] or g.get('move')):
+            # (like Blender's sliders: right click while dragging puts the value back, the
+            # gallery stays open)
+            if g['drag']:
+                set_slider(st, g['drag'], g['drag_from'])
+            else:
+                g['x0'], g['y0'] = g['move_from']
+            g['drag'] = g['move'] = None
         elif t in {'ESC', 'RIGHTMOUSE', 'P'} and v == 'PRESS':
             return self._close(context, {'CANCELLED'})
         elif t in {'MIDDLEMOUSE', 'TRACKPADPAN', 'TRACKPADZOOM', 'NDOF_MOTION'}:
@@ -434,8 +444,12 @@ def eased_arc(job, fn, strength, start, end, blend, invert=False):
     it was. Applying it and the preview use the same.
 
     The easing of the whole selection, put on between From and To only (invert: outside them):
-    elsewhere the timing stays, and the two join over `blend` of the part (at least two frames, or
-    the path would jump)."""
+    elsewhere the timing stays. It is the speed that is mixed, not the position: the eased part
+    has the easing's speed, scaled so it still gets from where the kept timing leaves off to where
+    it goes on (no catching up - no stops or bursts at the joins), and the two speeds blend over
+    `blend` of the part (at least two frames) with a smooth step, so the speed itself turns
+    smoothly into the easing."""
+    import numpy as np
     r0, r1 = job.r0, job.r1
     lo, hi = sorted((start, end))
     if hi - lo < 0.02:
@@ -446,8 +460,9 @@ def eased_arc(job, fn, strength, start, end, blend, invert=False):
     ramp = min(max(blend * (B - A), 2.0), (B - A) * 0.5)
 
     def smooth(x):
+        # (smootherstep: its slope and its bend are 0 at both ends - no kink in the speed)
         x = min(max(x, 0.0), 1.0)
-        return x * x * (3.0 - 2.0 * x)
+        return x * x * x * (x * (6.0 * x - 15.0) + 10.0)
 
     def weight(t):
         """How much of the easing on frame t (0..1)."""
@@ -461,9 +476,36 @@ def eased_arc(job, fn, strength, start, end, blend, invert=False):
                 w *= smooth((B - t) / ramp)
         return (1.0 - w if invert else w) * strength
 
+    n = int(min(4000, max(400, (r1 - r0) * 10)))
+    g = np.linspace(r0, r1, n + 1)
+    s0 = np.interp(g, job.ts, job.arc)
+    E = total * np.array([fn((t - r0) / (r1 - r0)) for t in g])
+    w = np.array([weight(t) for t in (g[:-1] + g[1:]) * 0.5])
+    d0, dE = np.diff(s0), np.diff(E)
+    ds = d0 * (1.0 - w)
+    on = w > 0.0
+    i = 0
+    while i < n:
+        if not on[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and on[j]:
+            j += 1
+        # one eased run: it covers what the kept timing leaves to it
+        need = float((d0[i:j] * w[i:j]).sum())
+        got = float((dE[i:j] * w[i:j]).sum())
+        if got > 1e-12 and need >= 0.0 and got >= 0.25 * need:
+            ds[i:j] += dE[i:j] * w[i:j] * (need / got)
+        else:
+            # (the easing goes mostly backwards there - Back / Elastic: shifted, not scaled)
+            span = float(w[i:j].sum())
+            ds[i:j] += (dE[i:j] + (need - got) / span) * w[i:j]
+        i = j
+    arc = np.concatenate([[0.0], np.cumsum(ds)])
+
     def S(t):
-        s0 = job._at(job.arc, t)
-        return s0 + (total * fn((t - r0) / (r1 - r0)) - s0) * weight(t)
+        return float(np.interp(t, g, arc))
 
     def kept(t):
         return weight(t) <= 0.0
@@ -609,7 +651,7 @@ def preview_cache(context):
     return next((c for c in cs if _ranges(c) is not None), None)
 
 
-def preview_speeds(context, st, kind, n=64):
+def preview_speeds(context, st, kind, n=120):
     """([frame], [speed before], [speed after]) of the selected part with easing `kind` and the
     gallery's settings, or None."""
     from .ops_timing import SpaceJob

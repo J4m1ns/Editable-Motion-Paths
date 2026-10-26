@@ -791,7 +791,7 @@ def draw_limb_weight(layout, st, body_mass=True):
             ('zone', "com_limb_share", "com_limb_mass", "Limb Weight"),
             ('own', "com_own_share", "com_own_mass", "Bone Weight")):
         share = zone if part == 'zone' else own
-        stored = com.WEIGHT_PROPS[part] in pb
+        stored = com.weight_of(arm, pb.name, part) is not None
         if part == 'own' and (own is None or zone is None or abs(own - zone) < 1e-6) and not stored:
             continue            # (no child bones with weight: the same as the one above)
         if share is None and not stored:

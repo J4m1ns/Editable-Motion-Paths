@@ -724,7 +724,7 @@ class EMP_OT_transform(bpy.types.Operator):
             return {'PASS_THROUGH'}     # Ctrl+T twists bones on rotation paths only
         if all(c.ptype == core.SCALE for c in caches) and self.mode != 'SCALE':
             if self.mode == 'TRANSLATE':
-                return bpy.ops.emp.slide('INVOKE_DEFAULT')     # G on scale paths: timing
+                return bpy.ops.emp.slide('INVOKE_DEFAULT', slide_mode='TIMING')     # G on scale paths: timing
             return {'PASS_THROUGH'}
         ts = context.scene.tool_settings
         st = state.settings(context.scene)

@@ -6,7 +6,9 @@ pose is believable (a visual aid only; nothing is changed).
   distance from the bone (about the volume around the bone), so a torso weighs more than a
   hand. A pose bone's custom property "com_mass" scales its mass by hand. The weights set in
   the panel are stored on the bones: "com_zone" (the bone with what hangs on it) and "com_own"
-  (the bone alone), shares of the body that the masses are solved to (see _apply_limbs).
+  (the bone alone), shares of the body that the masses are solved to (see _apply_limbs). A
+  linked rig (a library override in a shot) keeps them in the scene instead - Blender doesn't
+  save new properties on an override's bones; those set in the rig's own file still count.
 * The point follows the pose live (from the bone matrices only); a plumb line drops it to the
   floor.
 * In the background, frame by frame over the paths' range (only the bones are evaluated, like
@@ -147,12 +149,78 @@ def _build_mass(scene, arm, st):
 
 
 WEIGHT_PROPS = {'zone': "com_zone", 'own': "com_own"}   # pose bone property of each kind of weight
+SCENE_WEIGHTS = "emp_com_weights"   # scene property: {rig: {"zone:bone": share}} for linked rigs
+WORKED_OUT = -1.0                   # (stored there: the rig file's weight is left out, worked out instead)
+
+
+def _linked(arm):
+    """A rig from another file (a library override, or linked as it is): what's set on its bones
+    here isn't saved, so the weights go to the scene."""
+    return arm.override_library is not None or arm.library is not None
+
+
+def _scene_weights(arm, create=False):
+    """This rig's weights kept in the scene (the current one first), or None."""
+    scenes = [bpy.context.scene] + [s for s in bpy.data.scenes if s != bpy.context.scene]
+    for sc in scenes:
+        if sc is None:
+            continue
+        got = sc.get(SCENE_WEIGHTS)
+        if got is not None and arm.name in got:
+            return got[arm.name]
+    if not create or bpy.context.scene is None:
+        return None
+    sc = bpy.context.scene
+    if sc.get(SCENE_WEIGHTS) is None:
+        sc[SCENE_WEIGHTS] = {}
+    sc[SCENE_WEIGHTS][arm.name] = {}
+    return sc[SCENE_WEIGHTS][arm.name]
+
+
+def weight_of(arm, bone, part):
+    """The weight set for the bone (share of the body), or None (worked out from the meshes)."""
+    if _linked(arm):
+        got = _scene_weights(arm)
+        if got is not None and "%s:%s" % (part, bone) in got:
+            v = float(got["%s:%s" % (part, bone)])
+            return None if v < 0.0 else v
+    pb = arm.pose.bones.get(bone)
+    v = pb.get(WEIGHT_PROPS[part]) if pb is not None else None
+    return float(v) if v is not None else None
+
+
+def _store(arm, bone, part, share):
+    """Keep the weight (None: no weight - worked out again)."""
+    pb = arm.pose.bones.get(bone)
+    prop = WEIGHT_PROPS[part]
+    if not _linked(arm):
+        if share is None:
+            if pb is not None and prop in pb:
+                del pb[prop]
+        else:
+            pb[prop] = share
+        return
+    got = _scene_weights(arm, create=share is not None)
+    key = "%s:%s" % (part, bone)
+    if share is not None:
+        got[key] = share
+    elif pb is not None and prop in pb:
+        got = _scene_weights(arm, create=True)
+        got[key] = WORKED_OUT           # (the rig file has one: left out)
+    elif got is not None and key in got:
+        del got[key]
 
 
 def _limbs(arm):
     """The weights set on bones: ((bone, 'zone' / 'own', share of the body), ...)."""
-    return tuple(sorted((pb.name, part, float(pb[prop])) for pb in arm.pose.bones
-                        for part, prop in WEIGHT_PROPS.items() if prop in pb))
+    out = {(pb.name, part): float(pb[prop]) for pb in arm.pose.bones
+           for part, prop in WEIGHT_PROPS.items() if prop in pb}
+    if _linked(arm):
+        for key, v in (_scene_weights(arm) or {}).items():
+            part, _sep, bone = key.partition(":")
+            if part in WEIGHT_PROPS:
+                out[(bone, part)] = float(v)
+    return tuple(sorted((b, p, v) for (b, p), v in out.items() if v >= 0.0))
 
 
 def own_bones(arm, bone, zone=None):
@@ -252,11 +320,7 @@ def set_limb_share(arm, bone, share, part='zone'):
     _apply_limbs(arm, probe, others)
     sel = _sets(arm, d, bone)[0 if part == 'zone' else 1]
     natural = float(probe["m"][sel].sum()) / max(float(probe["m"].sum()), 1e-12)
-    if abs(share - natural) < 5e-4:
-        if WEIGHT_PROPS[part] in pb:
-            del pb[WEIGHT_PROPS[part]]
-    else:
-        pb[WEIGHT_PROPS[part]] = share
+    _store(arm, bone, part, None if abs(share - natural) < 5e-4 else share)
     _apply_limbs(arm, d, _limbs(arm))
     changed_all(arm)
     flash_limb(arm, bone, part)
@@ -270,8 +334,8 @@ def reset_limb(arm, bone, part=None):
         return False
     gone = False
     for p in ([part] if part else list(WEIGHT_PROPS)):
-        if WEIGHT_PROPS[p] in pb:
-            del pb[WEIGHT_PROPS[p]]
+        if weight_of(arm, bone, p) is not None:
+            _store(arm, bone, p, None)
             gone = True
     d = _mass.get(arm.name)
     if gone and d is not None:
@@ -318,26 +382,41 @@ def _draw_flash(scene, us):
     arm = bpy.data.objects.get(_flash[0][0])
     if arm is None or arm.type != 'ARMATURE':
         return
-    aff = onion.affected_bones(arm, {_flash[0][1]})
+    zone = onion.affected_bones(arm, {_flash[0][1]})
+    own = own_bones(arm, _flash[0][1], zone)
     if len(_flash[0]) > 2 and _flash[0][2] == 'own':
-        aff = own_bones(arm, _flash[0][1], aff)
-    tris = []
+        zone = own
+    # the bone itself in its own color, the rest of the limb in the limb's (the preferences)
+    limb_tris, bone_tris = [], []
     for o in _meshes(scene, arm):
         p = onion._proxies.get(o.name)
         if p is None or p.rest is None or not len(p.tri):
             continue
-        keep = onion._shown_by_weight(p, aff)
+        keep = onion._shown_by_weight(p, zone)
         if keep is None or not keep.any():
             continue
         tri = p.tri[keep[p.tri].all(axis=1)]
-        if len(tri):
-            tris.append(onion._pose(p)[tri].reshape(-1, 3))
-    if not tris:
+        if not len(tri):
+            continue
+        mine = onion._shown_by_weight(p, own)
+        in_bone = mine[tri].all(axis=1) if mine is not None else np.zeros(len(tri), dtype=bool)
+        posed = onion._pose(p)
+        if in_bone.any():
+            bone_tris.append(posed[tri[in_bone]].reshape(-1, 3))
+        if (~in_bone).any():
+            limb_tris.append(posed[tri[~in_bone]].reshape(-1, 3))
+    if not limb_tris and not bone_tris:
         return
+    from .props import prefs
+    pr = prefs()
+    alpha = 0.35 * (1.0 - age / FLASH) + 0.05
     sh = gpu.shader.from_builtin('UNIFORM_COLOR')
-    sh.uniform_float("color", (1.0, 0.8, 0.25, 0.35 * (1.0 - age / FLASH) + 0.05))
     gpu.state.face_culling_set('BACK')
-    batch_for_shader(sh, 'TRIS', {"pos": np.concatenate(tris)}).draw(sh)
+    for tris, col in ((limb_tris, pr.com_limb_color if pr else (1.0, 0.8, 0.25)),
+                      (bone_tris, pr.com_bone_color if pr else (0.35, 0.75, 1.0))):
+        if tris:
+            sh.uniform_float("color", tuple(col) + (alpha,))
+            batch_for_shader(sh, 'TRIS', {"pos": np.concatenate(tris)}).draw(sh)
     gpu.state.face_culling_set('NONE')
 
 
@@ -530,7 +609,8 @@ def state_now(scene, arm):
     Ma, Bs = onion.bone_mats(arm, d["names"], d["rest_inv"])
     st_ = state.settings(scene)
     key = hash(Bs.tobytes()) ^ hash(Ma.tobytes()) ^ hash(len(lows)) ^ hash(
-        (st_.com_floor, round(st_.com_floor_height, 5), round(scene.cursor.location.z, 5)) if st_ else 0)
+        (st_.com_floor, round(st_.com_floor_height, 5), round(scene.cursor.location.z, 5),
+         round(st_.com_floor_detail, 3)) if st_ else 0)
     old = _now.get(arm.name)
     if old is not None and old[0] == key:
         _k, floor, poly, bal = old
@@ -548,7 +628,9 @@ def state_now(scene, arm):
         if pts is not None:
             touch = pts[pts[:, 2] <= floor + tol][:, :2]
             if len(touch):
-                q = np.unique(np.round(touch / max(tol, 1e-4)), axis=0) * max(tol, 1e-4)
+                # (on a grid, so a dense mesh doesn't slow it down; Floor Detail makes it finer)
+                cell = max(tol / max(st.com_floor_detail if st is not None else 1.0, 1.0), 1e-4)
+                q = np.unique(np.round(touch / cell), axis=0) * cell
                 poly = _hull([(float(x), float(y)) for x, y in q])
         if not poly:
             bal = 'AIR'
@@ -640,7 +722,6 @@ def draw(scene, st, us):
 
 def draw_2d(ctx, st, us):
     """The point itself: a round dot on the screen (dark ring, white middle), over everything."""
-    import math
     from bpy_extras.view3d_utils import location_3d_to_region_2d
     from . import draw as _draw
     if not st.show_com or _busy or onion.busy():
@@ -654,7 +735,8 @@ def draw_2d(ctx, st, us):
         s = location_3d_to_region_2d(ctx.region, ctx.region_data, g)
         if s is None:
             continue
-        for r, col in ((9.0, (0.05, 0.05, 0.05, 0.9)), (6.0, (1.0, 1.0, 1.0, 1.0))):
-            rr = r * us
-            _draw._flat([(s.x, s.y)] + [(s.x + math.cos(a * math.pi / 12) * rr, s.y + math.sin(a * math.pi / 12) * rr)
-                                        for a in range(25)], col, 'TRI_FAN')
+        discs = _draw.Discs()           # (round dots with soft edges, like the keys)
+        discs.add((s.x, s.y), 9.0 * us, (0.05, 0.05, 0.05, 0.9))
+        discs.add((s.x, s.y), 6.0 * us, (1.0, 1.0, 1.0, 1.0))
+        gpu.state.blend_set('ALPHA')
+        discs.draw()

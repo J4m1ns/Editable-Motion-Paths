@@ -666,6 +666,7 @@ class EMP_OT_spin(bpy.types.Operator):
 class _LoopTool:
     bl_options = {'REGISTER', 'UNDO'}
     min_keys = 3
+    smooth_turn = 'OUTER'       # Smooth Ends: which handle turns in line (see _line_up_ends)
 
     influence: FloatProperty(name="Influence", default=1.0, min=0.0, max=1.0, subtype='FACTOR')
     keep_timing: BoolProperty(name="Keep Timing", default=True,
@@ -685,10 +686,13 @@ class _LoopTool:
             tg, fresh = edit.prepare(context, cache, [k.t for k in ks])
             fresh.sort(key=lambda k: k.t)
             before = self._timing_before(cache, tg, fresh)
+            self._smooth_ends_of = None
             res = self.shape(context, cache, tg, fresh)
             if res is False:
                 return {'CANCELLED'}
             self._timing_after(cache, before, fresh)
+            if self._smooth_ends_of is not None:
+                _line_up_ends(cache, *self._smooth_ends_of)
         pick.tag_anim_editors()
         return {'FINISHED'}
 
@@ -732,17 +736,62 @@ class _LoopTool:
                 if outer:
                     continue
                 edge = k.t in (first, last)
-                htype = 'FREE' if (edge and end_free) or cur in {'FREE', 'VECTOR'} else 'ALIGNED'
+                # (the ends: Free while the shape is made - Aligned to an Auto handle outside, Blender
+                # would turn them; Smooth Ends lines them up at the end, see _line_up_ends. Arc heads the way the path around goes: Aligned is fine for it.)
+                free_end = edge and (end_free or self.smooth_turn == 'OUTER')
+                htype = 'FREE' if free_end or cur in {'FREE', 'VECTOR'} else 'ALIGNED'
                 key_new = keys_w.get(k.t, k.co)
                 v = (h - k.co).lerp(W - key_new, f)
                 target = k.co.lerp(key_new, f) + v
                 w.handle(cache, tg, k, side, target, vals.get(k.t), htype)
             if k.t not in (first, last) and k.type_l in AUTO and k.type_r in AUTO:
                 core.set_handle_types(ch, k, 'ALIGNED', 'ALIGNED', w.touched)
+        if not end_free:
+            # (lined up last: after Keep Timing)
+            self._smooth_ends_of = (ks[0].t, ks[-1].t, self.smooth_turn)
         w.done([cache])
 
 
 AUTO = {'AUTO', 'AUTO_CLAMPED'}
+
+
+def _line_up_ends(cache, t_first, t_last, turn='OUTER'):
+    """Smooth ends: at the first and the last key the two handles are put in line, keeping their
+    lengths - on every channel, so the motion goes on in the same direction there. turn 'OUTER':
+    the handle facing the path around turns to the new shape (Circle: the circle stays round);
+    'INNER': the new shape turns to the path around (Arc, which already heads that way)."""
+    cache.refresh(force=True)
+    tg = cache.target()
+    ch = tg.channels(cache.ptype)
+    by_t = {round(k.t, 3): k for k in cache.keys}
+    touched = set()
+    for t, inner in ((t_first, 'R'), (t_last, 'L')):
+        k = by_t.get(round(t, 3))
+        if k is None:
+            continue
+        for c, fc in enumerate(ch.fcurves):
+            idx = k.idx[c] if c < len(k.idx) else -1
+            if fc is None or idx < 0:
+                continue
+            kp = fc.keyframe_points[idx]
+            x, y = kp.co
+            h_in = kp.handle_right if inner == 'R' else kp.handle_left
+            h_out = kp.handle_left if inner == 'R' else kp.handle_right
+            dt_in, dt_out = abs(h_in[0] - x), abs(h_out[0] - x)
+            if dt_in < 1e-9 or dt_out < 1e-9:
+                continue
+            kp.handle_left_type = kp.handle_right_type = 'ALIGNED'
+            # the handle that turns: on the line through the key and the other one, its length kept
+            src, dt = (h_in, dt_out) if turn == 'OUTER' else (h_out, dt_in)
+            slope = (src[1] - y) / (src[0] - x)
+            left = (inner == 'R') == (turn == 'OUTER')
+            if left:
+                kp.handle_left = (x - dt, y - slope * dt)
+            else:
+                kp.handle_right = (x + dt, y + slope * dt)
+            touched.add(fc)
+    core.update_fcurves(touched)
+    cache.refresh(force=True)
 
 
 def _turned(points, a, b, angle):
@@ -773,6 +822,9 @@ class EMP_OT_circle(_LoopTool, bpy.types.Operator):
                           description="Radius of the circle (0: fit to the keys)")
     regular: BoolProperty(name="Regular", default=False,
                           description="Spread the keys evenly around the arc")
+    smooth_ends: BoolProperty(name="Smooth Ends", default=True,
+                              description="The path around the arc turns to meet it in its direction at the "
+                                          "first and last key, without kinks (off: the ends keep a corner)")
 
     def shape(self, context, cache, tg, ks):
         cen, n, r = geom.best_circle([k.co for k in ks])
@@ -824,7 +876,7 @@ class EMP_OT_circle(_LoopTool, bpy.types.Operator):
             q = Quaternion(n.normalized(), self.rotate)
             pos = {key: cen + q @ (p - cen) for key, p in pos.items()}
             hw = {key: cen + q @ (p - cen) for key, p in hw.items()}
-        self._write(cache, tg, ks, pos, hw)
+        self._write(cache, tg, ks, pos, hw, end_free=not self.smooth_ends)
 
 
 class EMP_OT_arc(_LoopTool, bpy.types.Operator):
@@ -833,6 +885,7 @@ class EMP_OT_arc(_LoopTool, bpy.types.Operator):
     bl_idname = "emp.arc"
     bl_label = "Arc"
     min_keys = 2
+    smooth_turn = 'INNER'       # (the arc already heads the way the path around goes)
 
     bulge: FloatProperty(name="Bulge", default=1.0, min=0.0, soft_max=3.0,
                          description="How far the arc swings out (1: like the path was)")

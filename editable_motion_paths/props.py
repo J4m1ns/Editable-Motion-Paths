@@ -564,6 +564,19 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         items=[('PLAIN_AXES', "Plain Axes", ""), ('ARROWS', "Arrows", ""), ('SINGLE_ARROW', "Single Arrow", ""),
                ('CIRCLE', "Circle", ""), ('CUBE', "Cube", ""), ('SPHERE', "Sphere", ""), ('CONE', "Cone", "")],
         default='PLAIN_AXES')
+    com_limb_color: FloatVectorProperty(
+        name="Limb Color", subtype='COLOR', size=3, min=0.0, max=1.0, default=(1.0, 0.8, 0.25), update=_redraw,
+        description="Center of mass: the color a limb lights up in while its weight changes (the bones it "
+                    "carries)")
+    com_bone_color: FloatVectorProperty(
+        name="Bone Color", subtype='COLOR', size=3, min=0.0, max=1.0, default=(0.35, 0.75, 1.0), update=_redraw,
+        description="Center of mass: the color of the bone itself in the lit up limb (and of the part "
+                    "Bone Weight changes)")
+    com_floor_detail: FloatProperty(
+        name="Floor Detail", default=1.0, min=1.0, soft_max=8.0, max=20.0, update=_redraw,
+        description="Center of mass: how closely the support area on the floor follows the feet (1: a "
+                    "grid of 2% of the character's height; higher: finer, a little more work while "
+                    "the pose changes). The ghosts' Detail sets how fine the meshes it's taken from are")
     com_weight_unit: EnumProperty(
         name="Limb Weight In", update=_redraw,
         description="Center of mass: how a limb's weight is shown and set",
@@ -655,6 +668,9 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         col = layout.column()
         col.label(text="Center of Mass")
         col.prop(self, "com_weight_unit")
+        col.prop(self, "com_limb_color")
+        col.prop(self, "com_bone_color")
+        col.prop(self, "com_floor_detail")
         layout.separator()
         col = layout.column()
         col.label(text="Timing Chart and Speed Graph (the 3D view shows changes right away)")
@@ -708,7 +724,7 @@ PREF_NAMES = ("color", "jitter_threshold", "show_ghost", "show_spokes", "show_re
               "key_size", "rot_length", "ribbon_width", "rot_ribbon_width", "scale_box_size", "scale_y_display",
               "smooth_display",
               "onion_color_before", "onion_color_after",
-              "onion_other_display", "graph_corner", "graph_margin_x", "graph_margin_y", "graph_width",
+              "onion_other_display", "com_limb_color", "com_bone_color", "com_floor_detail", "graph_corner", "graph_margin_x", "graph_margin_y", "graph_width",
               "chart_height", "speed_height", "graph_text_size", "graph_bg", "speed_curve_color", "speed_fill_opacity",
               "graph_key_color", "graph_sel_color", "graph_frame_color", "chart_tick_color", "chart_key_color",
               "com_weight_unit", "speed_select_new", "speed_keep_ends")

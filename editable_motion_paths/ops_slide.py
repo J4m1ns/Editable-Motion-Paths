@@ -260,7 +260,7 @@ class EMP_OT_slide(bpy.types.Operator):
                                "mouse, so the bone arrives there earlier or later"),
         ('TIMING', "Timing", "Keys keep their pose and move in time (like dragging them in the "
                              "timeline). The frame dots around them spread out or bunch up"),
-    ], default='TIMING')
+    ], default='SPACING', options={'SKIP_SAVE'})     # (G G always starts with Spacing; T: Timing)
     extrapolate: BoolProperty(
         name="Follow the Path", default=False,
         description="C while sliding. The key keeps its handles and follows the path itself. "

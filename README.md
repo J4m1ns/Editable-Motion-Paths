@@ -96,7 +96,7 @@ The tool uses the settings you know from modeling, in the header and with the us
 | **G / R / S** | move / rotate / scale. X Y Z: axis, Shift+X/Y/Z: plane, type numbers, Shift: precise |
 | **R R** | trackball |
 | **Ctrl+T** | twist the bone (rotation paths) |
-| **G G**, **Shift+V** | slide in time: move the mouse right for later, left for earlier |
+| **G G**, **Shift+V** | slide along the path (Spacing; **T**: in time): move the mouse right for later, left for earlier |
 | **R / S** on one key | turn / stretch its handles (speed through the key) |
 | **Ctrl+M** | mirror (then X / Y / Z) |
 | **Shift+Ctrl+Alt+S** | shear |
@@ -200,9 +200,9 @@ That is Blender's own behaviour. To keep edits local, turn it off:
     after the one before (overlap, follow-through);
   * *Snap to Frames*.
 
-* **Slide (G G)**: *Timing* (default) keeps the poses and moves keys in time; the frame dots
-  spread out or bunch up. *Spacing* (T) keeps the frames and slides the poses along the path,
-  and the path keeps its shape.
+* **Slide (G G)**: *Spacing* (what it starts with) keeps the frames and slides the poses along
+  the path, and the path keeps its shape. *Timing* (T) keeps the poses and moves keys in time;
+  the frame dots spread out or bunch up.
   **C** (*Follow*): the key keeps its handles and follows the path itself. In *Timing* it moves
   in time and onto the path where the motion was at the new frame; in *Spacing* it slides along
   the path without retiming the frames around it. Past the first / last key the motion goes
@@ -230,13 +230,15 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   on), like in the Graph Editor. *Bounce* has *Bounces* and *Bounciness*, *Elastic* its
   amplitude and period. *From* / *To* (Keep the Path): the easing of the whole selection is put on
   between them only - before and after them the timing stays as it was, and *Blend* (at least two
-  frames) is how softly the two join. **Invert** turns the mask around: the easing goes on outside
+  frames) is how softly the two join. It's the speed that changes: the eased part still gets from
+  where the kept timing leaves off to where it goes on, so the joins have no stops or bursts, and
+  the speed turns smoothly into the easing. **Invert** turns the mask around: the easing goes on outside
   From - To, and the timing between them stays. **P** opens them as a gallery under the mouse: a
   **preview** of the selected part's speed (now in gray, with the easing in blue) shows what a
   picture does as soon as the mouse is on it; click a picture to pick it, tune *Strength*,
   *From*, *To*, *Blend*, *Invert* while watching the preview (drag a slider, or Ctrl+click it to type a
-  value), then **Apply** (or Enter, or double-click the picture). Resting the mouse on anything in
-  the gallery shows what it does. The redo panel has all the settings after that.
+  value; a right click while dragging puts it back), then **Apply** (or Enter, or double-click the
+  picture). Resting the mouse on anything in the gallery shows what it does. The redo panel has all the settings after that.
 
 ## Shape tools
 
@@ -246,7 +248,8 @@ That is Blender's own behaviour. To keep edits local, turn it off:
 * **Bevel**, **Spin** (continue the motion on an arc around the 3D cursor: orbits, swings).
 * **LoopTools**: *Circle* (a perfect arc; *Angle* turns it around the line between its ends,
   *Invert* bends it the other way, *Rotate* slides the keys along the circle so the arc swings
-  to and fro, *Radius*, *Regular* spacing), *Arc* (one smooth arc that
+  to and fro, *Radius*, *Regular* spacing, *Smooth Ends*: the path around turns to meet the arc
+  without kinks), *Arc* (one smooth arc that
   follows the shape and flows on into the path around it without kinks; *Bulge*, *Smooth
   Ends*), *Flatten* (one plane: best fit or facing the view), *Straighten* (a line),
   *Follow Stroke* (draw the motion with the Annotate tool, D + drag, and the selected part of the
@@ -380,7 +383,8 @@ for the edited armature or the active one, with or without a path:
   down to the floor;
 * the **support** (on by default): the outline of what touches the floor; where the plumb line
   meets the floor turns green inside it (a stable pose), red outside (falling, or moving), gray
-  when nothing touches the floor (in the air);
+  when nothing touches the floor (in the air). *Floor Detail* in the add-on's preferences makes
+  the outline follow the feet more closely;
 * the **velocity** (on by default): an arrow where the body is going - *Adaptive* (as far as it
   gets in about 8 frames), *Fixed* (a set length: only the direction) or *Adaptive + Length*;
 * the **trajectory** (off by default): the center's path over the frames - a jump's arc should
@@ -399,14 +403,18 @@ where they're off (a heavy boot, a prop in the hand) and the other bones make up
 keeps its weight also when a smaller part inside it gets its own (set the arm to 6%, then the hand
 to 1%: the arm stays 6%, the rest of it shares the other 5%), and the bones in no part share the
 rest of the body. So it's enough to go over the main bones; the add-on works out the rest. The part
-lights up while it changes; the arrow next to a weight goes back to the worked out one. With the
+lights up while it changes - the bone itself and the rest of the limb in their own colors (the
+preferences: *Limb Color*, *Bone Color*); the arrow next to a weight goes back to the worked out one. With the
 center shown, the right-click menu has **Edit Limb Weight...** (a small popup under the mouse). A
 bone that moves the whole body (the root, the torso) has no weight of its own - pick the chest,
 the hips or a limb. Space switches that are off (a head that could follow the hand, influence 0)
 don't make a bone part of a limb. The weights are shown in percent, or in kilograms / pounds (the
 preferences: *Limb Weight In*) from the character's *Body Mass*. A new weight works the trajectory
-out again from scratch. (They are kept on the bones as the custom properties `com_zone` and
-`com_own`; a deform bone's `com_mass` still scales that one bone, e.g. 0 for a cape.) The velocity, the floor
+out again from scratch. The weights are saved with the file: on the bones as the custom
+properties `com_zone` and `com_own` - or, for a rig linked from another file (a library override
+in a shot), in the scene, since Blender doesn't keep new properties on an override's bones. Set
+them in the rig's own file and every shot that links it starts with them. (A deform bone's
+`com_mass` still scales that one bone, e.g. 0 for a cape.) The velocity, the floor
 level and the trajectory are worked out in the background frame by frame (only the bones are
 evaluated, like the onion ghosts) and follow your edits.
 

@@ -1808,6 +1808,38 @@ def _draw_pixel():
 
 
 _tl_handles = []
+_tool_handles = []
+_tool_seen = {}         # area -> whether the path tool was on when its toolbar / header was drawn
+
+
+def watch_tool():
+    """The sidebar's Edit Paths button shows whether the path tool is on. Blender redraws the
+    toolbar and the headers when the tool changes (Ctrl+T, a click in the toolbar), not the
+    sidebar - which then showed the old state until the mouse went over it. Drawn with them, this
+    redraws the sidebar when the tool has changed."""
+    try:
+        ctx = bpy.context
+        area = ctx.area
+        if area is None:
+            return
+        on = _tool_active(ctx)
+        key = area.as_pointer()
+        if _tool_seen.get(key, on) != on and not bpy.app.timers.is_registered(_redraw_sidebars):
+            # (a redraw asked for while Blender is drawing gets lost: right after it instead)
+            bpy.app.timers.register(_redraw_sidebars, first_interval=0.0)
+        _tool_seen[key] = on
+    except Exception:
+        pass
+
+
+def _redraw_sidebars():
+    for win in bpy.context.window_manager.windows:
+        for area in win.screen.areas:
+            if area.type == 'VIEW_3D':
+                for r in area.regions:
+                    if r.type == 'UI':
+                        r.tag_redraw()
+    return None
 
 
 def v2d_px(v2d):
@@ -1862,9 +1894,14 @@ def register():
     _handles.append(bpy.types.SpaceView3D.draw_handler_add(draw_view, (), 'WINDOW', 'POST_VIEW'))
     _handles.append(bpy.types.SpaceView3D.draw_handler_add(draw_pixel, (), 'WINDOW', 'POST_PIXEL'))
     _tl_handles.append(bpy.types.SpaceDopeSheetEditor.draw_handler_add(draw_timeline, (), 'WINDOW', 'POST_PIXEL'))
+    for region in ('TOOLS', 'HEADER', 'TOOL_HEADER'):
+        _tool_handles.append((bpy.types.SpaceView3D.draw_handler_add(watch_tool, (), region, 'POST_PIXEL'), region))
 
 
 def unregister():
+    for h, region in _tool_handles:
+        bpy.types.SpaceView3D.draw_handler_remove(h, region)
+    _tool_handles.clear()
     for h in _handles:
         bpy.types.SpaceView3D.draw_handler_remove(h, 'WINDOW')
     _handles.clear()
