@@ -446,10 +446,10 @@ class EMP_OT_path_pick(bpy.types.Operator):
         """of it - edit several paths at once)"""
     bl_idname = "emp.path_pick"
     bl_label = "Pick Path"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {'UNDO'}                  # (no redo panel: a click in a list)
 
     index: IntProperty(options={'HIDDEN', 'SKIP_SAVE'})
-    extend: BoolProperty(name="Extend", default=False, options={'SKIP_SAVE'})
+    extend: BoolProperty(name="Extend", default=False, options={'HIDDEN', 'SKIP_SAVE'})
 
     def invoke(self, context, event):
         self.extend = event.shift
