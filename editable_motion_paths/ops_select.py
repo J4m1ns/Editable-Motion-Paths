@@ -17,6 +17,15 @@ def _region_mouse(context, event):
     return event.mouse_region_x, event.mouse_region_y
 
 
+PATHS_FIRST_REACH = 2.5
+
+
+def _paths_first():
+    from .props import prefs
+    p = prefs()
+    return p is None or p.paths_first
+
+
 class EMP_OT_click(bpy.types.Operator):
     """Select a path key or handle; drag to move it. Ctrl+Click on a path inserts a key"""
     bl_idname = "emp.click"
@@ -54,6 +63,12 @@ class EMP_OT_click(bpy.types.Operator):
                                    bone_name=cache.bone_name, chart=True)
             return {'CANCELLED'}        # (the drag is the undo step; this click changed nothing)
         hit = pick.hit_test(context, mx, my)
+        if hit is None and _paths_first():
+            # (Paths First: a key / handle a bit farther off still wins over the bone under it; the
+            # frame dots, all along the path, only from up close - or the bone could not be clicked)
+            hit = pick.hit_test(context, mx, my, radius=pick._radius() * PATHS_FIRST_REACH)
+            if hit is not None and hit.part == 'DOT':
+                hit = None
         if (hit is None or not (hit.part[:1] == 'W' and len(hit.part) == 3)) and state.whisker_sel(context.scene):
             state.set_whisker_sel(set(), context.scene)     # any other click drops the picked scale handles
         if hit is not None and hit.part == 'DOT':

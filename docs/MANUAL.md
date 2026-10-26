@@ -493,6 +493,9 @@ doesn't use go on to Blender and other add-ons as usual. If you rely on another 
 that the tool also uses, turn off **Hotkey Priority** in the add-on's preferences: then, where
 another add-on uses the same key in the 3D view, its key works and the path tool's doesn't (the
 mouse buttons always stay with the tool). The add-on never switches other hotkeys off itself.
+**Paths First** (on by default): a click near a path goes to it, not to a bone's shape or an
+object under it - keys and handles are picked from 2.5 times farther away; away from the paths a
+click selects bones and objects as usual.
 
 Files don't depend on the add-on: everything it changes is ordinary Blender animation (keys,
 handles, F-Curve modifiers), so a file opens without errors where the add-on isn't installed;

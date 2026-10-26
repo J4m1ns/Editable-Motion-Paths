@@ -634,6 +634,11 @@ class EMP_Preferences(bpy.types.AddonPreferences):
                                           default=(1.0, 1.0, 1.0, 0.75), update=_redraw)
     chart_key_color: FloatVectorProperty(name="Key Ticks", subtype='COLOR', size=3, min=0.0, max=1.0,
                                          default=(1.0, 0.6, 0.15), update=_redraw)
+    paths_first: BoolProperty(
+        name="Paths First", default=True,
+        description="A click near a path goes to the path, not to a bone or object under it: keys, "
+                    "handles win from farther away (2.5 times). Away from them, a click selects bones and "
+                    "objects as usual")
     hotkey_priority: BoolProperty(
         name="Hotkey Priority", default=True, update=_hotkeys_changed,
         description="The path tools' keys win over other add-ons' keys in the 3D view. Off: where "
@@ -647,6 +652,7 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         layout.separator()
         col = layout.column(heading="Keys")
         col.prop(self, "hotkey_priority")
+        col.prop(self, "paths_first")
         col.prop(self, "ca_notice")
         layout.separator()
         col = layout.column()
