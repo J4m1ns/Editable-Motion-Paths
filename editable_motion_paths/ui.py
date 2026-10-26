@@ -817,6 +817,12 @@ def _draw_smoothing(layout, context):
         col.label(text="%d curve%s use%s Continuous Acceleration:" % (n, "" if n == 1 else "s", "s" if n == 1 else ""),
                   icon='INFO')
         col.label(text="editing a key also moves its neighbors' handles")
+        col.separator()
+        col.label(text="Smoothing: None turns it off on them,")
+        col.label(text="so a key changes only its own segments")
+        col.label(text="(the path may shift a little, once).")
+    else:
+        col.label(text="No curve here uses Continuous Acceleration", icon='CHECKMARK')
     pref = getattr(context.preferences.edit, "fcurve_new_auto_smoothing", 'NONE')
     if pref != 'NONE':
         col.label(text="New curves get it too: Preferences > Animation >", icon='ERROR')

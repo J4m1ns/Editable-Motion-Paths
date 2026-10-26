@@ -406,8 +406,9 @@ class EMP_OT_tween(_HorizontalDrag, bpy.types.Operator):
 
 
 class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
-    """Offset the selected keys of several paths one after another (overlap / follow through): """ \
-        """each path waits that many frames longer than the one before"""
+    """Offset the selected keys of several paths one after another (overlap / follow through), in """ \
+        """the order the paths were selected (the first one stays, each next one waits that many """ \
+        """frames longer); the numbers on the paths show the order"""
     bl_idname = "emp.offset_cascade"
     bl_label = "Offset Cascade"
 
@@ -426,13 +427,22 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
         return _HorizontalDrag.execute(self, context)
 
     def invoke(self, context, event):
-        if len(self._caches(context)) < 2:
+        caches = self._caches(context)
+        if len(caches) < 2:
             self.report({'WARNING'}, self.WHY)
             return {'CANCELLED'}
+        # (the order, on each path's first selected key)
+        pts = [next(k.co.copy() for k in c.keys if k.sel) for c in caches]
+        state.markers = (pts, context.area.as_pointer(), [str(i + 1) for i in range(len(caches))])
         return _HorizontalDrag.invoke(self, context, event)
+
+    def _finish(self, context):
+        state.markers = None
+        _HorizontalDrag._finish(self, context)
 
     def _caches(self, context):
         caches = _selected_caches(context)
+        order = {k: i for i, k in enumerate(state.selection_order(context.scene))}
 
         def depth(c):
             obj, owner = core.resolve(c.obj_name, c.bone_name)
@@ -442,9 +452,10 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
             while o is not None and o.parent is not None:
                 n, o = n + 1, o.parent
             return n
-        order = {(e.object.name if e.object else "", e.bone_name): i
-                 for i, e in enumerate(state.settings(context.scene).paths)}
-        return sorted(caches, key=lambda c: (depth(c), order.get(c.key[:2], 0)))
+        listed = {(e.object.name if e.object else "", e.bone_name): i
+                  for i, e in enumerate(state.settings(context.scene).paths)}
+        # the order they were selected in; paths selected some other way after them, from the root
+        return sorted(caches, key=lambda c: (order.get(c.key, 10 ** 6), depth(c), listed.get(c.key[:2], 0)))
 
     def _apply(self, context):
         for i, c in enumerate(self.caches):
@@ -951,8 +962,9 @@ def bump_frames(job, tg, dv, tc, sl, sr):
 
 class EMP_OT_speed_smooth(bpy.types.Operator):
     """Right-drag on the speed graph: smooth the speed under the mouse - bumps and dips even out, """ \
-        """also across keys (the keys keep their frames, the path its shape). Mouse wheel: the """ \
-        """radius. Esc: the stroke undone"""
+        """also across keys (the keys keep their frames, the path its shape). Stroke as often as """ \
+        """you like; mouse wheel: the radius; Esc: take the strokes back (again: leave); Enter or """ \
+        """a click: done - one undo step"""
     bl_idname = "emp.speed_smooth"
     bl_label = "Smooth Speed"
     bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
@@ -981,7 +993,8 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
         self.snapshot = core.FCurveSnapshot(tg, tg.channels(c.ptype))
         self.sel = {round(k.t, 3) for k in c.keys if k.sel}
         self.tc = self._frame_at(event.mouse_region_x)
-        self.dabs = 0
+        self.dabs = 0                   # since the start (or the last Esc)
+        self.painting = True            # (the right button that started it is held)
         state.speed_hold = {"cache": c.key, "lo": sg["lo"], "hi": sg["hi"], "vmax": sg["vmax"]}
         state.modal_running += 1
         self._timer = context.window_manager.event_timer_add(self.DAB, window=context.window)
@@ -997,8 +1010,10 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
     def _show(self):
         s = self.radius * 0.5
         state.speed_reach = (self.c.key, self.tc, s, s)
-        self.area.header_text_set("Smooth Speed: hold the right button and move over the bumps   radius %.1f "
-                                  "frames (wheel)   release: done   Esc: undo the stroke" % self.radius)
+        self.area.header_text_set(
+            "Smooth Speed: right-drag over the bumps (as often as you like)   radius %.1f frames (wheel)   "
+            "Esc: take the strokes back%s   Enter / click: done" % (
+                self.radius, "" if self.dabs else " (nothing to take back: Esc again leaves)"))
         state.tag_redraw()
 
     def modal(self, context, event):
@@ -1007,21 +1022,40 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
             self.tc = self._frame_at(event.mouse_region_x)
             self._show()
         elif t == 'TIMER':
-            self._dab()
-            self.dabs += 1
-            pick.tag_anim_editors()
-            state.tag_redraw()
+            if self.painting:
+                self._dab()
+                self.dabs += 1
+                pick.tag_anim_editors()
+                state.tag_redraw()
         elif t in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'PAGE_UP', 'PAGE_DOWN', 'NUMPAD_PLUS', 'NUMPAD_MINUS'} \
                 and v == 'PRESS':
             wider = t in {'WHEELUPMOUSE', 'PAGE_UP', 'NUMPAD_PLUS'}
             self.radius = min(max(self.radius * (1.25 if wider else 0.8), 0.25), 60.0)
             self._show()
+        elif t == 'RIGHTMOUSE' and v == 'PRESS':
+            self.painting = True        # another stroke
+            self.tc = self._frame_at(event.mouse_region_x)
         elif t == 'RIGHTMOUSE' and v == 'RELEASE':
-            if not self.dabs:
+            if self.painting and not self.dabs:
                 self._dab()             # (a click: one dab)
-            return self._end(context, True)
+                self.dabs += 1
+            self.painting = False
+            self._show()
         elif t == 'ESC' and v == 'PRESS':
-            return self._end(context, False)
+            if not self.dabs:
+                return self._end(context, False)
+            # the strokes so far taken back - still smoothing (the radius can be set again)
+            self.snapshot.restore()
+            self.c.dirty = True
+            self.c.refresh(force=True)
+            self.dabs = 0
+            self.painting = False
+            pick.tag_anim_editors()
+            self._show()
+        elif (t in {'RET', 'NUMPAD_ENTER', 'SPACE'} or t == 'LEFTMOUSE') and v == 'PRESS':
+            return self._end(context, self.dabs > 0)
+        elif t in {'MIDDLEMOUSE', 'TRACKPADPAN', 'TRACKPADZOOM', 'NDOF_MOTION'}:
+            return {'PASS_THROUGH'}     # (the view can be turned meanwhile)
         return {'RUNNING_MODAL'}
 
     def _dab(self):

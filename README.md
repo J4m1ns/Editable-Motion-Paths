@@ -184,8 +184,9 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   change spreads (a band along the bottom shows it): by default about a third of the segment;
   wider, it goes on over the keys into the segments around, the spot you hold changing by the
   full amount and the far ends making up for it. **Right-drag** on the graph **smooths** the speed
-  under the mouse - bumps, dips and steps at keys even out while you hold the button (the wheel
-  sets the radius; Esc undoes the stroke).
+  under the mouse - bumps, dips and steps at keys even out while you hold the button. Stroke as
+  often as you like: the wheel sets the radius, **Esc** takes the strokes back (and you go on
+  smoothing; Esc again leaves), Enter or a click is done - all of it one undo step.
   The path keeps its shape and the keys their frames (keys are added where needed, like *Ease*;
   they are selected - *Select New Keys* in the preferences); after a drag the keys at both ends
   of the graph are selected too (one key selected: its neighbors - *Keep the Graph's Keys*), so
@@ -203,7 +204,10 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   * *Moving Hold*: a hold that still drifts a little (wheel: how many frames, mouse: how far it
     drifts);
   * *Offset Cascade*: keys selected on several bones / objects; each one starts a few frames
-    after the one before (overlap, follow-through);
+    after the one before (overlap, follow-through), **in the order you selected the paths** -
+    click a key on the hand, Shift+click the hip, then the foot: the hand stays, the hip moves
+    half as far as the foot. Numbers on the paths show the order while you drag; box / circle
+    selecting a path adds it as the next one, and after **A** every key goes in that order;
   * *Snap to Frames*.
 
 * **Slide (G G)**: *Spacing* (what it starts with) keeps the frames and slides the poses along
@@ -455,6 +459,16 @@ the same in every file.
   Blender.
 * A key with a dark center is keyed on only some channels. *Pin Partial Keys* keeps such keys
   in place when a neighbor is edited.
+
+### Several paths at once
+
+With several bones / objects selected, all their paths are editable together, like Blender's
+multi-object Edit Mode: select keys on any of them (Shift+click, box, circle) and G / R / S,
+snapping, proportional editing and the pivot (their middle, the active key...) work across all
+of them; Smooth, Ease, easing presets and the other tools work on every path that has selected
+keys. A clicked key makes its path the active one (the modifier stack, the timing chart and the
+speed graph show it). As in Blender, keys of different paths can't be merged or joined, and
+Edit Value works on the active key.
 
 ## Hotkeys and other add-ons
 

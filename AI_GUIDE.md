@@ -168,6 +168,8 @@ emp.snap_to_frames("Character_Rig", "CTRL_Hand_L")                          # ke
 emp.offset_cascade("Character_Rig", ["Tail1", "Tail2", "Tail3"], offset=2, mode='ROTATION')   # overlap
 emp.change_speed("Character_Rig", "CTRL_Hand_L", frame=24, amount=-0.02, reach=2.0)  # slower around 24
 emp.smooth_speed("Character_Rig", "CTRL_Hand_L", frames=[10, 40], radius=4)  # even out bumps in the speed
+emp.copy_pose("Character_Rig", "CTRL_Hand_L", frame=12); emp.paste_pose("Character_Rig", "CTRL_Hand_L", frame=40)
+emp.mirror("Character_Rig", "CTRL_Hand_L", frames=[8, 12, 16], axis='Z')  # bend the arc the other way
 ```
 
 `change_speed` and `smooth_speed` keep the path's shape and the keys' frames (the rest of each

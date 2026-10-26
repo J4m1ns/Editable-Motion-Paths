@@ -376,6 +376,8 @@ class EMP_OT_select_all(bpy.types.Operator):
                     pick.select_part(c, k, 'KEY', False)
                 else:
                     pick.select_part(c, k, 'KEY', not k.sel)
+        if action == 'DESELECT':
+            state.forget_selected([c.key for c in caches])
         pick.tag_anim_editors()
         return {'FINISHED'}
 

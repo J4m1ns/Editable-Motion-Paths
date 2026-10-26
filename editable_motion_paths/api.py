@@ -835,6 +835,35 @@ def center_of_mass(obj, frames=None):
     return out
 
 
+def copy_pose(obj, bone=None, frame=None, whole_pose=True, mode=None):
+    """Copy the pose of the key at `frame` (whole_pose: every channel of the bone / object, else
+    those of the mode) - paste_pose puts it on another frame, or on another bone with the same
+    channels (Ctrl+C / Ctrl+V)."""
+    c = _cache(obj, bone, mode)
+    _key_frames(c, [frame])
+    return _run_op(bpy.ops.emp.copy_keys, [frame], obj, bone, mode, all_channels=whole_pose)
+
+
+def paste_pose(obj, bone=None, frame=None, whole_pose=True, mode=None):
+    """Key the copied pose on `frame` (a key is made there; whole_pose: every channel copied,
+    else those of the mode)."""
+    sc = _scene()
+    now = sc.frame_current
+    sc.frame_set(int(round(frame)))
+    try:
+        r = _run_op(bpy.ops.emp.paste_keys, [], obj, bone, mode, whole_pose=whole_pose)
+    finally:
+        sc.frame_set(now)
+    return r
+
+
+def mirror(obj, bone=None, frames=None, axis='X', orientation='GLOBAL', mode=None):
+    """Mirror the keys at `frames` across `axis` through their pivot (Blender's pivot point
+    setting: their middle by default) - e.g. make an arc bend the other way."""
+    _one_of("axis", axis, ('X', 'Y', 'Z'))
+    return _run_op(bpy.ops.emp.mirror, frames, obj, bone, mode, axis=axis, orient=orientation)
+
+
 def jitter(obj, bone=None, mode=None):
     """Roughness per frame [(frame, value)]; values above ~0.4 look like hitches or noise."""
     from . import draw as d

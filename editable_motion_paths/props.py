@@ -483,6 +483,10 @@ class EMP_Settings(bpy.types.PropertyGroup):
         options={'HIDDEN'},
         description="Scale handles picked on their whiskers (JSON). Saved in the scene so undo "
                     "brings them back")
+    select_order: StringProperty(
+        options={'HIDDEN'},
+        description="The paths in the order they got selected keys (JSON), for Offset Cascade. Saved in "
+                    "the scene so undo brings it back")
     select_history: StringProperty(
         options={'HIDDEN'},
         description="Clicked keys, oldest first (JSON); the last one is the active key. Saved in "

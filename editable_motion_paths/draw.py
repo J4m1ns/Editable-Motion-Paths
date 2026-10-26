@@ -1218,13 +1218,22 @@ def segment_window(scene, cache):
     return before[-1], after[0]
 
 
+def _active_path(caches):
+    """The path of the active (last clicked) key among these, if it has selected keys."""
+    a = state.get_active()
+    if a is None:
+        return None
+    return next((c for c in caches if c.key == a[0] and any(k.sel for k in c.keys)), None)
+
+
 def _chart_cache(ctx, st):
-    """The path the timing chart shows (like the speed graph: the one with selected keys, else
-    the first editable one), or None."""
+    """The path the timing chart shows (like the speed graph: the active one, the one with
+    selected keys, else the first editable one), or None."""
     if not st.show_timing_chart or ctx.area is None:
         return None
     caches = [c for c in state.editable_caches(ctx.scene) if len(c.keys) >= 2]
-    return next((c for c in caches if any(k.sel for k in c.keys)), None) or next(iter(caches), None)
+    return _active_path(caches) or next((c for c in caches if any(k.sel for k in c.keys)), None) or \
+        next(iter(caches), None)
 
 
 def _speed_cache(ctx):
@@ -1236,7 +1245,8 @@ def _speed_cache(ctx):
         c = next((c for c in caches if c.key == hold["cache"]), None)
         if c is not None:
             return c
-    return next((c for c in caches if sum(1 for k in c.keys if k.sel) >= 2), None) or next(iter(caches), None)
+    return _active_path(caches) or next((c for c in caches if sum(1 for k in c.keys if k.sel) >= 2), None) or \
+        next(iter(caches), None)
 
 
 def _speed_shown(ctx, st):
@@ -1353,8 +1363,8 @@ def _draw_speed_graph(ctx, st, us):
     t0, t1 = data[0][0], data[-1][0]
     fs = st.graph_text_size
 
-    pad = 8.0 * us                      # room for the key frame numbers at the bottom
-    gy0, gh = y0 + 14.0 * us * fs, h - 18.0 * us * fs
+    pad = 12.0 * us                     # (as the timing chart's: both end at the same place)
+    gy0, gh = y0 + 14.0 * us * fs, h - 18.0 * us * fs     # (room for the key frame numbers at the bottom)
 
     def X(t):
         return x0 + pad + (w - 2 * pad) * (t - t0) / max(t1 - t0, 1e-6)

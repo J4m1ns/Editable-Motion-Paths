@@ -752,7 +752,7 @@ def _on_depsgraph(scene, depsgraph):
 # Settings that only say how the paths are shown / edited (like Blender's overlays): Ctrl+Z
 # doesn't change them (the ghosts don't go off, the edit mode doesn't jump back), it goes to the
 # edits. What is data stays with undo: the path list, the selection, the ranges, the masses.
-_UNDONE_SETTINGS = {"rna_type", "name", "paths", "picked_handles", "select_history", "com_limb_share",
+_UNDONE_SETTINGS = {"rna_type", "name", "paths", "picked_handles", "select_history", "select_order", "com_limb_share",
                     "com_limb_mass", "com_own_share", "com_own_mass", "com_body_mass", "range_mode", "frame_start", "frame_end"}
 VIEW_SETTINGS = set()       # filled in register(): every other setting of scene.emp
 _view_before = {}
@@ -868,7 +868,9 @@ def get_active(scene=None):
 
 
 def set_active(path_key, t, scene=None):
-    """The active key: drawn with a white ring, used by Merge, Copy, pivot Active Element."""
+    """The active key: drawn with a white ring, used by Merge, Copy, pivot Active Element. Its
+    path becomes the active one in the path list (the modifier stack, the charts show it), like
+    a clicked vertex makes its object active in Blender's multi-object Edit Mode."""
     import json
     st = settings(scene)
     if st is None:
@@ -876,6 +878,52 @@ def set_active(path_key, t, scene=None):
     item = (tuple(path_key), round(t, 3))
     items = [i for i in select_history(scene) if i != item] + [item]
     st.select_history = json.dumps([[k[0], k[1], k[2], f] for k, f in items[-100:]])
+    for i, e in enumerate(st.paths):
+        if e.object is not None and (e.object.name, e.bone_name) == tuple(path_key[:2]):
+            if st.active_index != i:
+                st.active_index = i
+            break
+
+
+_order_cache = (None, [])
+
+
+def selection_order(scene=None):
+    """[path key] in the order the paths got selected keys (clicked, boxed, A...), oldest first."""
+    global _order_cache
+    st = settings(scene)
+    text = st.select_order if st is not None else ""
+    if text != _order_cache[0]:
+        import json
+        try:
+            items = [tuple(k) for k in json.loads(text or "[]")]
+        except (ValueError, TypeError):
+            items = []
+        _order_cache = (text, items)
+    return _order_cache[1]
+
+
+def note_selected(path_key, scene=None):
+    """A key of this path got selected: the path joins the selection order (if it isn't in it)."""
+    order = selection_order(scene)
+    if tuple(path_key) in order:
+        return
+    import json
+    st = settings(scene)
+    if st is not None:
+        st.select_order = json.dumps([list(k) for k in order + [tuple(path_key)]][-64:])
+
+
+def forget_selected(path_keys, scene=None):
+    """These paths have no selected keys any more: out of the selection order."""
+    order = selection_order(scene)
+    drop = {tuple(k) for k in path_keys}
+    if not any(k in drop for k in order):
+        return
+    import json
+    st = settings(scene)
+    if st is not None:
+        st.select_order = json.dumps([list(k) for k in order if k not in drop])
 
 
 def whisker_sel(scene=None):

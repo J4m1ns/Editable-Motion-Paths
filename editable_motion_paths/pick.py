@@ -223,6 +223,7 @@ def deselect_all(caches):
                     kps.foreach_set(attr, [False] * n)
                     changed = True
         cache.dirty = True
+    state.forget_selected([c.key for c in caches])
     return changed
 
 
@@ -248,6 +249,8 @@ def set_key_select(cache, k, point=None, left=None, right=None):
 def select_part(cache, k, part, value=True):
     if value and k.hidden:
         return
+    if value:
+        state.note_selected(cache.key)      # (the order paths get selected in: Offset Cascade)
     if part == 'KEY':
         set_key_select(cache, k, value, value, value)
     elif part == 'L':
