@@ -327,6 +327,22 @@ def set_limb_share(arm, bone, share, part='zone'):
     return True
 
 
+def set_shares(arm, bones, share, part='zone', split=False):
+    """Several bones' weights at once: each of them `share` of the body, or (split) `share` shared
+    among them as they compare now (a heavy one gets more). Bones that move the whole body or no
+    part with weight are left out. Returns the bones set."""
+    now = {b: limb_share(arm, b, part) for b in bones}
+    ok = [b for b, v in now.items() if v and not (part == 'zone' and limb_share(arm, b, 'zone') > WHOLE)]
+    if not ok:
+        return []
+    total = sum(now[b] for b in ok)
+    for b in ok:
+        set_limb_share(arm, b, share * now[b] / total if split else share, part)
+    for b in ok:
+        flash_limb(arm, b, part)
+    return ok
+
+
 def reset_all(arm):
     """Every weight set on this rig goes: all of them worked out from the meshes again. Returns how
     many there were."""

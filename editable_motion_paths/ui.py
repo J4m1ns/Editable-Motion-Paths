@@ -814,6 +814,9 @@ def draw_limb_weight(layout, st, body_mass=True):
         sub = row.row(align=True)
         sub.enabled = stored
         sub.operator("emp.com_limb_reset", text="", icon='LOOP_BACK').part = part
+    sel = [b for b in (bpy.context.selected_pose_bones or ()) if b.id_data == arm]
+    if len(sel) > 1:
+        layout.operator("emp.com_set_weights", text="Set Weight of %d Bones..." % len(sel), icon='BONE_DATA')
     if body_mass:
         # (the whole rig at once - the center's panel / popover)
         row = layout.row()

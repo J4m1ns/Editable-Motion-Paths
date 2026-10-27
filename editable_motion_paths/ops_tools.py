@@ -309,6 +309,85 @@ class EMP_OT_com_reset_all(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class EMP_OT_com_set_weights(bpy.types.Operator):
+    """Center of mass: set the weight of all the selected bones at once - the same for each, or """         """one weight split among them as they compare"""
+    bl_idname = "emp.com_set_weights"
+    bl_label = "Set Weights"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    part: EnumProperty(name="Weight", items=[('zone', "Limb Weight", "Each bone with what hangs on it"),
+                                             ('own', "Bone Weight", "Each bone alone")], default='zone')
+    split: EnumProperty(name="Mode", items=[
+        ('EACH', "Each", "Every selected bone gets this weight"),
+        ('SPLIT', "Split", "This weight is shared among the selected bones as they compare now (a heavier "
+                           "one gets more): together they are this much of the body")], default='EACH')
+    amount: FloatProperty(name="Weight", min=0.0, soft_max=100.0, default=5.0,
+                          description="In the unit of the preferences (percent of the body, or kg / lb of "
+                                      "the Body Mass)")
+
+    @staticmethod
+    def _bones(context):
+        from .props import _limb_target
+        arm, _pb = _limb_target(context)
+        if arm is None:
+            return None, []
+        return arm, [pb.name for pb in (context.selected_pose_bones or ()) if pb.id_data == arm]
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'POSE' and len(cls._bones(context)[1]) > 1
+
+    def _unit(self, context):
+        from .props import weight_unit
+        return weight_unit()
+
+    def _to_share(self, context):
+        from .props import LB_PER_KG
+        unit = self._unit(context)
+        if unit == 'PERCENT':
+            return self.amount / 100.0
+        kg = self.amount / LB_PER_KG if unit == 'LB' else self.amount
+        return kg / max(state.settings(context.scene).com_body_mass, 1e-6)
+
+    def invoke(self, context, event):
+        from . import com
+        from .props import LB_PER_KG
+        arm, bones = self._bones(context)
+        share = com.limb_share(arm, context.active_pose_bone.name, self.part) if context.active_pose_bone else None
+        if share:
+            unit = self._unit(context)
+            body = state.settings(context.scene).com_body_mass
+            self.amount = 100.0 * share if unit == 'PERCENT' else                 share * body * (LB_PER_KG if unit == 'LB' else 1.0)
+        return context.window_manager.invoke_props_dialog(self, width=300)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "part")
+        layout.row().prop(self, "split", expand=True)
+        unit = self._unit(context)
+        layout.prop(self, "amount", text="Weight" + {'PERCENT': ", %", 'KG': ", kg", 'LB': ", lb"}[unit])
+        n = len(self._bones(context)[1])
+        layout.label(text=("%d bones, each" if self.split == 'EACH' else "%d bones, together") % n, icon='INFO')
+
+    def execute(self, context):
+        from . import com
+        arm, bones = self._bones(context)
+        if arm is None or len(bones) < 2:
+            self.report({'WARNING'}, "Select several bones of the rig (Pose Mode)")
+            return {'CANCELLED'}
+        done = com.set_shares(arm, bones, self._to_share(context), self.part, self.split == 'SPLIT')
+        if not done:
+            self.report({'WARNING'}, "None of these bones moves a part with weight of its own")
+            return {'CANCELLED'}
+        left = len(bones) - len(done)
+        self.report({'INFO'}, "%d weights set%s" % (len(done), "" if not left else
+                                                     " (%d left out: they move the whole body or nothing with "
+                                                     "weight)" % left))
+        state.tag_redraw()
+        return {'FINISHED'}
+
+
 class EMP_OT_edit_limb_weight(bpy.types.Operator):
     """Center of mass: how much of the body the limb the active controller moves is - set it """ \
         """in a small popup under the mouse (the limb lights up)"""
@@ -1952,7 +2031,7 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
             touched.add(fc)
 
 
-classes = (EMP_OT_com_reset_all, EMP_OT_path_pick, EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
+classes = (EMP_OT_com_reset_all, EMP_OT_com_set_weights, EMP_OT_path_pick, EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
            EMP_OT_reset_graph_look, EMP_OT_com_limb_reset, EMP_OT_edit_limb_weight,
            EMP_OT_smoothing_none, EMP_OT_set_view, EMP_OT_onion_mode, EMP_OT_onion_update, EMP_OT_path_update,
            EMP_OT_edit_tool,
