@@ -505,6 +505,7 @@ class PathCache:
         self.sig = None
         self.dirty = True
         self.valid = False
+        self.drawn_in = None    # the drawing pass it was checked in (checked once per pass)
         self.times = []
         self.points = []
         self.speeds = []
@@ -751,6 +752,10 @@ class PathCache:
 
     def refresh(self, force=False):
         """Rebuild points/keys from the F-Curves if anything changed. Returns validity."""
+        dp = state.draw_pass
+        if dp is not None and not force and not self.dirty and self.drawn_in == dp:
+            return self.valid       # (drawing asks several times a pass; nothing changes meanwhile)
+        self.drawn_in = dp
         if not self.B:
             self.valid = False
             return False

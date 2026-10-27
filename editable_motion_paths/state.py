@@ -292,7 +292,8 @@ def _fcurve_hashes(obj, curves=True):
         if prop in _TRANSFORM_PROPS:
             fixed.setdefault(name, set()).add((prop, i))
     free = []
-    for ow in owners:
+    near = _pose_owners(obj)
+    for ow in (owners if near is None else [obj] + near):
         skip = fixed.get(ow.name if ow is not obj else "", ())
         for prop in _TRANSFORM_PROPS:
             v = getattr(ow, prop)
@@ -302,6 +303,32 @@ def _fcurve_hashes(obj, curves=True):
     if cons:
         out[("#constraints", 0)] = hash(cons)
     return out
+
+
+def _pose_owners(obj):
+    """The bones of an armature whose transforms move its paths: the paths' bones, what they hang
+    from, and what their constraints follow (with what that hangs from) - a control moved by hand
+    elsewhere on the rig moves no path. None: all of them (no path is on one of its bones, but
+    something else hangs on it)."""
+    if obj.type != 'ARMATURE' or obj.pose is None:
+        return []
+    names = {c.bone_name for c in caches.values() if c.obj_name == obj.name and c.bone_name}
+    if not names:
+        return None
+    bones = obj.pose.bones
+    out = {}
+    todo = [bones.get(n) for n in names]
+    while todo:
+        pb = todo.pop()
+        if pb is None or pb.name in out:
+            continue
+        out[pb.name] = pb
+        todo += list(pb.parent_recursive)
+        for con in pb.constraints:
+            for name in (getattr(con, "subtarget", ""), getattr(con, "pole_subtarget", "")):
+                if name and getattr(con, "target", None) == obj:
+                    todo.append(bones.get(name))
+    return list(out.values())
 
 
 def _strip_sig(s):
