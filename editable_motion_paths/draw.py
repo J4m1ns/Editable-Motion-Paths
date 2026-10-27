@@ -331,6 +331,27 @@ _shift_memo = {}
 _pushed = [False]
 
 
+def _parent_change_stays(obj, owner):
+    """False if what is dragged above the bone / object is keyed and auto keying is off: then the
+    drag is undone on the next frame change (the path doesn't follow it)."""
+    if bpy.context.scene.tool_settings.use_keyframe_insert_auto:
+        return True
+    from . import compat
+    keyed = {fc.data_path for fc in (compat.get_fcurves(obj) or ())}
+    if owner is not obj:
+        for pb in owner.parent_recursive:
+            if compat.bone_selected(pb) and any(pb.path_from_id(p) in keyed for p in core._TRANSFORMS):
+                return False
+        ob = obj.parent
+    else:
+        ob = obj.parent
+    while ob is not None:
+        if ob.select_get() and {fc.data_path for fc in (compat.get_fcurves(ob) or ())} & core._TRANSFORMS:
+            return False
+        ob = ob.parent
+    return True
+
+
 def live_shift(cache):
     """While Blender's own G / R / S moves what a path hangs on (a parent without keys), the path
     is drawn moved along with it - baked again exactly once it is let go: the matrix, or None."""
@@ -341,11 +362,12 @@ def live_shift(cache):
         _shift_memo.clear()
     D = None
     try:
-        if cache.local is None and cache.B and state.blender_edit_running():
+        f = bpy.context.scene.frame_current
+        if cache.local is None and cache.B and cache.fs <= f <= cache.fe and state.blender_edit_running():
             obj, owner = core.resolve(cache.obj_name, cache.bone_name)
-            if owner is not None and not state._constrained(owner):
+            if owner is not None and not state._constrained(owner) and _parent_change_stays(obj, owner):
                 W = obj.matrix_world @ owner.matrix if cache.bone_name else owner.matrix_world
-                M = W @ owner.matrix_basis.inverted_safe() @                     cache.B_at(bpy.context.scene.frame_current).inverted_safe()
+                M = W @ owner.matrix_basis.inverted_safe() @ cache.B_at(f).inverted_safe()
                 if any(abs(M[i][j] - (1.0 if i == j else 0.0)) > 1e-5 for i in range(4) for j in range(4)):
                     D = M
     except (ValueError, AttributeError, ReferenceError):

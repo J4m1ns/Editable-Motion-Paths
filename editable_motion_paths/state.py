@@ -212,7 +212,7 @@ def visible_caches(scene=None):
             out.append(c)
         elif c is None or not c.failed:
             # new / renamed entry: calculate it soon (never from inside drawing)
-            schedule_rebake(0.1)
+            schedule_rebake(0.1, keep=True)
     return out
 
 
@@ -527,8 +527,12 @@ def _needs_rebake(curves=True):
 _check_curves = True     # the next check compares the curves too (an action changed)
 
 
-def schedule_rebake(delay=0.35, force=False, curves=True):
+def schedule_rebake(delay=0.35, force=False, curves=True, keep=False):
+    """keep: when one is due already, it stays when it was (drawing asks for it on every redraw: it
+    would never come while something redraws all the time)."""
     global _bake_due, _bake_timer_on, _force_bake, _check_curves
+    if keep and _bake_timer_on:
+        return
     _force_bake = _force_bake or force
     _check_curves = _check_curves or curves
     _bake_due = time.time() + delay

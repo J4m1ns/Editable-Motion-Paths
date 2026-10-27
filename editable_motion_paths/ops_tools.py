@@ -320,7 +320,8 @@ class EMP_OT_com_set_weights(bpy.types.Operator):
     split: EnumProperty(name="Mode", items=[
         ('EACH', "Each", "Every selected bone gets this weight"),
         ('SPLIT', "Split", "This weight is shared among the selected bones as they compare now (a heavier "
-                           "one gets more): together they are this much of the body")], default='EACH')
+                           "one gets more): together they are this much of the body. A limb inside another selected one (a hand "
+                           "in an arm) is left out: the outer one holds it")], default='EACH')
     amount: FloatProperty(name="Weight", min=0.0, soft_max=100.0, default=5.0,
                           description="In the unit of the preferences (percent of the body, or kg / lb of "
                                       "the Body Mass)")
@@ -353,7 +354,8 @@ class EMP_OT_com_set_weights(bpy.types.Operator):
         from . import com
         from .props import LB_PER_KG
         arm, bones = self._bones(context)
-        share = com.limb_share(arm, context.active_pose_bone.name, self.part) if context.active_pose_bone else None
+        apb = context.active_pose_bone
+        share = com.limb_share(arm, apb.name, self.part) if apb is not None and apb.id_data == arm else None
         if share:
             unit = self._unit(context)
             body = state.settings(context.scene).com_body_mass
@@ -382,8 +384,8 @@ class EMP_OT_com_set_weights(bpy.types.Operator):
             return {'CANCELLED'}
         left = len(bones) - len(done)
         self.report({'INFO'}, "%d weights set%s" % (len(done), "" if not left else
-                                                     " (%d left out: they move the whole body or nothing with "
-                                                     "weight)" % left))
+                                                     " (%d left out: the whole body, nothing with weight, or "
+                                                     "inside another selected limb)" % left))
         state.tag_redraw()
         return {'FINISHED'}
 

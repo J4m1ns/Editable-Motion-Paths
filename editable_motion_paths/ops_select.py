@@ -67,8 +67,8 @@ class EMP_OT_click(bpy.types.Operator):
             # (Paths First: a key / handle a bit farther off still wins over the bone under it; the
             # frame dots, all along the path, only from up close - or the bone could not be clicked)
             hit = pick.hit_test(context, mx, my, radius=pick._radius() * PATHS_FIRST_REACH)
-            if hit is not None and hit.part == 'DOT':
-                hit = None
+            if hit is not None and (hit.part == 'DOT' or not hit.cache.owner_selected()):
+                hit = None      # (a path not being edited: the bone you aimed at gets the click)
         if (hit is None or not (hit.part[:1] == 'W' and len(hit.part) == 3)) and state.whisker_sel(context.scene):
             state.set_whisker_sel(set(), context.scene)     # any other click drops the picked scale handles
         if hit is not None and hit.part == 'DOT':

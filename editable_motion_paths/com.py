@@ -333,6 +333,11 @@ def set_shares(arm, bones, share, part='zone', split=False):
     part with weight are left out. Returns the bones set."""
     now = {b: limb_share(arm, b, part) for b in bones}
     ok = [b for b, v in now.items() if v and not (part == 'zone' and limb_share(arm, b, 'zone') > WHOLE)]
+    if split and part == 'zone':
+        # (a hand inside an arm both selected: the arm's weight holds the hand's already - only the
+        # outer parts share the weight, or the hand would count twice)
+        zones = {b: onion.affected_bones(arm, {b}) for b in ok}
+        ok = [b for b in ok if not any(o != b and b in zones[o] for o in ok)]
     if not ok:
         return []
     total = sum(now[b] for b in ok)
