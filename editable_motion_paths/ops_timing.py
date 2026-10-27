@@ -6,8 +6,8 @@ import bisect
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty
 
-from . import core, fit, state
-from .ops_tools import _AdjustOp
+from . import compat, core, fit, state
+from .ops_tools import NumInput, _AdjustOp
 
 PROFILES = [
     ('EVEN', "Even", "Constant speed: the frame dots are evenly spaced (E)"),
@@ -29,6 +29,19 @@ def profile(kind, u, power):
         a, b = u ** power, (1.0 - u) ** power
         return a / (a + b) if a + b > 0.0 else u
     return u
+
+
+def blend_weight(u, blend_in, blend_out):
+    """How much of the new spacing at the share u of the range: rising smoothly over blend_in at
+    the start, falling over blend_out at the end (smoothstep: the speed meets the old one)."""
+    w = 1.0
+    if blend_in > 1e-6 and u < blend_in:
+        x = max(0.0, u / blend_in)
+        w = x * x * (3.0 - 2.0 * x)
+    if blend_out > 1e-6 and u > 1.0 - blend_out:
+        x = max(0.0, (1.0 - u) / blend_out)
+        w = min(w, x * x * (3.0 - 2.0 * x))
+    return w
 
 
 def pchip(xs, ys):
@@ -141,16 +154,22 @@ class SpaceJob:
         f = 0.0 if a1 - a0 < 1e-12 else (s - a0) / (a1 - a0)
         return self.ts[i - 1] + (self.ts[i] - self.ts[i - 1]) * f
 
-    def target(self, tg, kind, factor, power):
+    def target(self, tg, kind, factor, power, blend_in=0.0, blend_out=0.0):
+        """blend_in / blend_out: over that share of the range at its start / end the new spacing
+        takes over from the old one gradually (the speed carries on from the timing around it:
+        no seam where the range begins and ends)."""
         total = self.arc[-1]
         r0, r1 = self.r0, self.r1
         cache = self.cache
+        arc = []
+        for t, s0 in zip(self.ts, self.arc):
+            u = (t - r0) / (r1 - r0)
+            w = factor * blend_weight(u, blend_in, blend_out)
+            s = s0 + (total * profile(kind, u, power) - s0) * w
+            arc.append(max(s, arc[-1]) if arc else s)      # (never back along the path)
 
         def fn(t):
-            u = (t - r0) / (r1 - r0)
-            s0 = self._at(self.arc, t)
-            s = s0 + (total * profile(kind, u, power) - s0) * factor
-            tt = self._time_at_arc(s)
+            tt = self._time_at_arc(self._at(arc, t))
             return cache.solve(tg, t, self._at(self.pts, tt), self._at(self.vals, tt))
         return fn
 
@@ -169,6 +188,13 @@ class EMP_OT_space(_AdjustOp, bpy.types.Operator):
     profile: EnumProperty(name="Profile", items=PROFILES, default='EVEN')
     power: FloatProperty(name="Strength", default=2.0, min=1.0, soft_max=5.0,
                          description="How strong the slow in / slow out is (mouse wheel)")
+    blend_in: FloatProperty(name="Start Blend", default=0.0, min=0.0, max=0.5, subtype='FACTOR',
+                            description="How softly the new spacing takes over at the start: over that share "
+                                        "of the range the speed carries on from the timing before it (no "
+                                        "seam). I while dragging, then move the mouse")
+    blend_out: FloatProperty(name="End Blend", default=0.0, min=0.0, max=0.5, subtype='FACTOR',
+                             description="How softly the new spacing hands over to the timing after the "
+                                         "range at its end. O while dragging, then move the mouse")
     add_keys: BoolProperty(name="Add Keys If Needed", default=True,
                            description="Insert keys where the existing ones can't follow the new "
                                        "spacing closely enough")
@@ -176,17 +202,37 @@ class EMP_OT_space(_AdjustOp, bpy.types.Operator):
                              soft_max=5.0, description="Allowed distance from the exact new motion "
                                                        "(percent of the path size)")
 
+    ADJUST = {'factor': "Factor", 'blend_in': "Start Blend", 'blend_out': "End Blend"}
+
     def _label(self):
         name = {i[0]: i[1] for i in PROFILES}[self.profile]
         txt = "Space: %s" % name
         if self.profile != 'EVEN':
             txt += " (strength %.1f, wheel)" % self.power
-        return txt + "   E / O / I / B"
+        adj = getattr(self, "adjust", 'factor')
+        return txt + "   I: Start Blend %.2f   O: End Blend %.2f   - %s" % (
+            self.blend_in, self.blend_out, self.ADJUST[adj])
+
+    def _set_amount(self, v):
+        adj = getattr(self, "adjust", 'factor')
+        if adj == 'factor':
+            self.factor = v
+        else:
+            setattr(self, adj, min(0.5, max(0.0, v)))
+
+    def _amount(self):
+        return getattr(self, getattr(self, "adjust", 'factor'))
 
     def _modal_key(self, context, event):
-        m = {'E': 'EVEN', 'O': 'SLOW_OUT', 'I': 'SLOW_IN', 'B': 'SLOW_IN_OUT'}.get(event.type)
-        if m is not None:
-            self.profile = m
+        if event.type in {'I', 'O'}:
+            # the mouse now sets the start / end blend; the same key again: back to the factor
+            want = 'blend_in' if event.type == 'I' else 'blend_out'
+            adj = 'factor' if getattr(self, "adjust", 'factor') == want else want
+            self.adjust = adj
+            # (the mouse goes on from the value as it is: nothing jumps)
+            ppu = self.pixels_per_unit * compat.ui_scale()
+            self.x0 = self.x_virtual - getattr(self, adj) * ppu
+            self.numinput = NumInput(1)
             return True
         if event.type in {'WHEELUPMOUSE', 'PAGE_UP'}:
             self.power = min(8.0, self.power + 0.25)
@@ -224,7 +270,8 @@ class EMP_OT_space(_AdjustOp, bpy.types.Operator):
         cache.refresh(force=True)
         tg = cache.target()
         f = min(1.0, max(0.0, self.factor))
-        fitter = fit.Fitter(cache, tg, job.r0, job.r1, job.target(tg, self.profile, f, self.power))
+        fitter = fit.Fitter(cache, tg, job.r0, job.r1, job.target(tg, self.profile, f, self.power,
+                                                                  self.blend_in, self.blend_out))
         fixed = {job.r0, job.r1}
         half = {job.r0: 'L', job.r1: 'R'}
         knots = [t for t in job.knots if job.r0 - 1e-9 <= t <= job.r1 + 1e-9]

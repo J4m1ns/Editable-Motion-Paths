@@ -237,8 +237,11 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   keys (or of the whole path) while the path keeps its shape. *Even* gives constant speed, and
   *Slow In* (start slowly), *Slow Out* (end slowly) and *Slow In & Out* give clean eases
   (wheel: strength), like Blender's easing. Drag right to
-  blend in. Keys are added only where the old ones can't follow; the report shows how close
-  the result is.
+  blend in. **I** / **O** while dragging: the mouse sets the *Start Blend* / *End Blend* instead
+  (how much of the range the new spacing takes to take over from the timing before it / hand
+  over to the timing after it - no seam in the speed where the range begins and ends; the same
+  key again: back to the amount). Keys are added only where the old ones can't follow; the
+  report shows how close the result is.
 * **Ease (Shift+E)**: slow in / slow out at the selected keys. *Keep the Path* (default) only
   changes the timing: the frames bunch up at the key along the same path (keys are added where
   needed). *Handles* (T while dragging) flattens the key's handles and makes them longer in
@@ -346,7 +349,8 @@ modes, U, J, P, Shift+T, Alt+C, Ctrl+H.
 **Selected keys are a mask**, like masking in sculpt mode: with keys selected (in the edit
 tool), the brushes change only the part of the path between the first and the last selected
 key (one selected key: the segments around it); other paths stay as they are. **Alt+A**
-clears the selection, so the whole path can be painted again (A selects all).
+clears the selection, so the whole path can be painted again (A selects all, **Ctrl+I**
+inverts it - like Invert Mask in Sculpt Mode).
 
 ## Onion skinning
 

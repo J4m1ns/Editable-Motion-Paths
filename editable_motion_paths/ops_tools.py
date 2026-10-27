@@ -1081,16 +1081,23 @@ class _AdjustOp:
                 return a.as_pointer()
         return 0
 
+    def _set_amount(self, v):
+        """What the mouse sets (the factor; a tool may switch it to another setting)."""
+        self.factor = v
+
+    def _amount(self):
+        return self.factor
+
     def _update(self, context, event):
         if self.numinput.active:
             v = self.numinput.value(0)
-            self.factor = v if v is not None else 0.0
+            self._set_amount(v if v is not None else 0.0)
         else:
             f = (self.x_virtual - self.x0) / (self.pixels_per_unit * compat.ui_scale())
             if event.ctrl:
                 inc = 0.01 if event.shift else 0.1
                 f = round(f / inc) * inc
-            self.factor = f
+            self._set_amount(f)
         if abs(self.factor) > 1e-9 and not self.ensured:
             # first real change: only now add missing channel keys (an untouched curve
             # must not change just because the tool was started)
@@ -1100,7 +1107,7 @@ class _AdjustOp:
             self.jobs = self._jobs(context, None, ensure=True)
         if self.ensured:
             self._apply(context, self.jobs)
-        txt = "%s: %s" % (self._label(), self.numinput.text(0, self.factor, "%.3f"))
+        txt = "%s: %s" % (self._label(), self.numinput.text(0, self._amount(), "%.3f"))
         state.hud = (txt, self._hud_pos(context, event))
         if self.area is not None:
             self.area.header_text_set(txt + "   (drag %s, Ctrl: snap, Shift: precise, type a value, "

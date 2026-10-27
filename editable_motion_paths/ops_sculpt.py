@@ -781,6 +781,7 @@ SCULPT_KEYMAP = (
     # the selection masks the brushes: Alt+A clears it (the whole path again), A selects all
     _k("emp.select_all", 'A', {"action": 'SELECT'}),
     _k("emp.select_all", 'A', {"action": 'DESELECT'}, alt=True),
+    _k("emp.select_all", 'I', {"action": 'INVERT'}, ctrl=True),       # (like Sculpt Mode's Invert Mask)
 )
 
 
