@@ -867,8 +867,10 @@ class PathCache:
             vel = chord / (tb - ta) if tb - ta > EPS else Vector()
             k.cat_r = vel * k.dt_r
             k.cat_l = -vel * k.dt_l
-            if chord.length < 1e-9:
-                chord = self.point(tg, min(k.t + 1.0, fe)) - self.point(tg, max(k.t - 1.0, fs))
+            # (the way the path goes right there first: the chord to keys far off can cross it)
+            near = self.point(tg, min(k.t + 1.0, fe)) - self.point(tg, max(k.t - 1.0, fs))
+            if near.length > 1e-9:
+                chord = near
             if chord.length < 1e-9:
                 chord = Vector((1.0, 0.0, 0.0))
             k.dir_r = chord.normalized()
