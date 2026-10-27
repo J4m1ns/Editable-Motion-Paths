@@ -895,6 +895,11 @@ def jitter(obj, bone=None, mode=None):
 
 def _push(message):
     try:
+        from . import onion
+        onion.changed(pose=True)    # (a script may edit any bone: every ghost renews)
+    except Exception:
+        pass
+    try:
         bpy.ops.ed.undo_push(message=message)
     except RuntimeError:
         pass
@@ -1088,10 +1093,15 @@ def _render(overlays=True, frame_numbers=False):
             numbers = state.force_numbers
             state.force_numbers = numbers or frame_numbers
             if overlays:
-                with gpu.matrix.push_pop():
-                    gpu.matrix.load_matrix(rv3d.view_matrix)
-                    gpu.matrix.load_projection_matrix(rv3d.window_matrix)
-                    emp_draw._draw_view()
+                from . import onion
+                onion.SRGB_TARGET[0] = 0.0      # (the offscreen buffer stores the colors as they are)
+                try:
+                    with gpu.matrix.push_pop():
+                        gpu.matrix.load_matrix(rv3d.view_matrix)
+                        gpu.matrix.load_projection_matrix(rv3d.window_matrix)
+                        emp_draw._draw_view()
+                finally:
+                    onion.SRGB_TARGET[0] = 1.0
                 with gpu.matrix.push_pop():
                     gpu.matrix.load_matrix(Matrix.Identity(4))
                     gpu.matrix.load_projection_matrix(

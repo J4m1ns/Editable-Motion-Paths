@@ -588,16 +588,99 @@ def rest_inverses(arm, names):
     return out
 
 
+_pose_token = [0]       # bumped whenever the pose may have changed (a ghost frame stepped to)
+_memo_on = [False]      # only while capturing: anywhere else the pose may change any time
+_all_mats = {}          # armature name -> (token, (N, 4, 4) every pose bone's matrix)
+_bone_index = {}        # (armature name, id of the names list) -> (names, index of each in pose.bones; -1: gone)
+_bone_count = {}        # armature name -> its bone count when its indices were worked out
+
+
+class pose_memo:
+    """with pose_memo(): the bone matrices are read once for everything inside (the pose doesn't
+    change meanwhile). Nested uses keep the outer one."""
+
+    def __enter__(self):
+        self.outer = _memo_on[0]
+        if not self.outer:
+            _pose_token[0] += 1
+            _memo_on[0] = True
+        return self
+
+    def __exit__(self, *exc):
+        if not self.outer:
+            _memo_on[0] = False
+            _all_mats.clear()
+        return False
+
+
+def pose_changed():
+    """The pose may be different now (a frame stepped to): bone matrices are read again."""
+    _pose_token[0] += 1
+
+
+def _pose_matrices(arm):
+    """(N, 4, 4) every pose bone's matrix, read at once (one foreach_get, not a Python loop over the
+    bones for every part of the character); kept until the pose changes."""
+    import numpy as np
+    got = _all_mats.get(arm.name) if _memo_on[0] else None
+    if got is not None and got[0] == _pose_token[0]:
+        return got[1]
+    bones = arm.pose.bones
+    n = len(bones)
+    if _bone_count.get(arm.name) != n:
+        # (bones added / removed: the bone indices worked out are wrong now)
+        _bone_count[arm.name] = n
+        for k in [k for k in _bone_index if k[0] == arm.name]:
+            del _bone_index[k]
+    buf = np.empty(n * 16, dtype=np.float32)
+    bones.foreach_get("matrix", buf)
+    mats = buf.reshape(-1, 4, 4).transpose(0, 2, 1).astype(np.float64)    # (stored column by column)
+    _all_mats[arm.name] = (_pose_token[0], mats)
+    return mats
+
+
 def bone_mats(arm, names, rest_inv):
     """(armature matrix, (B, 4, 4) how every bone bends now in the armature's space: pose @ rest^-1)."""
     import numpy as np
     Ma = np.array(arm.matrix_world, dtype=np.float64)
+    mats = _pose_matrices(arm)
+    key = (arm.name, id(names))
+    got = _bone_index.get(key)
+    if got is None or got[0] is not names:
+        # (the names list of a proxy / the masses: kept by it, looked up once)
+        order = {pb.name: i for i, pb in enumerate(arm.pose.bones)}
+        got = _bone_index[key] = (names, np.array([order.get(n, -1) for n in names], dtype=np.int64))
+        if len(_bone_index) > 256:
+            _bone_index.clear()
+            _bone_index[key] = got
+    ix = got[1]
     out = np.empty((len(names), 4, 4))
-    bones = arm.pose.bones
-    for i, name in enumerate(names):
-        pb = bones.get(name)
-        out[i] = np.array(pb.matrix, dtype=np.float64) @ rest_inv[i] if pb is not None else np.eye(4)
+    ok = ix >= 0
+    out[ok] = mats[ix[ok]] @ rest_inv[ok]
+    out[~ok] = np.eye(4)
     return Ma, out
+
+
+def rows_of(p, rows):
+    """(weights, bone indices, rest positions, no weight) of some vertices of a bent proxy - taken out
+    once when the same vertices are bent again and again."""
+    return p.w[rows], p.idx[rows], p.rest[rows], p.free[rows]
+
+
+def pose_rows(p, rows, taken=None):
+    """World positions of some vertices of a bent proxy (rows: their indices) for the pose of now
+    (taken: rows_of(p, rows), kept by the caller)."""
+    import numpy as np
+    arm = bpy.data.objects.get(p.arm)
+    if arm is None or p.rest is None:
+        return p.co[rows]
+    Ma, Bs = bone_mats(arm, p.bones, p.rest_inv)
+    w, idx, rest, free = taken if taken is not None else rows_of(p, rows)
+    v = np.einsum('pij,pj->pi', np.einsum('pk,pkij->pij', w, Bs[idx]), rest)
+    if free.any():
+        v[free] = rest[free]
+    v = v @ Ma.T
+    return v[:, :3].astype(np.float32)
 
 
 def _pose(p):
@@ -607,7 +690,8 @@ def _pose(p):
     if arm is None or p.rest is None:
         return p.co
     Ma, Bs = bone_mats(arm, p.bones, p.rest_inv)
-    v = np.einsum('pk,pkij,pj->pi', p.w, Bs[p.idx], p.rest)
+    # (in two steps: the blended matrix of every vertex, then the vertex - 3x faster than at once)
+    v = np.einsum('pij,pj->pi', np.einsum('pk,pkij->pij', p.w, Bs[p.idx]), p.rest)
     if p.free.any():
         v[p.free] = p.rest[p.free]          # (no weight: it goes with the armature object)
     v = v @ Ma.T
@@ -650,6 +734,7 @@ def _shown_by_weight(p, aff):
 # ---- capture -----------------------------------------------------------------------------
 
 def clear():
+    _curve_memo.clear()
     _frames.clear()
     _batches.clear()
     _stale.clear()
@@ -678,14 +763,160 @@ def meshes_changed(mesh_names):
     return gone
 
 
-def changed():
+_curve_memo = {}        # (object name, data path, index) -> (keys (n, 7), modifiers) as last seen
+
+
+def _watched_curves(scene):
+    """[(object, F-Curve)] of what is being edited (the paths' bones / objects), or None when that
+    can't be told (no bone, NLA, a looping action): their changes are told apart by frame."""
+    from . import compat
+    arms, objs = _edited(scene)
+    out = []
+    for ob in [bpy.data.objects.get(n) for n in arms] + list(objs):
+        if ob is None:
+            continue
+        ad = ob.animation_data
+        if ad is None or ad.action is None:
+            continue
+        if getattr(ad, "use_tweak_mode", False) or any(not t.mute for t in ad.nla_tracks) or                 getattr(ad.action, "use_cyclic", False):
+            return None         # (the action's frames aren't the scene's frames)
+        fcs = compat.get_fcurves(ob) or ()
+        if ob.type == 'ARMATURE':
+            bones = arms.get(ob.name)
+            if not bones:
+                return None
+            pre = tuple('pose.bones["%s"]' % bpy.utils.escape_identifier(b) for b in bones)
+            # (and the rig object's own curves: its location, rotation, scale)
+            out += [(ob, fc) for fc in fcs if fc.data_path.startswith(pre) or not fc.data_path.startswith("pose.")]
+        else:
+            out += [(ob, fc) for fc in fcs]
+    return out
+
+
+def _key_rows(fc):
+    """(n, 7): every key's frame, value, handles and interpolation."""
+    import numpy as np
+    kps = fc.keyframe_points
+    n = len(kps)
+    parts = []
+    for name in ("co", "handle_left", "handle_right"):
+        a = np.empty(n * 2, dtype=np.float32)
+        kps.foreach_get(name, a)
+        parts.append(a.reshape(n, 2))
+    ip = np.empty(n, dtype=np.int32)
+    kps.foreach_get("interpolation", ip)
+    parts.append(ip.reshape(n, 1).astype(np.float32))
+    return np.concatenate(parts, axis=1)
+
+
+def _changed_span(old, new):
+    """(from, to) scene frames whose values can differ between two versions of a curve's keys
+    (from the key before the first change to the key after the last one), or None."""
+    import numpy as np
+    inf = float("inf")
+    if len(old) == len(new):
+        diff = np.nonzero(np.any(np.abs(old - new) > 1e-6, axis=1))[0]
+        if not len(diff):
+            return None
+        i0, j_old, j_new = int(diff[0]), int(diff[-1]), int(diff[-1])
+    else:
+        n = min(len(old), len(new))
+        same = np.all(np.abs(old[:n] - new[:n]) <= 1e-6, axis=1)
+        i0 = int(np.argmin(same)) if not same.all() else n
+        tail = 0
+        while tail < n - i0 and np.all(np.abs(old[len(old) - 1 - tail] - new[len(new) - 1 - tail]) <= 1e-6):
+            tail += 1
+        j_old, j_new = len(old) - 1 - tail, len(new) - 1 - tail
+    lo = min(rows[i0 - 1, 0] if 0 < i0 <= len(rows) else -inf for rows in (old, new))
+    hi = max(rows[j + 1, 0] if 0 <= j + 1 < len(rows) else inf for rows, j in ((old, j_old), (new, j_new)))
+    return float(lo), float(hi)
+
+
+def _remember_curves(watched):
+    from .core import _fmod_signature
+    for ob, fc in watched:
+        _curve_memo[(ob.name, fc.data_path, fc.array_index)] = (
+            _key_rows(fc), tuple(_fmod_signature(m) for m in fc.modifiers))
+
+
+why = [""]          # (what the last edit_spans went by: for tests)
+ALL = None          # (edit_spans: every frame)
+
+
+def edit_spans(scene, moved=True):
+    """[(from, to)] scene frames whose poses an edit of the curves may have changed (around the
+    keys that changed), [] for none (only what is selected changed), ALL when that can't be told.
+    Asked once per change: the ghosts and the center of mass's track both go by it."""
+    from .core import _fmod_signature, cycle_info
+    try:
+        watched = _watched_curves(scene)
+    except (ReferenceError, AttributeError):
+        watched = None
+    if not watched:
+        why[0] = "not watched"
+        return ALL
+    spans = []
+    unknown = False
+    for ob, fc in watched:
+        key = (ob.name, fc.data_path, fc.array_index)
+        rows = _key_rows(fc)
+        mods = tuple(_fmod_signature(m) for m in fc.modifiers)
+        got = _curve_memo.get(key)
+        _curve_memo[key] = (rows, mods)
+        if got is None:
+            unknown = True          # (not seen before: can't tell what changed - all the memo is taken still)
+            why[0] = "new curve " + fc.data_path
+            continue
+        if got[1] != mods:
+            unknown = True
+            why[0] = "modifiers"
+            continue
+        span = _changed_span(got[0], rows)
+        if span is None:
+            continue
+        if cycle_info(fc) is not None:
+            unknown = True          # (a loop: a change shows on every repeat)
+            why[0] = "loop"
+            continue
+        spans.append(span)
+    if unknown:
+        return ALL
+    if not spans:
+        if moved:
+            why[0] = "another curve changed"
+            return ALL              # (an object moved, but none of these curves: another one did)
+        why[0] = "nothing moved"
+        return []                   # (only what is selected changed - a click on a key)
+    why[0] = "spans %s" % spans
+    return spans
+
+
+def frames_in(frames, spans):
+    """Those of the frames inside the spans (all of them for ALL)."""
+    if spans is ALL:
+        return set(frames)
+    return {f for f in frames if any(lo - 1e-3 <= f <= hi + 1e-3 for lo, hi in spans)}
+
+
+_UNSET = object()
+
+
+def changed(pose=False, moved=True, spans=_UNSET):
     """The animation changed: the ghosts are captured again right away, the nearest first,
-    also while a tool drags (the old ones stay drawn until each is renewed)."""
+    also while a tool drags (the old ones stay drawn until each is renewed) - only the frames
+    around the keys that changed (spans, see edit_spans; all of them for a change of the pose
+    itself: pose=True)."""
     global _changed_at
-    if _frames:
-        _stale.update(_frames)
-        _changed_at = time.time()
-        _schedule(0.01)
+    if spans is _UNSET:
+        try:
+            spans = ALL if pose else edit_spans(bpy.context.scene, moved)
+        except Exception:
+            spans = ALL
+    if not _frames:
+        return
+    _stale.update(frames_in(_frames, ALL if pose else spans))
+    _changed_at = time.time()
+    _schedule(0.01)
 
 
 def all_frames(scene, st, limit=250):
@@ -794,9 +1025,24 @@ def _capture(scene, frames, targets, st):
         arms = {a.name: a for _o, a, _h in targets if a is not None}
         for name in _edited(scene)[0]:
             arms.setdefault(name, bpy.data.objects[name])
+        # other characters' bent meshes (nothing of the ghosts depends on them) are left out of the
+        # evaluation too - like the paths' bake: only what the ghosts need is worked out per frame
+        from .core import _meshes_not_needed
+        needed = {o.name: o for o, _a, _h in targets}
+        needed.update(arms)
+        for o in _meshes_not_needed(scene, needed):
+            if o.name not in needed and o.name not in parents and state.can_hide(o, len(frames)):
+                o.hide_viewport = True
+                hidden.append(o)
         dg = bpy.context.evaluated_depsgraph_get() if exact else None
+        # the bones (Bones mode only: switching to it captures the ghosts again)
+        want_bones = mode_used(scene, st) == 'BONES'
+        shown = {name: np.array([_bone_shown(pb, st) for pb in a.pose.bones], dtype=bool)
+                 for name, a in arms.items()} if want_bones else {}
+        _memo_on[0] = True
         for f in frames:
             scene.frame_set(int(f))
+            pose_changed()
             parts = []
             for o, _arm, how in targets:
                 p = _proxies.get(o.name)
@@ -804,25 +1050,42 @@ def _capture(scene, frames, targets, st):
                     continue
                 if how == 'DEFORM':
                     pos = _exact_shape(o, p, dg) if o.name in exact else None
-                    parts.append((p.name, pos if pos is not None else _pose(p), None))
+                    if pos is not None or p.rest is None:
+                        parts.append((p.name, pos if pos is not None else _pose(p), None, None))
+                    else:
+                        # (bent on the GPU when drawn: only how every bone bends is kept)
+                        parts.append((p.name, None, None, _skin_mats(p)))
                 else:
-                    parts.append((p.name, None, o.matrix_world.copy()))
+                    parts.append((p.name, None, o.matrix_world.copy(), None))
             bones = []
-            for arm in arms.values():
-                M = arm.matrix_world
-                for pb in arm.pose.bones:
-                    if _bone_shown(pb, st):
-                        bones += [tuple(M @ pb.head), tuple(M @ pb.tail)]
-            _frames[f] = {"parts": parts, "bones": np.array(bones, dtype=np.float32) if bones else None}
+            for arm in (arms.values() if want_bones else ()):
+                # (all heads and tails at once; which bones show was worked out once above)
+                n = len(arm.pose.bones)
+                ht = np.empty((2, n * 3), dtype=np.float32)
+                arm.pose.bones.foreach_get("head", ht[0])
+                arm.pose.bones.foreach_get("tail", ht[1])
+                Mw = np.array(arm.matrix_world, dtype=np.float32)
+                seg = np.stack([ht[0].reshape(n, 3), ht[1].reshape(n, 3)], axis=1)[shown[arm.name]]
+                bones.append((seg.reshape(-1, 3) @ Mw[:3, :3].T + Mw[:3, 3]).astype(np.float32))
+            _frames[f] = {"parts": parts, "bones": np.concatenate(bones) if bones else None}
+            try:
+                from . import com
+                if not _previewing[0]:          # (a pose not keyed, put on for a moment: not the track's)
+                    com.visit(scene, int(f))    # (the center of mass's track takes this frame too)
+            except Exception as ex:
+                print("Editable Motion Paths: center of mass on a ghost frame:", ex)
             for key in [k for k in _batches if k[0] == f]:
                 del _batches[key]
     finally:
+        _memo_on[0] = False
+        _all_mats.clear()
         for o in hidden:
             o.hide_viewport = False
         _shown_again[:] = hidden
 
 
 _previewed = set()          # frames captured with an unkeyed pose put on the curves
+_previewing = [False]       # capturing with that pose on right now
 _previewed_at = [None]      # on which frame that pose was
 
 
@@ -1015,6 +1278,7 @@ def _tick():
         try:
             if preview:
                 _put_keys(_pending_keys(scene), cur, undo)
+            _previewing[0] = bool(undo)
             done = []
             # as many frames as fit in ~40 ms (a heavy character: one a tick, so Blender keeps
             # answering; a light one: up to 4)
@@ -1038,6 +1302,7 @@ def _tick():
             per = (time.time() - t1) / max(len(batch), 1)
             _cost = per if not _cost else _cost * 0.7 + per * 0.3
         finally:
+            _previewing[0] = False
             _take_keys_off(undo, cur)
             t_back = time.time()
             scene.frame_set(cur, subframe=sub)
@@ -1047,6 +1312,12 @@ def _tick():
                 bpy.context.view_layer.update()     # (now, so it doesn't count as an edit)
             _busy = False
         state.tag_redraw()
+        try:
+            w = _watched_curves(scene)
+            if w:
+                _remember_curves([(o, fc) for o, fc in w if (o.name, fc.data_path, fc.array_index) not in _curve_memo])
+        except (ReferenceError, AttributeError):
+            pass
         if len(done) < len(want) or time.time() - t0 > 0.04:
             return 0.01
         if not state.modal_running and not editing and any(f not in _frames or f in _stale for f in all_frames(scene, st)):
@@ -1083,11 +1354,11 @@ def ghost(f, kind):
     if kind == "bones":
         return data.get("bones")
     out = []
-    for name, pos, M in data["parts"]:
+    for name, pos, M, skin in data["parts"]:
         p = _proxies.get(name)
         if p is None:
             continue
-        co = pos
+        co = pos if skin is None else _skin_positions(p, skin)
         if co is None:
             m = np.array(M, dtype=np.float64)
             co = (p.co @ m[:3, :3].T + m[:3, 3]).astype(np.float32) if len(p.co) else p.co
@@ -1101,6 +1372,148 @@ def ghost(f, kind):
 
 
 # ---- drawing -----------------------------------------------------------------------------
+
+# ---- GPU skinning: a bent proxy is drawn from its rest shape, bent in the vertex shader -------
+# (per ghost frame only how its bones bend is kept: no positions worked out on the CPU, no new
+# vertex buffer for every frame)
+
+_SKIN_VS = """
+mat4 bone(int i)
+{
+  return mat4(texelFetch(bones, ivec2(i * 4, 0), 0), texelFetch(bones, ivec2(i * 4 + 1, 0), 0),
+              texelFetch(bones, ivec2(i * 4 + 2, 0), 0), texelFetch(bones, ivec2(i * 4 + 3, 0), 0));
+}
+
+void main()
+{
+  vec4 r = vec4(rest, 1.0);
+  vec4 p = bw.x * (bone(int(bidx.x)) * r) + bw.y * (bone(int(bidx.y)) * r) +
+           bw.z * (bone(int(bidx.z)) * r) + bw.w * (bone(int(bidx.w)) * r);
+  gl_Position = viewProjectionMatrix * vec4(p.xyz, 1.0);
+}
+"""
+
+_SKIN_FS = """
+void main()
+{
+  /* the 3D view draws into an sRGB target: the color goes in linear (like Blender's own shaders) */
+  vec3 c = color.rgb;
+  vec3 lin = mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+  fragColor = vec4(mix(c, lin, srgbTarget), color.a);
+}
+"""
+
+_skin_sh = [None]       # the shader, or False where it can't be made (then the CPU bends)
+SRGB_TARGET = [1.0]     # 1: the target stores sRGB (the 3D view) - the color is made linear first
+
+
+def _skin_shader():
+    if _skin_sh[0] is None:
+        try:
+            info = gpu.types.GPUShaderCreateInfo()
+            info.push_constant('MAT4', "viewProjectionMatrix")
+            info.push_constant('VEC4', "color")
+            info.push_constant('FLOAT', "srgbTarget")
+            info.sampler(0, 'FLOAT_2D', "bones")
+            info.vertex_in(0, 'VEC3', "rest")
+            info.vertex_in(1, 'VEC4', "bidx")
+            info.vertex_in(2, 'VEC4', "bw")
+            info.fragment_out(0, 'VEC4', "fragColor")
+            info.vertex_source(_SKIN_VS)
+            info.fragment_source(_SKIN_FS)
+            _skin_sh[0] = gpu.shader.create_from_info(info)
+        except Exception as ex:      # (an old or odd GPU / backend: bent on the CPU as before)
+            print("Editable Motion Paths: ghosts bent on the CPU (%s)" % str(ex).splitlines()[0][:120])
+            _skin_sh[0] = False
+    return _skin_sh[0] or None
+
+
+def _skin_mats(p):
+    """(B + 1, 4, 4) float32: how every bone of a bent proxy bends now, in world space; the last
+    one is the armature object (vertices without weight go with it)."""
+    import numpy as np
+    arm = bpy.data.objects.get(p.arm)
+    Ma, Bs = bone_mats(arm, p.bones, p.rest_inv)
+    return np.concatenate([Ma[None] @ Bs, Ma[None]]).astype(np.float32)
+
+
+def _skin_layout(p):
+    """(bone index, weight) per vertex as 4 floats each (vertices without weight: the armature)."""
+    import numpy as np
+    got = getattr(p, "_skin", None)
+    if got is not None:
+        return got
+    P, K = p.idx.shape
+    idx = np.zeros((P, 4), dtype=np.float32)
+    w = np.zeros((P, 4), dtype=np.float32)
+    k = min(K, 4)
+    idx[:, :k] = p.idx[:, :k]
+    w[:, :k] = p.w[:, :k]
+    if K > 4:
+        w /= np.maximum(w.sum(axis=1, keepdims=True), 1e-12)
+    free = p.free if p.free is not None else np.zeros(P, dtype=bool)
+    idx[free] = 0.0
+    w[free] = 0.0
+    idx[free, 0] = len(p.bones)
+    w[free, 0] = 1.0
+    p._skin = (idx, w)
+    return p._skin
+
+
+def _skin_positions(p, skin):
+    """World positions of a bent proxy from its bones' matrices (CPU: scripts, and where the GPU
+    can't bend it)."""
+    import numpy as np
+    idx, w = _skin_layout(p)
+    ii = idx.astype(np.int64)
+    M = np.einsum('pk,pkij->pij', w.astype(np.float64), skin[ii].astype(np.float64))
+    v = np.einsum('pij,pj->pi', M, p.rest)
+    return v[:, :3].astype(np.float32)
+
+
+def _skin_batch(kind, name, shader, keep):
+    """The rest shape of a bent proxy with its weights, made once (every frame draws it)."""
+    import numpy as np
+    key = (None, "skin-" + kind, name)
+    b = _batches.get(key)
+    if b is not None:
+        return b
+    p = _proxies.get(name)
+    if p is None or p.rest is None:
+        return None
+    idx, w = _skin_layout(p)
+    attrs = {"rest": p.rest[:, :3].astype(np.float32), "bidx": idx, "bw": w}
+    if kind == "tris":
+        el = p.tri
+    else:
+        el = p.edges
+    if el is None or not len(el):
+        return None
+    if keep is not None:
+        el = el[keep[el].all(axis=1)]
+        if not len(el):
+            return None
+    b = batch_for_shader(shader, 'TRIS' if kind == "tris" else 'LINES', attrs, indices=el.astype(np.int32))
+    _batches[key] = b
+    return b
+
+
+def _skin_texture(f, name, skin):
+    """This ghost frame's bone matrices as a texture (4 texels a bone, column by column)."""
+    key = (f, "skin-bones", name)
+    t = _batches.get(key)
+    if t is not None:
+        return t
+    try:
+        cols = skin.transpose(0, 2, 1).ravel()
+        buf = gpu.types.Buffer('FLOAT', len(cols), cols.tolist())
+        t = gpu.types.GPUTexture((len(skin) * 4, 1), format='RGBA32F', data=buf)
+    except Exception as ex:
+        print("Editable Motion Paths: ghost bones texture failed:", ex)
+        return None
+    _batches[key] = t
+    return t
+
 
 def _point_shader():
     """Points need a shader that sets their size (the plain one ignores point_size_set on
@@ -1242,20 +1655,40 @@ def draw(scene, st, us):
             gpu.state.line_width_set(1.0)
             continue
         draws = []
-        for name, pos, M in data["parts"]:
+        skin_sh = _skin_shader() if kind in ("tris", "edges") else None
+        for name, pos, M, skin in data["parts"]:
             if name in left_out:
                 continue
             p = _proxies.get(name)
             if p is None:
                 continue
             pkind = "edges" if p.how == 'LINES' or (kind == "tris" and not len(p.tri)) else kind
+            if skin is not None and skin_sh is not None:
+                b = _skin_batch(pkind, name, skin_sh, keep.get(name))
+                tex = _skin_texture(f, name, skin)
+                if b is not None and tex is not None:
+                    draws.append((b, tex, pkind))
+                continue
+            if skin is not None:
+                pos = _skin_positions(p, skin)          # (no GPU skinning here: bent on the CPU)
             b = _part_batch(f if pos is not None else None, pkind, name, pos, sh if pkind == kind else
                             gpu.shader.from_builtin('UNIFORM_COLOR'), keep.get(name))
             if b is not None:
                 draws.append((b, M, pkind))
+        state_col = [None]
 
         def each(fn):
             for b, M, pkind in draws:
+                if isinstance(M, gpu.types.GPUTexture):
+                    # bent on the GPU: the same shape every frame, this frame's bones
+                    skin_sh.bind()
+                    skin_sh.uniform_float("viewProjectionMatrix",
+                                          gpu.matrix.get_projection_matrix() @ gpu.matrix.get_model_view_matrix())
+                    skin_sh.uniform_float("color", state_col[0])
+                    skin_sh.uniform_float("srgbTarget", SRGB_TARGET[0])
+                    skin_sh.uniform_sampler("bones", M)
+                    b.draw(skin_sh)
+                    continue
                 if M is not None:
                     gpu.matrix.push()
                     gpu.matrix.multiply_matrix(M)       # instanced: one shape, a matrix per ghost
@@ -1269,11 +1702,17 @@ def draw(scene, st, us):
             gpu.state.depth_mask_set(True)
             gpu.state.color_mask_set(False, False, False, False)
             sh.uniform_float("color", (0, 0, 0, 0))
-            each(lambda b, k: b.draw(sh) if k == "tris" else None)
+            state_col[0] = (0.0, 0.0, 0.0, 0.0)
+            draws_all = draws
+            draws = [d for d in draws_all if d[2] == "tris"]
+            each(lambda b, k: b.draw(sh))
             gpu.state.color_mask_set(True, True, True, True)
             gpu.state.depth_test_set('EQUAL')
             sh.uniform_float("color", col + (a,))
-            each(lambda b, k: b.draw(sh) if k == "tris" else None)
+            state_col[0] = col + (a,)
+            each(lambda b, k: b.draw(sh))
+            draws = [d for d in draws_all if d[2] == "edges"]
+            state_col[0] = col + (min(1.0, a * 1.6),)
             gpu.state.depth_test_set(test)
             gpu.state.depth_mask_set(False)
             gpu.state.face_culling_set('NONE')
@@ -1290,6 +1729,7 @@ def draw(scene, st, us):
             sh.uniform_float("color", col + (min(1.0, a * 1.6),))
             lines = gpu.shader.from_builtin('UNIFORM_COLOR')
             lines.uniform_float("color", col + (min(1.0, a * 1.6),))
+            state_col[0] = col + (min(1.0, a * 1.6),)
             each(lambda b, k: b.draw(sh if k == kind else lines))
             gpu.state.line_width_set(1.0)
             gpu.state.point_size_set(1.0)

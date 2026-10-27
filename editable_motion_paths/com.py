@@ -52,12 +52,13 @@ def meshes_changed():
         _schedule(0.05)
 
 
-def changed():
+def changed(spans=onion.ALL):
     """The animation changed: the track is worked out again (the point itself is live; the
-    old track stays until each frame is renewed, so nothing blinks)."""
+    old track stays until each frame is renewed, so nothing blinks) - only the frames around the
+    keys that changed (spans: see onion.edit_spans)."""
     if _track:
         for name, tr in _track.items():
-            _redo.setdefault(name, set()).update(tr)
+            _redo.setdefault(name, set()).update(onion.frames_in(tr, spans))
         _schedule(0.05)
 
 
@@ -466,16 +467,105 @@ def center(arm):
     return (Ma @ g)[:3]
 
 
-def _lowest(scene, arm):
-    """The lowest point of the character's meshes (their proxies) in the pose of now, and the
-    proxies' points (world)."""
+_DIRS = None
+
+
+def _low_points(p):
+    """(the vertices that can be lowest, the bone each vertex goes with): a vertex goes with the bone
+    weighing most on it; of every bone's part only its outermost vertices (in 26 directions) can be
+    the lowest point however it turns - a few hundred of the proxy's thousands. Made once."""
     import numpy as np
-    pts = [onion._pose(onion._proxies[o.name]) for o in _meshes(scene, arm) if o.name in onion._proxies]
-    pts = [p for p in pts if p is not None and len(p)]
-    if not pts:
-        return None, None
-    allp = np.concatenate(pts)
-    return float(allp[:, 2].min()), allp
+    global _DIRS
+    got = getattr(p, "_low", None)
+    if got is not None:
+        return got
+    if _DIRS is None:
+        d = [(x, y, z) for x in (-1, 0, 1) for y in (-1, 0, 1) for z in (-1, 0, 1) if (x, y, z) != (0, 0, 0)]
+        _DIRS = np.array(d, dtype=np.float64)
+        _DIRS /= np.linalg.norm(_DIRS, axis=1)[:, None]
+    P = len(p.rest)
+    dom = p.idx[np.arange(P), np.argmax(p.w, axis=1)].astype(np.int64)
+    dom[p.free] = -1
+    proj = p.rest[:, :3] @ _DIRS.T
+    cand = []
+    for g in np.unique(dom):
+        ids = np.nonzero(dom == g)[0]
+        if len(ids) <= 2 * len(_DIRS):
+            cand.append(ids)
+        else:
+            pr = proj[ids]
+            cand.append(ids[np.argmin(pr, axis=0)])
+    rows = np.unique(np.concatenate(cand)) if cand else np.zeros(0, dtype=np.int64)
+    p._low = (rows, dom, onion.rows_of(p, rows))
+    return p._low
+
+
+def _lowest(scene, arm):
+    with onion.pose_memo():
+        return _lowest_now(scene, arm)
+
+
+def _lowest_now(scene, arm):
+    """The lowest point of the character's meshes (their proxies) in the pose of now, and what it
+    was found from: [(proxy, its candidate vertices, their positions)] (see _contacts)."""
+    import numpy as np
+    parts = []
+    low = None
+    for o in _meshes(scene, arm):
+        p = onion._proxies.get(o.name)
+        if p is None:
+            continue
+        if p.rest is None:
+            pts = p.co
+            rows = None
+        else:
+            lp = _low_points(p)
+            rows = lp[0]
+            pts = onion.pose_rows(p, rows, lp[2])
+        if pts is None or not len(pts):
+            continue
+        z = float(pts[:, 2].min())
+        low = z if low is None else min(low, z)
+        parts.append((p, rows, pts))
+    if low is None:
+        return None, parts
+    # (the outermost points are found in 26 directions: the very lowest one can be a little
+    # off them - the parts near the bottom are bent whole, exactly)
+    d = _mass.get(arm.name)
+    margin = 0.05 * (d["height"] if d is not None else 2.0)
+    exact = None
+    for p, rows, pts in parts:
+        if rows is None:
+            z = float(pts[:, 2].min())
+        else:
+            near = pts[:, 2] <= low + margin
+            if not near.any():
+                continue
+            dom = _low_points(p)[1]
+            sel = np.nonzero(np.isin(dom, np.unique(dom[rows[near]])))[0]
+            z = float(onion.pose_rows(p, sel)[:, 2].min())
+        exact = z if exact is None else min(exact, z)
+    return (exact if exact is not None else low), parts
+
+
+def _contacts(parts, floor, tol):
+    """(N, 2): the points of the meshes touching the floor (within tol) in the pose of now: of the
+    bones whose outermost points come near the floor, every vertex (the part on the floor exact)."""
+    import numpy as np
+    out = []
+    for p, rows, pts in parts:
+        if rows is None:
+            out.append(pts[pts[:, 2] <= floor + tol][:, :2])
+            continue
+        near = pts[:, 2] <= floor + 3.0 * tol
+        if not near.any():
+            continue
+        dom = _low_points(p)[1]
+        groups = np.unique(dom[rows[near]])
+        sel = np.nonzero(np.isin(dom, groups))[0]
+        full = onion.pose_rows(p, sel)
+        out.append(full[full[:, 2] <= floor + tol][:, :2])
+    return np.concatenate(out) if out else np.zeros((0, 2), dtype=np.float32)
 
 
 # ---- the track: frame by frame in the background -------------------------------------------
@@ -559,10 +649,13 @@ def _tick():
             hidden = []
             held = state.keep_scene_pose(scene, [arm])
             try:
-                for o in meshes:
-                    # only the bones are evaluated; a tick does ~40 ms of frames (not all of them),
-                    # so a mesh is left out only if showing it again costs about a frame or less
-                    # (seen the first time it is hidden)
+                from .core import _meshes_not_needed
+                parents = {x.parent.name for x in scene.objects if x.parent is not None}
+                for o in list(meshes) + [o for o in _meshes_not_needed(scene, {arm.name: arm})
+                                         if o not in meshes and o.name not in parents]:
+                    # only the bones are evaluated (other characters' bent meshes are left out too);
+                    # a tick does ~40 ms of frames (not all of them), so a mesh is left out only if
+                    # showing it again costs about a frame or less (seen the first time it is hidden)
                     if not o.hide_viewport and state.can_hide(o, 5):
                         o.hide_viewport = True
                         hidden.append(o)
@@ -597,6 +690,26 @@ def _tick():
         return None
 
 
+def visit(scene, f):
+    """The ghosts' capture stepped to frame f (the pose of that frame is on now): its center and
+    floor go into the track too, if they are wanted - one step through the frames for both."""
+    st = state.settings(scene)
+    if st is None or not st.show_com or not _track:
+        return
+    f0, f1 = _range(scene)
+    if not f0 - 1 <= f <= f1 + 1:
+        return
+    for arm in armatures(scene):
+        tr = _track.get(arm.name)
+        redo = _redo.get(arm.name, set())
+        if tr is None or arm.name not in _mass or (f in tr and f not in redo):
+            continue
+        g = center(arm)
+        low, _p = _lowest(scene, arm)
+        tr[f] = (g, low) if g is not None else None
+        redo.discard(f)
+
+
 # ---- support: what touches the floor -----------------------------------------------------
 
 def _hull(pts):
@@ -629,6 +742,11 @@ def _inside(poly, x, y):
 
 
 def state_now(scene, arm):
+    with onion.pose_memo():
+        return _state_now(scene, arm)
+
+
+def _state_now(scene, arm):
     """(center, floor z, support outline [(x, y)], balance 'IN' / 'OUT' / 'AIR', velocity) for the
     pose of now; worked out again only when the pose changes."""
     import numpy as np
@@ -649,7 +767,7 @@ def state_now(scene, arm):
     if old is not None and old[0] == key:
         _k, floor, poly, bal = old
     else:
-        low, pts = _lowest(scene, arm)
+        low, parts = _lowest(scene, arm)
         st = state.settings(scene)
         if st is not None and st.com_floor == 'HEIGHT':
             floor = st.com_floor_height
@@ -659,8 +777,8 @@ def state_now(scene, arm):
             floor = min(lows + ([low] if low is not None else [])) if (lows or low is not None) else 0.0
         tol = 0.02 * d["height"]
         poly = []
-        if pts is not None:
-            touch = pts[pts[:, 2] <= floor + tol][:, :2]
+        if parts:
+            touch = _contacts(parts, floor, tol)
             if len(touch):
                 # (on a grid, so a dense mesh doesn't slow it down; Floor Detail makes it finer)
                 cell = max(tol / max(st.com_floor_detail if st is not None else 1.0, 1.0), 1e-4)

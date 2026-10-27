@@ -743,6 +743,26 @@ _dg_frame = None
 _dg_frame_all = None
 
 
+def _edit_spans(scene, depsgraph):
+    """The frames an edit of the curves changed (see onion.edit_spans), once for the ghosts and the
+    center of mass alike; every frame when it can't be told."""
+    from . import onion
+    st = settings(scene)
+    if st is None or not (st.show_onion or st.show_com):
+        return onion.ALL
+    try:
+        return onion.edit_spans(scene, _moved(depsgraph))
+    except Exception:
+        return onion.ALL
+
+
+def _moved(depsgraph):
+    """An object was moved by this update (not only keys selected: that changes an action, but no
+    object moves)."""
+    return any(isinstance(u.id, bpy.types.Object) and (u.is_updated_transform or u.is_updated_geometry)
+               for u in depsgraph.updates)     # (a pose change is the armature's geometry)
+
+
 @persistent
 def _on_depsgraph(scene, depsgraph):
     from . import onion
@@ -765,8 +785,11 @@ def _on_depsgraph(scene, depsgraph):
             # (a frame change also updates the objects: only changes on the same frame count)
             if any(isinstance(u.id, bpy.types.Object) and (u.is_updated_transform or u.is_updated_geometry)
                    for u in depsgraph.updates):
-                onion.changed()
-                com.changed()
+                # (a curve changed too: that is told below, once - the ghosts then renew only the
+                # frames around it)
+                if not any(isinstance(u.id, bpy.types.Action) for u in depsgraph.updates):
+                    onion.changed(pose=True)
+                    com.changed()
         _dg_frame = f
     global _dg_frame_all
     same_frame = scene.frame_current == _dg_frame_all
@@ -775,8 +798,9 @@ def _on_depsgraph(scene, depsgraph):
         # no path: the ghosts and the center of mass still follow the animation
         if st.show_onion or st.show_com:
             if any(isinstance(u.id, bpy.types.Action) for u in depsgraph.updates):
-                onion.changed()
-                com.changed()
+                spans = _edit_spans(scene, depsgraph)
+                onion.changed(spans=spans)
+                com.changed(spans)
         return
     for u in depsgraph.updates:
         if isinstance(u.id, bpy.types.Action):
@@ -787,8 +811,9 @@ def _on_depsgraph(scene, depsgraph):
                 pass
             tag_redraw()        # the path follows right away (e.g. a modifier's settings)
             schedule_rebake()
-            onion.changed()
-            com.changed()
+            spans = _edit_spans(scene, depsgraph)
+            onion.changed(spans=spans)
+            com.changed(spans)
             return
     # no curve changed, but an object did (on the same frame, not while dragging or playing): a
     # value a driver reads, an NLA strip, a constraint's setting may have changed - checked
@@ -851,7 +876,7 @@ def _on_undo(*_args):
         _keep_view()
     except Exception:
         pass
-    onion.changed()
+    onion.changed(pose=True)
     com.changed()
     # (no need to mark the paths dirty: a path rebuilds when its curves differ from what it was
     # built from; hidden keys and value channels are taken over below)
