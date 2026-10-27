@@ -437,8 +437,8 @@ gets more than a hand). With the
 center shown, the right-click menu has **Edit Limb Weight...** (a small popup under the mouse). A
 bone that moves the whole body (the root, the torso) has no weight of its own - pick the chest,
 the hips or a limb. Space switches that are off (a head that could follow the hand, influence 0)
-don't make a bone part of a limb. The weights are shown in percent, or in kilograms / pounds (the
-preferences: *Limb Weight In*) from the character's *Body Mass*. A new weight works the trajectory
+don't make a bone part of a limb. The weights are shown in kilograms of the character's *Body Mass* - or pounds, or percent
+of the body (the preferences: *Limb Weight In*). A new weight works the trajectory
 out again from scratch. The weights are saved with the file: on the bones as the custom
 properties `com_zone` and `com_own` - or, for a rig linked from another file (a library override
 in a shot), in the scene, since Blender doesn't keep new properties on an override's bones. Set

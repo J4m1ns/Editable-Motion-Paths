@@ -64,7 +64,7 @@ LB_PER_KG = 2.2046226
 
 def weight_unit():
     p = prefs()
-    return p.com_weight_unit if p is not None else 'PERCENT'
+    return p.com_weight_unit if p is not None else 'KG'
 
 
 def _get_limb_mass(self):
@@ -584,10 +584,10 @@ class EMP_Preferences(bpy.types.AddonPreferences):
     com_weight_unit: EnumProperty(
         name="Limb Weight In", update=_redraw,
         description="Center of mass: how a limb's weight is shown and set",
-        items=[('PERCENT', "Percent", "Its share of the whole body"),
-               ('KG', "Kilograms", "Its mass, from the character's Body Mass"),
-               ('LB', "Pounds", "Its mass, from the character's Body Mass")],
-        default='PERCENT')
+        items=[('KG', "Kilograms", "Its mass, from the character's Body Mass"),
+               ('LB', "Pounds", "Its mass, from the character's Body Mass"),
+               ('PERCENT', "Percent", "Its share of the whole body")],
+        default='KG')
     speed_select_new: BoolProperty(
         name="Select New Keys", default=True, update=_redraw,
         description="Speed graph: the keys a drag of the curve adds are selected (so the graph keeps "

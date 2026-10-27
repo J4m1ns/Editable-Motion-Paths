@@ -347,7 +347,7 @@ def _handle_edit(cache, ch, k, side, slopes, touched):
         core.write_handle(ch, k, side, slopes, _side_dt(k, side), k.vals, 'FREE', touched, only=broken)
     if joined:
         core.write_handle(ch, k, side, slopes, _side_dt(k, side), k.vals, 'ALIGNED', touched, only=joined)
-        if _side_dt(k, other) > core.EPS:
+        if _side_dt(k, other) > core.EPS or any(d > core.EPS for d in ((k.dts_l if other == 'L' else k.dts_r) or ())):
             core.write_handle(ch, k, other, slopes, _side_dt(k, other), k.vals, 'ALIGNED', touched, only=joined)
 
 

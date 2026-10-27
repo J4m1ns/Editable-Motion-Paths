@@ -245,7 +245,8 @@ class Target:
 class KeyData:
     __slots__ = ("t", "idx", "vals", "co", "hl", "hr", "dt_l", "dt_r", "s_l", "s_r",
                  "vp", "sel", "sel_l", "sel_r", "type_l", "type_r", "interp", "dir_l", "dir_r",
-                 "partial", "cat_l", "cat_r", "offs", "hidden", "piece", "dts_l", "dts_r", "types_l", "types_r")
+                 "partial", "cat_l", "cat_r", "offs", "hidden", "piece", "dts_l", "dts_r", "types_l", "types_r",
+                 "bez_l", "bez_r")
 
     def __init__(self, t):
         self.t = t
@@ -280,6 +281,9 @@ class KeyData:
         self.dts_r = None
         self.types_l = None
         self.types_r = None
+        # per channel: the handle on that side shapes its curve (the segment there is Bezier)
+        self.bez_l = None
+        self.bez_r = None
 
     @property
     def any_sel(self):
@@ -1004,6 +1008,8 @@ class PathCache:
         k.dts_r = [0.0] * ch.count
         k.types_l = [None] * ch.count
         k.types_r = [None] * ch.count
+        k.bez_l = [False] * ch.count
+        k.bez_r = [False] * ch.count
         first = None
         sel = sel_l = sel_r = False
         for c, fc in enumerate(ch.fcurves):
@@ -1016,6 +1022,14 @@ class PathCache:
                     v0 = fc.evaluate(t)
                     s_l[c] = (v0 - fc.evaluate(t - e)) / e
                     s_r[c] = (fc.evaluate(t + e) - v0) / e
+                    # no key on this curve here yet (an edit keys it): where its segment is Bezier
+                    # the new key gets handles - count them (with the length auto handles get)
+                    before = [kp for kp in fc.keyframe_points if kp.co[0] < t - EPS]
+                    after = [kp for kp in fc.keyframe_points if kp.co[0] > t + EPS]
+                    if before and before[-1].interpolation == 'BEZIER':
+                        dts_l.append((t - before[-1].co[0]) / 3.0)
+                        if after:
+                            dts_r.append((after[0].co[0] - t) / 3.0)
                 continue
             kp = fc.keyframe_points[idx]
             if first is None:
@@ -1031,14 +1045,36 @@ class PathCache:
             hrx, hry = kp.handle_right
             k.types_l[c] = kp.handle_left_type
             k.types_r[c] = kp.handle_right_type
+            # a handle only counts where its segment is Bezier - on this curve (another curve of
+            # the same key may have a Linear / Constant segment there: its handle does nothing,
+            # the path follows that curve's own slope)
+            kps = fc.keyframe_points
+            n = len(kps)
+            loops = n > 1 and cycle_info(fc) is not None
+            prev = kps[idx - 1] if idx > 0 else (kps[n - 1] if loops else None)
+            k.bez_l[c] = prev is not None and prev.interpolation == 'BEZIER'
+            k.bez_r[c] = (idx < n - 1 or loops) and kp.interpolation == 'BEZIER'
+            e = 0.25
+            # (a handle that shapes nothing is still written along with the other side: Blender
+            # aligns the two sides of a key to each other)
             if x - hlx > EPS:
-                s_l[c] = (y - hly) / (x - hlx)
-                dts_l.append(x - hlx)
                 k.dts_l[c] = x - hlx
             if hrx - x > EPS:
+                k.dts_r[c] = hrx - x
+            if k.bez_l[c] and x - hlx > EPS:
+                s_l[c] = (y - hly) / (x - hlx)
+                dts_l.append(x - hlx)
+            elif not k.bez_l[c] and prev is not None:
+                s_l[c] = (fc.evaluate(t) - fc.evaluate(t - e)) / e
+            elif x - hlx > EPS:
+                s_l[c] = (y - hly) / (x - hlx)
+            if k.bez_r[c] and hrx - x > EPS:
                 s_r[c] = (hry - y) / (hrx - x)
                 dts_r.append(hrx - x)
-                k.dts_r[c] = hrx - x
+            elif not k.bez_r[c] and (idx < n - 1 or loops):
+                s_r[c] = (fc.evaluate(t + e) - fc.evaluate(t)) / e
+            elif hrx - x > EPS:
+                s_r[c] = (hry - y) / (hrx - x)
             sel |= kp.select_control_point
             sel_l |= kp.select_left_handle
             sel_r |= kp.select_right_handle
@@ -1054,10 +1090,9 @@ class PathCache:
 
         keys = self.keys
         prev_k = keys[i - 1] if i > 0 else None
+        # (a side has a handle if one of the curves has a Bezier segment there - see bez_l / bez_r)
         has_left = k.dt_l > EPS and (prev_k is not None or self.cyclic)
-        if prev_k is not None and prev_k.interp != 'BEZIER':
-            has_left = False
-        has_right = k.dt_r > EPS and (i < len(keys) - 1 or self.cyclic) and k.interp == 'BEZIER'
+        has_right = k.dt_r > EPS and (i < len(keys) - 1 or self.cyclic)
         if self.ptype == SCALE:
             has_left = has_right = False    # scale is edited by size, not by handles in space
         k.hl = self.handle_point(tg, k, 'L') if has_left else None
@@ -1157,6 +1192,7 @@ def write_handle(ch, k, side, slopes, dt, key_vals, htype=None, touched=None, on
     slopes and length. dt the key's own length on that side (dt_l / dt_r, an average over the
     channels): each channel keeps its own."""
     own = (k.dts_r if side == 'R' else k.dts_l) if abs(dt - (k.dt_r if side == 'R' else k.dt_l)) < 1e-9 else None
+    own = own if own is None or any(d > EPS for d in own) else None
     for c, fc in enumerate(ch.fcurves):
         idx = k.idx[c] if c < len(k.idx) else -1
         if fc is None or idx < 0 or (only is not None and c not in only):
@@ -1166,6 +1202,8 @@ def write_handle(ch, k, side, slopes, dt, key_vals, htype=None, touched=None, on
         dt_c = dt
         if own is not None and c < len(own) and own[c] > EPS:
             dt_c = own[c]
+        if dt_c <= EPS:
+            continue            # (no handle length on that side: nothing to write)
         y = key_vals[c] - (k.offs[c] if k.offs else 0.0)
         if htype is not None:
             if side == 'R':
