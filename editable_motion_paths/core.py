@@ -245,7 +245,7 @@ class Target:
 class KeyData:
     __slots__ = ("t", "idx", "vals", "co", "hl", "hr", "dt_l", "dt_r", "s_l", "s_r",
                  "vp", "sel", "sel_l", "sel_r", "type_l", "type_r", "interp", "dir_l", "dir_r",
-                 "partial", "cat_l", "cat_r", "offs", "hidden", "piece")
+                 "partial", "cat_l", "cat_r", "offs", "hidden", "piece", "dts_l", "dts_r", "types_l", "types_r")
 
     def __init__(self, t):
         self.t = t
@@ -273,6 +273,13 @@ class KeyData:
         self.offs = None        # per channel: evaluated value minus stored key value (cycle offset)
         self.hidden = False     # hidden with H: not drawn, not selectable
         self.piece = 0          # keys joined by visible segments share a piece (Ctrl+L, L)
+        # per channel: the handles' own time lengths and types (dt_l / dt_r, type_l / type_r are
+        # what the path shows: an average, the first channel's) - a handle edit keeps each
+        # channel's own, or the first move would make them all alike (the curve jumps)
+        self.dts_l = None
+        self.dts_r = None
+        self.types_l = None
+        self.types_r = None
 
     @property
     def any_sel(self):
@@ -328,6 +335,66 @@ def _sync_cycle_partner(fc, idx, d):
     kp.co = (x, y + d)
     kp.handle_left = (hl[0], hl[1] + d)
     kp.handle_right = (hr[0], hr[1] + d)
+
+
+AUTO_HANDLES = {'AUTO', 'AUTO_CLAMPED'}
+
+
+def _cycle_partner(fc, idx):
+    """The other end's key of a loop (first <-> last; not a mirrored loop) and its index, or None."""
+    if fc is None or cycle_info(fc) is None:
+        return None
+    if any(m.type == 'CYCLES' and not m.mute and 'MIRROR' in (m.mode_before, m.mode_after) for m in fc.modifiers):
+        return None
+    n = len(fc.keyframe_points)
+    j = n - 1 if idx == 0 else 0 if idx == n - 1 else None
+    if j is None or j == idx:
+        return None
+    kp = fc.keyframe_points[j]
+    if round(kp.co[0], FRAME_ROUND) in cycle_skip:
+        return None
+    return kp
+
+
+def _freeze_partner(fc, idx, sides):
+    """A loop end's handle stops being auto: the other end's auto handles keep where they are
+    (Blender would work them out again from the changed end, and the curve would jump)."""
+    kp = _cycle_partner(fc, idx)
+    if kp is None:
+        return
+    hl, hr = tuple(kp.handle_left), tuple(kp.handle_right)
+    for side in sides:
+        if side == 'L' and kp.handle_left_type in AUTO_HANDLES:
+            kp.handle_left_type = 'ALIGNED'
+        if side == 'R' and kp.handle_right_type in AUTO_HANDLES:
+            kp.handle_right_type = 'ALIGNED'
+    kp.handle_left, kp.handle_right = hl, hr
+
+
+def _sync_cycle_handle(fc, idx, side, slope, htype, old_slope=None):
+    """A handle of a loop's first / last key: the other end's handle on the same side follows it
+    (the same slope and type: the loop stays smooth where it joins) - if it did so far; if the
+    join had a corner already, the other end only stays as it is (no jump)."""
+    kp = _cycle_partner(fc, idx)
+    if kp is None:
+        return
+    x, y = kp.co
+    d = kp.handle_right[0] - x if side == 'R' else x - kp.handle_left[0]
+    if d > EPS and old_slope is not None:
+        cur = (kp.handle_right[1] - y) / d if side == 'R' else (y - kp.handle_left[1]) / d
+        if abs(cur - old_slope) > 1e-4 * max(1.0, abs(old_slope)):
+            _freeze_partner(fc, idx, (side,))
+            return
+    if side == 'R':
+        if htype is not None:
+            kp.handle_right_type = htype
+        if d > EPS:
+            kp.handle_right = (x + d, y + slope * d)
+    else:
+        if htype is not None:
+            kp.handle_left_type = htype
+        if d > EPS:
+            kp.handle_left = (x - d, y - slope * d)
 
 
 def _fmod_signature(m):
@@ -926,6 +993,10 @@ class PathCache:
         s_r = [0.0] * ch.count
         dts_l = []
         dts_r = []
+        k.dts_l = [0.0] * ch.count
+        k.dts_r = [0.0] * ch.count
+        k.types_l = [None] * ch.count
+        k.types_r = [None] * ch.count
         first = None
         sel = sel_l = sel_r = False
         for c, fc in enumerate(ch.fcurves):
@@ -951,12 +1022,16 @@ class PathCache:
                 k.offs[c] = fc.evaluate(t) - y
             hlx, hly = kp.handle_left
             hrx, hry = kp.handle_right
+            k.types_l[c] = kp.handle_left_type
+            k.types_r[c] = kp.handle_right_type
             if x - hlx > EPS:
                 s_l[c] = (y - hly) / (x - hlx)
                 dts_l.append(x - hlx)
+                k.dts_l[c] = x - hlx
             if hrx - x > EPS:
                 s_r[c] = (hry - y) / (hrx - x)
                 dts_r.append(hrx - x)
+                k.dts_r[c] = hrx - x
             sel |= kp.select_control_point
             sel_l |= kp.select_left_handle
             sel_r |= kp.select_right_handle
@@ -1002,6 +1077,14 @@ class PathCache:
         sign = 1.0 if side == 'R' else -1.0
         ref = self.handle_vals(k, side, None, dt)
         vals = self.solve(tg, k.t, W, ref, dt * sign, k.vp)
+        old = k.s_r if side == 'R' else k.s_l
+        if old and len(old) == len(vals) and self.ptype == ROTATION:
+            # relative to what the solve gives for the handle as it is: a solve isn't an exact
+            # inverse of a rotation (quaternions get normalized), so the first move would jump
+            base = self.solve(tg, k.t, self.handle_point(tg, k, side, None, dt), ref, dt * sign, k.vp)
+            kv = k.vals
+            return [s0 + ((v - b) - (kvn - kv0)) * sign / dt
+                    for s0, v, b, kvn, kv0 in zip(old, vals, base, key_vals, kv)]
         return [(hv - v) * sign / dt for hv, v in zip(vals, key_vals)]
 
 
@@ -1062,14 +1145,20 @@ def write_key(ch, k, vals, move_handles=True, touched=None):
             touched.add(fc)
 
 
-def write_handle(ch, k, side, slopes, dt, key_vals, htype=None, touched=None):
-    """Set one handle side on all channels of key k to the given slopes and length."""
+def write_handle(ch, k, side, slopes, dt, key_vals, htype=None, touched=None, only=None):
+    """Set one handle side on all channels of key k (or the channels in `only`) to the given
+    slopes and length. dt the key's own length on that side (dt_l / dt_r, an average over the
+    channels): each channel keeps its own."""
+    own = (k.dts_r if side == 'R' else k.dts_l) if abs(dt - (k.dt_r if side == 'R' else k.dt_l)) < 1e-9 else None
     for c, fc in enumerate(ch.fcurves):
         idx = k.idx[c] if c < len(k.idx) else -1
-        if fc is None or idx < 0:
+        if fc is None or idx < 0 or (only is not None and c not in only):
             continue
         kp = fc.keyframe_points[idx]
         x = kp.co[0]
+        dt_c = dt
+        if own is not None and c < len(own) and own[c] > EPS:
+            dt_c = own[c]
         y = key_vals[c] - (k.offs[c] if k.offs else 0.0)
         if htype is not None:
             if side == 'R':
@@ -1077,9 +1166,11 @@ def write_handle(ch, k, side, slopes, dt, key_vals, htype=None, touched=None):
             else:
                 kp.handle_left_type = htype
         if side == 'R':
-            kp.handle_right = (x + dt, y + slopes[c] * dt)
+            kp.handle_right = (x + dt_c, y + slopes[c] * dt_c)
         else:
-            kp.handle_left = (x - dt, y - slopes[c] * dt)
+            kp.handle_left = (x - dt_c, y - slopes[c] * dt_c)
+        old = (k.s_r if side == 'R' else k.s_l) if (k.s_r if side == 'R' else k.s_l) else None
+        _sync_cycle_handle(fc, idx, side, slopes[c], htype, old[c] if old is not None and c < len(old) else None)
         if touched is not None:
             touched.add(fc)
 
@@ -1090,6 +1181,10 @@ def set_handle_types(ch, k, left=None, right=None, touched=None):
         if fc is None or idx < 0:
             continue
         kp = fc.keyframe_points[idx]
+        sides = [side for side, new, old in (('L', left, kp.handle_left_type), ('R', right, kp.handle_right_type))
+                 if new is not None and new not in AUTO_HANDLES and old in AUTO_HANDLES]
+        if sides:
+            _freeze_partner(fc, idx, sides)
         if left is not None and kp.handle_left_type != left:
             kp.handle_left_type = left
         if right is not None and kp.handle_right_type != right:

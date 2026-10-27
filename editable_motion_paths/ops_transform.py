@@ -336,15 +336,19 @@ def _side_type(k, side):
 
 
 def _handle_edit(cache, ch, k, side, slopes, touched):
-    """Write an edited handle, keeping the opposite one aligned unless broken."""
+    """Write an edited handle, keeping the opposite one aligned unless broken - channel by channel
+    (one curve's handles may be broken while another's are aligned: each keeps its own way)."""
     other = 'L' if side == 'R' else 'R'
-    t_this, t_other = _side_type(k, side), _side_type(k, other)
-    if t_this in {'FREE', 'VECTOR'} or t_other in {'FREE', 'VECTOR'}:
-        core.write_handle(ch, k, side, slopes, _side_dt(k, side), k.vals, 'FREE', touched)
-        return
-    core.write_handle(ch, k, side, slopes, _side_dt(k, side), k.vals, 'ALIGNED', touched)
-    if _side_dt(k, other) > core.EPS:
-        core.write_handle(ch, k, other, slopes, _side_dt(k, other), k.vals, 'ALIGNED', touched)
+    this_t = (k.types_r if side == 'R' else k.types_l) or [_side_type(k, side)] * ch.count
+    other_t = (k.types_l if side == 'R' else k.types_r) or [_side_type(k, other)] * ch.count
+    broken = {c for c in range(ch.count) if this_t[c] in {'FREE', 'VECTOR'} or other_t[c] in {'FREE', 'VECTOR'}}
+    joined = set(range(ch.count)) - broken
+    if broken:
+        core.write_handle(ch, k, side, slopes, _side_dt(k, side), k.vals, 'FREE', touched, only=broken)
+    if joined:
+        core.write_handle(ch, k, side, slopes, _side_dt(k, side), k.vals, 'ALIGNED', touched, only=joined)
+        if _side_dt(k, other) > core.EPS:
+            core.write_handle(ch, k, other, slopes, _side_dt(k, other), k.vals, 'ALIGNED', touched, only=joined)
 
 
 # ----------------------------------------------------------------------------
