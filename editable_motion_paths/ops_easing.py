@@ -163,7 +163,7 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         return self.execute(context)
 
     def _typing(self, context, st, event):
-        """Ctrl+click on a slider: its value typed in percent (Enter: set, Esc: leave it)."""
+        """A click on a slider: its value typed in percent (Enter: set, Esc: leave it)."""
         e = self._g['edit']
         t = event.type
         digits = {'ZERO': '0', 'ONE': '1', 'TWO': '2', 'THREE': '3', 'FOUR': '4', 'FIVE': '5', 'SIX': '6',
@@ -209,9 +209,16 @@ class EMP_OT_easing_preset(bpy.types.Operator):
                 g['x0'] = min(max(mx - g['move'][0], 4.0), max(region.width - w - 4.0, 4.0))
                 g['y0'] = min(max(my - g['move'][1], 4.0), max(region.height - _covered_top(context.area, region) - h - 4.0, 4.0))
             elif g['drag']:
-                _slider_from_mouse(context, st, g, g['drag'], mx)
+                if abs(mx - g['drag_x']) >= DRAG_PX or g.get('dragged'):
+                    g['dragged'] = True     # (moved: a drag - a click alone types a value, like Blender)
+                    _slider_from_mouse(context, st, g, g['drag'], mx)
         elif t == 'LEFTMOUSE' and v == 'RELEASE':
+            if g['drag'] and not g.get('dragged'):
+                # a click on a slider (no drag): type its value, like Blender's number fields
+                set_slider(st, g['drag'], g['drag_from'])
+                g['edit'] = {'key': g['drag'], 'text': ""}
             g['drag'] = None
+            g['dragged'] = False
             g['move'] = None
         elif t == 'LEFTMOUSE' and v == 'DOUBLE_CLICK' and hit is not None and hit[0] == 'ease':
             st.easing_type = hit[1]
@@ -238,7 +245,8 @@ class EMP_OT_easing_preset(bpy.types.Operator):
                 else:
                     g['drag'] = hit[1]
                     g['drag_from'] = slider_value(st, hit[1])
-                    _slider_from_mouse(context, st, g, hit[1], mx)
+                    g['drag_x'] = mx
+                    g['dragged'] = False
             elif hit[0] == 'ease':
                 st.easing_type = hit[1]                 # picked: the preview shows it, Apply puts it on
             elif hit[0] == 'invert' and st.easing_mode == 'TIMING':
@@ -415,11 +423,11 @@ TIPS = {
     ('preview', None): "The speed of the selected part: gray as it is now, blue with the easing (the picture "
                        "under the mouse, else the one picked). The light band: From - To",
     ('slider', 'strength'): "How much of the easing (0: the timing as it was). The mouse wheel too. "
-                            "Ctrl+click: type a value",
-    ('slider', 'from'): "Where the easing begins: before it the timing stays as it is. Ctrl+click: type a value",
-    ('slider', 'to'): "Where the easing ends: after it the timing stays as it is. Ctrl+click: type a value",
+                            "Click: type a value, drag: set it",
+    ('slider', 'from'): "Where the easing begins: before it the timing stays as it is. Click: type a value, drag: set it",
+    ('slider', 'to'): "Where the easing ends: after it the timing stays as it is. Click: type a value, drag: set it",
     ('slider', 'blend'): "How softly the eased part joins the timing kept as it is (at least two frames). "
-                         "Ctrl+click: type a value",
+                         "Click: type a value, drag: set it",
     ('invert', None): "Invert: the easing goes on outside From - To, the timing between them stays",
     ('apply', None): "Put the picked easing on the selected part (Enter). After it, the redo panel at the "
                      "bottom left has all the settings",
@@ -629,6 +637,9 @@ def set_slider(st, key, value):
     setattr(st, dict((k, p) for k, _l, p in SLIDERS)[key], value)
 
 
+DRAG_PX = 3        # a press on a slider becomes a drag once the mouse moves this far
+
+
 def _slider_from_mouse(context, st, g, key, mx):
     x, w = hit_box(context, g, 'slider', key)
     set_slider(st, key, (mx - x) / max(w, 1.0) * (0.5 if key == 'blend' else 1.0))
@@ -788,7 +799,7 @@ def draw_gallery(ctx, us):
     region = ctx.region
     room = region.height - _covered_top(ctx.area, region) if region is not None and ctx.area is not None else 1e9
     hint_y = g['y0'] + h + 12.0 * us if g['y0'] + h + 22.0 * us < room else g['y0'] - 12.0 * us
-    text("Click: pick (the preview shows it)     Enter / double click: apply     Ctrl+click a slider: type     "
+    text("Click: pick (the preview shows it)     Enter / double click: apply     Click a slider: type, drag: set     "
          "Drag its frame: move it     Esc: close", g['x0'] + w * 0.5, hint_y, size=10, col=(1.0, 1.0, 1.0, 0.7))
 
 

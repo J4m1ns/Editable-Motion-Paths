@@ -205,6 +205,13 @@ def _has_faces(o):
 _modes_cache = [None, 0.0, None]
 
 
+def _hiding():
+    """True while meshes are hidden for a moment (the ghosts', the center's, the paths' frame
+    stepping)."""
+    from . import com
+    return _busy or com.busy() or state.baking
+
+
 def modes(scene):
     """The onion modes that show something for what is ghosted now: Silhouette (something with
     faces), Wire and Points (meshes), Bones (armatures); only shapes of lines (cameras, lights,
@@ -212,8 +219,8 @@ def modes(scene):
     arms, objs = _edited(scene)
     key = (tuple(sorted(arms)), tuple(o.name for o in objs))
     now = time.time()
-    if _modes_cache[0] == key and now - _modes_cache[1] < 0.5:
-        return _modes_cache[2]
+    if _modes_cache[0] == key and (now - _modes_cache[1] < 0.5 or _hiding()):
+        return _modes_cache[2]      # (not while the meshes are hidden for stepping frames: none would show)
     targets = _targets(scene)
     out = []
     if any(how != 'LINES' and _has_faces(o) for o, _a, how in targets):
@@ -247,8 +254,8 @@ def _bone_shown(pb, st):
 
 def _bone_state(scene, st):
     """Which bones the Bones mode shows (it changes with the selection / visibility)."""
-    if st.onion_mode != 'BONES' and mode_used(scene, st) != 'BONES':
-        return None
+    if st.onion_mode != 'BONES':
+        return None     # (only the chosen mode: the fallback one may flicker while meshes are hidden)
     out = []
     for name in _edited(scene)[0]:
         obj = bpy.data.objects.get(name)

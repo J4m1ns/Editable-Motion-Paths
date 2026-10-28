@@ -807,7 +807,7 @@ def _turned(points, a, b, angle):
 class EMP_OT_circle(_LoopTool, bpy.types.Operator):
     """Put the selected keys on a perfect circular arc (LoopTools Circle). Angle turns the arc """ \
         """around the line between its ends (like a globe), Invert bends it the other way, Rotate """ \
-        """slides the keys along the circle (the arc swings to and fro)"""
+        """slides the keys along the circle (the arc swings back and forth)"""
     bl_idname = "emp.circle"
     bl_label = "Circle"
 
@@ -817,7 +817,7 @@ class EMP_OT_circle(_LoopTool, bpy.types.Operator):
                          description="Bend the arc the other way (concave becomes convex)")
     rotate: FloatProperty(name="Rotate", subtype='ANGLE', default=0.0, soft_min=-math.pi, soft_max=math.pi,
                           description="Turn the arc around the middle of the circle, across its plane: the "
-                                      "keys slide along the circle and the arc swings to and fro")
+                                      "keys slide along the circle and the arc swings back and forth")
     radius: FloatProperty(name="Radius", default=0.0, min=0.0, soft_max=10.0, unit='LENGTH',
                           description="Radius of the circle (0: fit to the keys)")
     regular: BoolProperty(name="Regular", default=False,

@@ -228,6 +228,20 @@ def build_elements(context, snapshots=None, created=None, connected=None, ensure
         if ensure and sel_keys and core.ensure_keys(tg, cache.ptype, [k.t for k in sel_keys], created, pin):
             cache.refresh(force=True)
             tg = cache.target()
+        if ensure and cache.ptype != core.SCALE:
+            # a handle dragged next to a Linear segment of some curves: that segment turns Bezier (the
+            # motion stays) so the handle moves freely, not only along the other curves
+            turned = set()
+            ch = tg.channels(cache.ptype)
+            for k in cache.keys:
+                if not k.sel:
+                    for side, on in (('L', k.sel_l and k.hl is not None), ('R', k.sel_r and k.hr is not None)):
+                        if on:
+                            core.bezier_side(ch, k, side, turned)
+            if turned:
+                core.update_fcurves(turned)
+                cache.refresh(force=True)
+                tg = cache.target()
         elems = []
         for k in cache.keys:
             center = None

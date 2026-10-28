@@ -106,6 +106,28 @@ def _refresh(self, context):
     state.tag_redraw()
 
 
+_local_busy = [False]
+
+
+def _local_changed(self, context):
+    """Global / Local of a path in the list: the paths being edited (highlighted) take it too, when
+    this one is one of them - like setting a property with several objects selected."""
+    if not _local_busy[0]:
+        _local_busy[0] = True
+        try:
+            st = state.settings(context.scene if context else None)
+            mine = state.caches.get(state.entry_key(self)) if self.object is not None else None
+            if st is not None and mine is not None and mine.owner_selected():
+                for e in st.paths:
+                    if e != self and e.object is not None and e.local != self.local:
+                        c = state.caches.get(state.entry_key(e))
+                        if c is not None and c.owner_selected():
+                            e.local = self.local
+        finally:
+            _local_busy[0] = False
+    _refresh(self, context)
+
+
 _last_channels = [True, True, True, True]
 
 
@@ -168,11 +190,12 @@ class EMP_PathEntry(bpy.types.PropertyGroup):
     value_index: IntProperty(name="Index", update=_mode_changed)
     hidden_keys: StringProperty(options={'HIDDEN'}, update=_mode_changed,
                                 description="Frames of hidden keys (H / Alt+H)")
-    local: BoolProperty(name="Local", default=False, update=_refresh,
+    local: BoolProperty(name="Local", default=False, update=_local_changed,
                         description="Global: the motion in the world (the parents' motion is in the path). "
                                     "Local: only this bone's / object's own motion - the path is drawn in its "
                                     "parent's space as it is on the current frame, so it moves along with the "
-                                    "parent and the parent's motion isn't in it")
+                                    "parent and the parent's motion isn't in it. The paths being edited "
+                                    "(highlighted) all take it; drag over the icons to set several")
 
 
 class EMP_Settings(bpy.types.PropertyGroup):

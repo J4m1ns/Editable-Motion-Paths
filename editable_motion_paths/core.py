@@ -1220,6 +1220,47 @@ def write_handle(ch, k, side, slopes, dt, key_vals, htype=None, touched=None, on
             touched.add(fc)
 
 
+def bezier_side(ch, k, side, touched=None):
+    """A handle of key k is edited: where a curve's segment on that side is Linear, it becomes
+    Bezier with its handles on the straight line (a third of the way in from each end) - the
+    motion doesn't change, but the handle now shapes it on every curve (it moved only the others
+    before). Constant segments stay. Returns True if any segment was turned."""
+    turned = False
+    for c, fc in enumerate(ch.fcurves):
+        idx = k.idx[c] if c < len(k.idx) else -1
+        if fc is None or idx < 0:
+            continue
+        kps = fc.keyframe_points
+        j = idx - 1 if side == 'L' else idx + 1
+        if not 0 <= j < len(kps):
+            continue
+        a, b = (kps[j], kps[idx]) if side == 'L' else (kps[idx], kps[j])
+        if a.interpolation != 'LINEAR':
+            continue
+        (x0, y0), (x1, y1) = a.co, b.co
+        if x1 - x0 < EPS:
+            continue
+        d = (x1 - x0) / 3.0
+        slope = (y1 - y0) / (x1 - x0)
+        # (the ends' other handles stay exactly where they are: auto ones would be worked out again
+        # from the new handles - so they turn free too, and the two keys' handles are broken here)
+        keep = (tuple(a.handle_left), tuple(b.handle_right))
+        if a.handle_left_type in AUTO_HANDLES or a.handle_left_type == 'ALIGNED':
+            a.handle_left_type = 'FREE'
+        if b.handle_right_type in AUTO_HANDLES or b.handle_right_type == 'ALIGNED':
+            b.handle_right_type = 'FREE'
+        a.interpolation = 'BEZIER'
+        a.handle_right_type = 'FREE'
+        b.handle_left_type = 'FREE'
+        a.handle_left, b.handle_right = keep
+        a.handle_right = (x0 + d, y0 + slope * d)
+        b.handle_left = (x1 - d, y1 - slope * d)
+        turned = True
+        if touched is not None:
+            touched.add(fc)
+    return turned
+
+
 def set_handle_types(ch, k, left=None, right=None, touched=None):
     for c, fc in enumerate(ch.fcurves):
         idx = k.idx[c] if c < len(k.idx) else -1
