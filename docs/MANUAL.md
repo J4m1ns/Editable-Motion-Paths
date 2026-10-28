@@ -17,7 +17,7 @@ Edit > Preferences > Get Extensions > **Install from Disk…** → choose
 `editable_motion_paths-2.0.0.zip`.
 
 To remove it: Edit > Preferences > **Get Extensions**, find *Editable Motion Paths* among the
-installed ones, and in the ⌄ menu at the right of its row choose **Uninstall** (Blender shows no
+installed ones, and in the dropdown menu at the right of its row choose **Uninstall** (Blender shows no
 Remove button for extensions in the Add-ons tab).
 
 ## Quick start
@@ -149,8 +149,7 @@ leaves the curves exactly as they were.
 * **Delete** removes keys; the other keys keep their handle types.
 * **Dissolve** removes keys and refits only the handle *lengths* of the two keys around them,
   keeping their direction, so nothing outside those two keys moves. If plain Delete would be
-  as close, it does that instead, so Dissolve is never worse than Delete (in tests usually
-  5–10× closer to the original).
+  as close, it does that instead, so Dissolve is never worse than Delete.
 * Moving rotation keys moves their handles with them on every channel, exactly like in the
   Graph Editor.
 
@@ -174,8 +173,9 @@ That is Blender's own behaviour. To keep edits local, turn it off:
 * **Frame dots** are handles for the spacing: drag one along the path. The **timing chart** in
   the bottom right corner of the viewport (a dark block like the speed graph's; with both on,
   one block) shows where every frame lies between the selected
-  keys (one key: the segments around it; none: the keys around the current frame), like an
-  animator's chart; drag its ticks the same way. The **speed graph** (on by default) sits
+  keys (one key: the segments around it; none: the keys around the current frame), like the
+  timing charts animators draw next to their keys in 2D (a line with a tick for every frame);
+  drag its ticks the same way. The **speed graph** (on by default) sits
   right above it, as wide as the chart: for the selected keys, the segments on both sides of a
   single selected key, or the keys around the current frame (*Segment*), a set frame range
   (*Range*) or the scene's frame range (*Timeline*). Keys are marked on it with their frame
@@ -265,8 +265,8 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   From - To, and the timing between them stays. **P** opens them as a gallery under the mouse: a
   **preview** of the selected part's speed (now in gray, with the easing in blue) shows what a
   picture does as soon as the mouse is on it; click a picture to pick it, tune *Strength*,
-  *From*, *To*, *Blend*, *Invert* while watching the preview (drag a slider, or Ctrl+click it to type a
-  value; a right click while dragging puts it back), then **Apply** (or Enter, or double-click the
+  *From*, *To*, *Blend*, *Invert* while watching the preview (drag a slider, or click it to type a
+  value - like Blender's number fields; a right click while dragging puts it back), then **Apply** (or Enter, or double-click the
   picture). Resting the mouse on anything in the gallery shows what it does. The redo panel has all the settings after that.
 
 ## Shape tools
@@ -274,10 +274,12 @@ That is Blender's own behaviour. To keep edits local, turn it off:
 * **Smooth** (Shape: removes bumps, keeps arcs and timing; Time: evens out the keys) and
   **Exaggerate** (more or less bend relative to the neighbors or the center). Drag left /
   right; negative values sharpen or tone down.
-* **Bevel**, **Spin** (continue the motion on an arc around the 3D cursor: orbits, swings).
+* **Bevel** (Ctrl+B): rounds a sharp corner at the selected keys into a curve (the wheel or S: how many
+  keys the arc gets).
+* **Spin**: continues the motion on an arc around the 3D cursor (orbits, swings).
 * **LoopTools**: *Circle* (a perfect arc; *Angle* turns it around the line between its ends,
   *Invert* bends it the other way, *Rotate* slides the keys along the circle so the arc swings
-  to and fro, *Radius*, *Regular* spacing, *Smooth Ends*: the path around turns to meet the arc
+  back and forth, *Radius*, *Regular* spacing, *Smooth Ends*: the path around turns to meet the arc
   without kinks), *Arc* (one smooth arc that
   follows the shape and flows on into the path around it without kinks; *Bulge*, *Smooth
   Ends*), *Flatten* (one plane: best fit or facing the view), *Straighten* (a line),
@@ -354,7 +356,7 @@ inverts it - like Invert Mask in Sculpt Mode).
 
 ## Onion skinning
 
-The onion button in the tool header (its ⌄ arrow: the settings) shows ghosts of the edited bones
+The onion button in the tool header (the dropdown menu next to it: the settings) shows ghosts of the edited bones
 / objects - or, with no path shown, of the selection - on the frames around the current one: on
 the keys (with a key on every frame, at least 4 frames apart; looping curves - a Cycles modifier
 - go on into the next and the previous loop), or every few frames (before /
@@ -405,7 +407,8 @@ changes (a pose that isn't keyed is gone then, and so is its preview).
 
 ## Center of mass
 
-The button next to the onion one (a ring with an arrow down; its ⌄ arrow: the settings) shows
+The button next to the onion one (a ring with an arrow down; the dropdown menu next to it: the
+settings) shows
 where the character's weight is - a guide for believable poses; it changes nothing. It works
 for the edited armature or the active one, with or without a path:
 
@@ -525,8 +528,8 @@ trajectories, key controls in world space, `jitter()`, move keys in world space,
 `change_speed` / `smooth_speed`, `onion` and `center_of_mass`. Each call is one undo step.
 `render_view()` renders the view with the overlay for an assistant that can read images;
 `preview_objects()` builds the paths as real geometry so they show up in other screenshots. See
-[AI_GUIDE.md](../AI_GUIDE.md); you can give it to Claude in a chat connected to Blender through MCP.
+[API_GUIDE.md](../API_GUIDE.md); you can give it to Claude in a chat connected to Blender through MCP.
 
 To change the add-on itself or build on it in a fork, start with
-[AI_DEV_GUIDE.md](../AI_DEV_GUIDE.md): how it is built, the conventions, a worked example and how to
+[DEV_GUIDE.md](../DEV_GUIDE.md): how it is built, the conventions, a worked example and how to
 test - written so an AI assistant without any other context can work on the code too.

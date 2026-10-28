@@ -5,6 +5,9 @@ a curve you can grab: keys are points, handles are Bezier handles, and G / R / S
 proportional editing, extrude, knife and bevel work on it the way they do in Edit Mode. Every
 change goes straight into the F-Curves - you may never open the Graph Editor again.
 
+**No setup required:** it works on the rig you already have - any bones, constraints, IK,
+drivers, controls - and on plain objects. Nothing to add to the rig, nothing to bake.
+
 ![Dragging a key of a hand's arc: the motion, its spacing and the onion ghosts follow live](docs/media/hero.gif)
 
 Free and open source, for Blender 4.4 and newer (tested on 4.4 and 5.2). Designed by an animator,
@@ -45,13 +48,15 @@ a library override, with its constraints, drivers and IK.
 
 **Ready for AI assistants.** A Python API lets an assistant such as Claude (through Blender MCP)
 read the motion (`analyze`), see it (`render_view`) and edit it in world space - see
-[AI_GUIDE.md](AI_GUIDE.md).
+[API_GUIDE.md](API_GUIDE.md).
 
 ## Install
 
 1. Download `editable_motion_paths-2.0.0.zip` from the [Releases](../../releases).
 2. Blender: *Edit > Preferences > Get Extensions > Install from Disk…* and
    choose the zip.
+
+Works on Blender **4.4 and newer**: the whole test suite runs on both 4.4 and 5.2.
 
 ## Quick start
 
@@ -77,13 +82,23 @@ Everything else - every tool, setting and hotkey - is in the **[manual](docs/MAN
 
 ## Support the project
 
-The add-on is free and will stay free. If it saves you time and you'd like to say thanks, I'd be
-very grateful:
+The add-on is free and will stay free. What helps it most:
 
-USDT (TRC20): `TUX1J4TEwDJNWNfjZUw6TocroKFPFz5B8F`
+* **Bug reports and feedback** - [open an issue](../../issues/new/choose); the form asks for
+  everything needed to track a bug down.
+* **Difficult rigs**, if you can share them: unusual constraints, space switches, drivers,
+  heavy characters. Every rig that breaks something makes the add-on better for everyone.
 
-Bug reports and ideas help just as much - [open an issue](../../issues/new/choose); the form asks
-for everything needed to track a bug down.
+And if it saves you time and you'd like to say thanks, I'd be very grateful for a donation:
+
+> **USDT (TRC20)** - TRON network only
+>
+> ```
+> TUX1J4TEwDJNWNfjZUw6TocroKFPFz5B8F
+> ```
+>
+> <img src="docs/media/usdt-trc20-qr.svg" alt="QR code of the USDT TRC20 address" width="160">
+
 
 ## How it was made
 
@@ -95,7 +110,7 @@ ideas and the decisions are mine, the development is Claude's.
 
 ## For developers
 
-[AI_DEV_GUIDE.md](AI_DEV_GUIDE.md) explains how the add-on is built, its conventions and how to
+[DEV_GUIDE.md](DEV_GUIDE.md) explains how the add-on is built, its conventions and how to
 test changes - written so that a person or an AI assistant can fork it and add features without
 any other context.
 

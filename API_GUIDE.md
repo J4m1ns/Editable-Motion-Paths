@@ -1,4 +1,4 @@
-# Editable Motion Paths: guide for AI assistants (Claude via Blender MCP)
+# Editable Motion Paths: API guide (scripts and AI assistants, e.g. Claude via Blender MCP)
 
 Paste this into a chat (or project instructions) where Claude controls Blender through the
 Blender MCP add-on. The **Editable Motion Paths** extension must be installed and enabled.

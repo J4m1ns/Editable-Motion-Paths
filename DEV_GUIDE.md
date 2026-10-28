@@ -1,10 +1,10 @@
-# Editable Motion Paths: developer guide (for people and AI assistants forking the add-on)
+# Editable Motion Paths: developer guide (for people and AI assistants changing the add-on)
 
 This file explains how the add-on is built, so you (or an AI assistant you work with) can change
 it or add features on top of it without having seen the project before. Read it once from top to
 bottom before changing code. `README.md` is the short tour for animators and `docs/MANUAL.md`
 describes every tool, setting and hotkey;
-`AI_GUIDE.md` describes the scripting API for AI assistants that *use* the add-on. This file is
+`API_GUIDE.md` describes the scripting API for AI assistants that *use* the add-on. This file is
 about the code.
 
 ## 1. What the add-on is
@@ -52,7 +52,7 @@ editable_motion_paths/          the extension (this folder is what gets zipped)
   onion.py, com.py              onion skinning, center of mass (background work, own draw passes)
   icons/                        PNG icons (brushes, easing gallery)
 README.md (the short tour), docs/MANUAL.md (everything), docs/media/ (the README's GIFs),
-AI_GUIDE.md, AI_DEV_GUIDE.md, LICENSE (GPL-3.0-or-later)
+API_GUIDE.md, DEV_GUIDE.md, LICENSE (GPL-3.0-or-later)
 ```
 
 | module | what it holds |
@@ -221,7 +221,7 @@ Functions an AI assistant (or a script) calls. Conventions, so it stays easy for
   they were) and runs the operator in a 3D-view context. Each call is one undo step
   (`_push(message)` for edits that don't go through an operator).
 * Return plain Python data (dicts / lists / numbers) a model can read; round numbers.
-* Document every new function in `AI_GUIDE.md` with a one-line example.
+* Document every new function in `API_GUIDE.md` with a one-line example.
 
 ## 8. Adding a feature: a worked example
 
@@ -253,7 +253,7 @@ Functions an AI assistant (or a script) calls. Conventions, so it stays easy for
    and add it to that module's `classes`.
 2. **UI**: a line in the Timing menu (`EMP_MT_timing.draw`), maybe the sidebar.
 3. **API** (optional): `def reverse_keys(obj, bone=None, frames=None, mode=None): return
-   _run_op(bpy.ops.emp.reverse_keys, frames, obj, bone, mode)` + a line in `AI_GUIDE.md`.
+   _run_op(bpy.ops.emp.reverse_keys, frames, obj, bone, mode)` + a line in `API_GUIDE.md`.
 4. **Docs**: a sentence in `docs/MANUAL.md` where the Timing menu is described (the README only
    lists the highlights).
 5. **Test** (section 9): keys at 1, 5, 20 selected -> keys at 1, 16, 20, the pose of frame 20 now
