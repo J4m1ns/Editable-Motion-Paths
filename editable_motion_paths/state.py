@@ -764,6 +764,21 @@ def _moved(depsgraph):
 
 
 @persistent
+def _on_frame(scene, *_args):
+    """The frame changed. In the interface this comes after the frame's update (which is told
+    apart by the frame it is on); a script's frame_set sends no update of its own - an edit after
+    it comes on the new frame and is an edit (not a frame change)."""
+    global _dg_frame_all
+    from . import onion
+    if baking or onion.busy():
+        return
+    _dg_frame_all = scene.frame_current
+    if settings(scene) is not None and (settings(scene).show_onion or settings(scene).show_com):
+        global _dg_frame
+        _dg_frame = scene.frame_current
+
+
+@persistent
 def _on_depsgraph(scene, depsgraph):
     from . import onion
     from . import com
@@ -774,13 +789,16 @@ def _on_depsgraph(scene, depsgraph):
         return
     if st.show_onion or st.show_com:
         global _dg_frame
-        # a mesh edited (Edit Mode, weight paint, normals flipped...): its ghost shape is made again
-        edited = {u.id.original.name for u in depsgraph.updates
-                  if isinstance(u.id, bpy.types.Mesh) and u.is_updated_geometry}
-        if edited:
-            onion.meshes_changed(edited)
         f = scene.frame_current
         playing = bpy.context.screen is not None and bpy.context.screen.is_animation_playing
+        # a mesh edited (Edit Mode, weight paint, normals flipped...): its ghost shape is made again
+        # (on the same frame only: a frame change bends meshes by their shape keys, no edit)
+        edited = {u.id.original.name for u in depsgraph.updates
+                  if isinstance(u.id, bpy.types.Mesh) and u.is_updated_geometry}             if f == _dg_frame and not playing else set()
+        if edited:
+            # (shape keys updated along with their mesh: the rig moved them - no edit)
+            keys = {u.id.original.name for u in depsgraph.updates if isinstance(u.id, bpy.types.Key)}
+            onion.meshes_changed(edited, keys)
         if not playing and f == _dg_frame and not modal_running:
             # (a frame change also updates the objects: only changes on the same frame count)
             if any(isinstance(u.id, bpy.types.Object) and (u.is_updated_transform or u.is_updated_geometry)
@@ -794,6 +812,8 @@ def _on_depsgraph(scene, depsgraph):
     global _dg_frame_all
     same_frame = scene.frame_current == _dg_frame_all
     _dg_frame_all = scene.frame_current
+    if not same_frame:
+        return      # (a frame change reports the actions as updated too: no curve changed)
     if not caches or not st.auto_update:
         # no path: the ghosts and the center of mass still follow the animation
         if st.show_onion or st.show_com:
@@ -1170,6 +1190,7 @@ def register():
     VIEW_SETTINGS.update(p.identifier for p in EMP_Settings.bl_rna.properties
                          if p.identifier not in _UNDONE_SETTINGS and not p.is_readonly)
     bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph)
+    bpy.app.handlers.frame_change_post.append(_on_frame)
     bpy.app.handlers.undo_pre.append(_before_undo)
     bpy.app.handlers.redo_pre.append(_before_undo)
     bpy.app.handlers.undo_post.append(_on_undo)
@@ -1181,6 +1202,7 @@ def register():
 
 def unregister():
     for lst, fn in ((bpy.app.handlers.depsgraph_update_post, _on_depsgraph),
+                    (bpy.app.handlers.frame_change_post, _on_frame),
                     (bpy.app.handlers.undo_post, _on_undo),
                     (bpy.app.handlers.undo_pre, _before_undo),
                     (bpy.app.handlers.redo_pre, _before_undo),

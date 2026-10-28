@@ -479,6 +479,8 @@ def _build(o, arm, how, st, dg):
     p = _Proxy(o.name, how)
     p.sig = sig
     p.arm = arm.name if arm else None
+    if hasattr(getattr(o, "data", None), "vertices"):
+        _content[o.data.name] = _mesh_content(o.data)    # (what an edit of it is told by)
     if how == 'LINES':
         p.co, p.edges = _lines_shape(o)
         p.tri = np.zeros((0, 3), dtype=np.int64)
@@ -744,15 +746,42 @@ def clear():
 def clear_all():
     clear()
     _proxies.clear()
+    if state.settings() is not None and state.settings().show_onion:
+        _schedule(0.05)         # (made again right away, not only at the next redraw)
 
 
-def meshes_changed(mesh_names):
-    """These meshes were edited (their shape, weights, normals...): their proxies are made again
-    (the vertex count alone doesn't tell)."""
+_EDITING = {'EDIT', 'WEIGHT_PAINT', 'SCULPT', 'VERTEX_PAINT', 'TEXTURE_PAINT'}
+_content = {}           # mesh name -> its own shape as last seen (see _mesh_content)
+
+
+def _mesh_content(me):
+    """The mesh's own shape (not what shape keys / modifiers make of it): vertex and face count and
+    the vertices' places."""
+    import numpy as np
+    n = len(me.vertices)
+    co = np.empty(n * 3, dtype=np.float32)
+    me.vertices.foreach_get("co", co)
+    return (n, len(me.polygons), hash(co.tobytes()))
+
+
+def meshes_changed(mesh_names, keys_moved=()):
+    """These meshes were edited (their shape, weights, normals...): their proxies are made again.
+    Blender says a mesh's geometry changed also when only its shape keys move (driven by the rig,
+    on every frame): that isn't an edit - only a mesh being edited / painted, whose own shape
+    changed, or that changed without its shape keys moving (weights set by a script) counts.
+    keys_moved: the shape keys (Key datablocks) updated along with it."""
     gone = []
     for name in list(_proxies):
         o = bpy.data.objects.get(name)
-        if o is not None and getattr(o.data, "name", None) in mesh_names:
+        me = getattr(o, "data", None) if o is not None else None
+        if me is None or getattr(me, "name", None) not in mesh_names or not hasattr(me, "vertices"):
+            continue
+        now = _mesh_content(me)
+        before = _content.get(me.name)
+        _content[me.name] = now
+        sk = getattr(me, "shape_keys", None)
+        driven = sk is not None and sk.name in keys_moved
+        if o.mode in _EDITING or (before is not None and before != now) or not driven:
             gone.append(name)
             del _proxies[name]
     if gone:
