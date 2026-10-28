@@ -1258,6 +1258,22 @@ def bezier_side(ch, k, side, touched=None):
         turned = True
         if touched is not None:
             touched.add(fc)
+    if turned:
+        # (the key's handles are broken now on the turned curves: so on every curve, or dragging one
+        # handle would still swing the other one on the curves that were aligned)
+        for c, fc in enumerate(ch.fcurves):
+            idx = k.idx[c] if c < len(k.idx) else -1
+            if fc is None or idx < 0:
+                continue
+            kp = fc.keyframe_points[idx]
+            hl, hr = tuple(kp.handle_left), tuple(kp.handle_right)
+            if kp.handle_left_type != 'VECTOR':
+                kp.handle_left_type = 'FREE'
+            if kp.handle_right_type != 'VECTOR':
+                kp.handle_right_type = 'FREE'
+            kp.handle_left, kp.handle_right = hl, hr
+            if touched is not None:
+                touched.add(fc)
     return turned
 
 

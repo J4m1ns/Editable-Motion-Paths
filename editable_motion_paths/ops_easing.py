@@ -191,6 +191,17 @@ class EMP_OT_easing_preset(bpy.types.Operator):
         mx, my = event.mouse_region_x, event.mouse_region_y
         if g.get('edit') and v == 'PRESS' and t not in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE', 'LEFTMOUSE'}:
             return self._typing(context, st, event)
+        if g.get('edit') and t == 'LEFTMOUSE' and v in {'PRESS', 'DOUBLE_CLICK'}:
+            # a click anywhere while typing sets the value typed (like leaving a Blender field)
+            e = g['edit']
+            if e['text']:
+                try:
+                    set_slider(st, e['key'], float(e['text']) / 100.0)
+                except ValueError:
+                    pass
+            g['edit'] = None
+            state.tag_redraw()
+            return {'RUNNING_MODAL'}
         hit = gallery_hit(context, g, mx, my)
         if t == 'TIMER':
             if g['hover'] is not None and not g.get('tip') and time.time() - g['since'] >= TIP_DELAY:
