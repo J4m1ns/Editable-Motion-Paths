@@ -343,7 +343,11 @@ Its header also has the onion skin, center of mass, display and modifier buttons
   the keys under the brush is smoothed out first (each key follows a curve through the keys
   around it over about that many frames - arcs keep their shape), then the keys the smooth motion
   doesn't need go, the *Tolerance* counting from the smooth motion. 1-3 frames removes the usual
-  mocap jitter. The old path shows as a ghost while you paint, and one note at the end says how
+  mocap jitter. In mocap every bone trembles, and a path shows the tremble of everything it
+  hangs from: Smooth also smooths the bone's other channels (its location in a rotation path)
+  and, with *Smooth Parents* (on), the bones above it (shoulder, chest...) over the same frames -
+  their keys stay, only the path's own keys are dissolved. (The path shows the parents' change
+  once the stroke ends and it is worked out again.) The old path shows as a ghost while you paint, and one note at the end says how
   many keys went and how far the path moved. The ends of the path stay.
 
 **F**: radius, **Shift+F**: strength (shown like Blender's radial control), **Ctrl**: the

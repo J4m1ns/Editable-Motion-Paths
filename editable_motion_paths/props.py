@@ -177,6 +177,11 @@ class EMP_BrushSettings(bpy.types.PropertyGroup):
                     "about this many frames around each key; then the keys the smooth motion doesn't need "
                     "go (the Tolerance counts from the smooth motion). 0: off - only keys go, the motion "
                     "stays exactly as it was")
+    dissolve_smooth_parents: BoolProperty(
+        name="Smooth Parents", default=True,
+        description="Dissolve with Smooth: also smooth the bones it hangs from (the shoulder, the chest...) over "
+                    "the same frames - in mocap every bone trembles, and the path shows them all. Their keys "
+                    "stay (only this path's keys are dissolved)")
     dissolve_keep_timing: BoolProperty(
         name="Keep Timing", default=True,
         description="Dissolve: the timing must stay too (where the bone is on every frame). Off: only "
