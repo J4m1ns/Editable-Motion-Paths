@@ -1186,8 +1186,9 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
         state.speed_reach = (self.c.key, self.tc, s, s)
         self.area.header_text_set(
             "Smooth Speed: right-drag over the bumps (as often as you like)   radius %.1f frames (wheel)   "
-            "Esc: take the strokes back%s   Enter / click: done" % (
-                self.radius, "" if self.dabs else " (nothing to take back: Esc again leaves)"))
+            "strength %d%% (Shift+wheel)   Esc: take the strokes back%s   Enter / click: done" % (
+                self.radius, round(getattr(self, "strength", 0.5) * 100),
+                "" if self.dabs else " (nothing to take back: Esc again leaves)"))
         state.tag_redraw()
 
     def modal(self, context, event):
@@ -1204,7 +1205,11 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
         elif t in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'PAGE_UP', 'PAGE_DOWN', 'NUMPAD_PLUS', 'NUMPAD_MINUS'} \
                 and v == 'PRESS':
             wider = t in {'WHEELUPMOUSE', 'PAGE_UP', 'NUMPAD_PLUS'}
-            self.radius = min(max(self.radius * (1.25 if wider else 0.8), 0.25), 60.0)
+            if event.shift:
+                # Shift+wheel: how much a dab smooths (a stroke that doesn't smooth enough: more)
+                self.strength = min(max(getattr(self, "strength", 0.5) + (0.1 if wider else -0.1), 0.1), 1.0)
+            else:
+                self.radius = min(max(self.radius * (1.25 if wider else 0.8), 0.25), 60.0)
             self._show()
         elif t == 'RIGHTMOUSE' and v == 'PRESS':
             self.painting = True        # another stroke
@@ -1233,7 +1238,7 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def _dab(self):
-        smooth_speed(self.c, self.tc, self.radius, self.sel)
+        smooth_speed(self.c, self.tc, self.radius, self.sel, getattr(self, "strength", 0.5))
 
     def _end(self, context, ok):
         if getattr(self, "_timer", None) is not None:
@@ -1252,10 +1257,11 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
         return {'FINISHED'} if ok else {'CANCELLED'}
 
 
-def smooth_speed(c, tc, radius, sel=None):
+def smooth_speed(c, tc, radius, sel=None, strength=0.5):
     """One dab of speed smoothing on path c around frame tc: within `radius` frames the speed
-    moves halfway to its blurred self (also across keys); every segment between keys still
-    takes its frames and the path keeps its shape. sel: the key frames to keep selected."""
+    moves `strength` of the way (halfway) to its blurred self (also across keys); every segment
+    between keys still takes its frames and the path keeps its shape. sel: the key frames to keep
+    selected."""
     import numpy as np
     c.refresh(force=True)
     sig = max(radius * 0.5, 0.1)
@@ -1281,7 +1287,7 @@ def smooth_speed(c, tc, radius, sel=None):
     d = (ts[:, None] - ts[None, :]) / sb
     kern = np.exp(-0.5 * d * d)
     blur = (kern @ vs) / kern.sum(axis=1)
-    w = 0.5 * np.exp(-0.5 * ((ts - tc) / sig) ** 2)
+    w = min(max(strength, 0.0), 1.0) * np.exp(-0.5 * ((ts - tc) / sig) ** 2)
     new = vs + w * (blur - vs)
     from .props import prefs
     p = prefs()

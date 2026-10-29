@@ -191,7 +191,7 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   wider, it goes on over the keys into the segments around, the spot you hold changing by the
   full amount and the far ends making up for it. **Right-drag** on the graph **smooths** the speed
   under the mouse - bumps, dips and steps at keys even out while you hold the button. Stroke as
-  often as you like: the wheel sets the radius, **Esc** takes the strokes back (and you go on
+  often as you like: the wheel sets the radius, **Shift+wheel** how much a stroke smooths, **Esc** takes the strokes back (and you go on
   smoothing; Esc again leaves), Enter or a click is done - all of it one undo step.
   The path keeps its shape and the keys their frames (keys are added where needed, like *Ease*;
   they are selected - *Select New Keys* in the preferences); after a drag the keys at both ends
