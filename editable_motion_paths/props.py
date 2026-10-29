@@ -177,8 +177,12 @@ class EMP_BrushSettings(bpy.types.PropertyGroup):
                     "about this many frames around each key; then the keys the smooth motion doesn't need "
                     "go (the Tolerance counts from the smooth motion). 0: off - only keys go, the motion "
                     "stays exactly as it was")
+    dissolve_parent_chain: IntProperty(
+        name="Chain Length", default=0, min=0, soft_max=10,
+        description="Smooth Parents: how many bones / objects above it are smoothed (0: all of them, like "
+                    "an IK constraint's Chain Length)")
     dissolve_smooth_parents: BoolProperty(
-        name="Smooth Parents", default=True,
+        name="Smooth Parents", default=False,
         description="Dissolve with Smooth: also smooth the bones it hangs from (the shoulder, the chest...) over "
                     "the same frames - in mocap every bone trembles, and the path shows them all. Their keys "
                     "stay (only this path's keys are dissolved)")

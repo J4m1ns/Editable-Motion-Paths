@@ -12,7 +12,7 @@ from bpy.props import BoolProperty
 from bpy_extras.view3d_utils import location_3d_to_region_2d, region_2d_to_location_3d
 from mathutils import Vector
 
-from . import compat, core, edit, keys, pick, state
+from . import compat, core, edit, keys, pick, smoothing, state
 
 
 def _bs():
@@ -342,7 +342,12 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                 for c in caches:
                     tg = c.target()
                     if tg is not None:
-                        self.extra[c.key] = self._extra_curves(c, tg, _bs().dissolve_smooth_parents)
+                        found = smoothing.chain_curves(tg, c.ptype, _bs().dissolve_smooth_parents,
+                                                       _bs().dissolve_parent_chain)
+                        for key, fc in found:
+                            if key not in self.extra_raw:
+                                self.extra_raw[key] = smoothing.key_values(fc)
+                        self.extra[c.key] = found
             # (many keys under the brush: a dab tries them for a while, a timer goes on with the
             # rest - also those the brush has already left - so the view keeps up; keys that had
             # to stay aren't tried again until a neighbor goes)
@@ -691,64 +696,6 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                     # (the keys around it have new neighbors now: worth another try)
                     self.kept = {kt for kt in self.kept if kt[0] != c.key or not lo <= kt[1] <= hi}
 
-    def _extra_curves(self, c, tg, parents):
-        """[(curve key, F-Curve)]: the transform curves that move this path besides the ones edited -
-        the bone's / object's other channels, and (parents) those of what it hangs from. Their keys as
-        they were are kept (self.extra_raw)."""
-        import numpy as np
-        own = {id(fc) for fc in tg.channels(c.ptype).fcurves if fc is not None}
-        obj, owner = tg.obj, tg.owner
-        owners = [(obj, owner)]
-        if parents:
-            if c.bone_name:
-                owners += [(obj, pb) for pb in owner.parent_recursive]
-                o = obj.parent
-            else:
-                o = obj.parent
-            while o is not None:
-                owners.append((o, o))
-                o = o.parent
-        out = []
-        for ob, ow in owners:
-            fcs = compat.get_fcurves(ob)
-            if not fcs:
-                continue
-            pre = ow.path_from_id() + "." if ow is not ob else ""
-            for fc in fcs:
-                if id(fc) in own or not fc.data_path.startswith(pre) or len(fc.keyframe_points) < 4:
-                    continue
-                if fc.data_path[len(pre):] not in core._TRANSFORMS or (not pre and "." in fc.data_path):
-                    continue
-                key = (ob.name, fc.data_path, fc.array_index)
-                if key not in self.extra_raw:
-                    kps = fc.keyframe_points
-                    co = np.empty(len(kps) * 2, dtype=np.float64)
-                    kps.foreach_get("co", co)
-                    self.extra_raw[key] = co.reshape(-1, 2)
-                out.append((key, fc))
-        return out
-
-    @staticmethod
-    def _smoothed_value(raw, t, sigma):
-        """A key's value on a curve through the keys around it (a parabola weighted by distance in
-        time): the tremble goes, the arcs stay. None at the curve's ends."""
-        import numpy as np
-        T, V = raw[:, 0], raw[:, 1]
-        if len(T) < 3 or t <= T[0] + 1e-6 or t >= T[-1] - 1e-6:
-            return None
-        x = T - t
-        w = np.exp(-(x * x) / (2.0 * sigma * sigma))
-        w[np.abs(x) > 3.0 * sigma] = 0.0
-        use = w > 1e-6
-        if use.sum() >= 4:
-            X = np.stack([np.ones(use.sum()), x[use], x[use] * x[use]], axis=1)
-            Wx = X * w[use][:, None]
-            try:
-                return float(np.linalg.solve(X.T @ Wx, Wx.T @ V[use])[0])
-            except np.linalg.LinAlgError:
-                pass
-        return float((w * V).sum() / max(w.sum(), 1e-12))
-
     def _smooth_keys(self, c, times, sigma):
         """Smooth: these keys' values (every channel) to the average of the keys around them as they
         were (a Gaussian over ~sigma frames; the path's first and last key stay). The Tolerance then
@@ -775,7 +722,7 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                     continue        # (the other curves: the frames the brush went over, once each)
                 else:
                     self.extra_done.add((key, round(t, 3)))
-                v = self._smoothed_value(raw, t, sigma)
+                v = smoothing.smoothed_value(raw, t, sigma)
                 if v is None:
                     continue
                 d = v - kp.co[1]
@@ -934,9 +881,12 @@ def _draw_settings(context, layout, tool):
     if bs.brush == 'DISSOLVE':
         layout.prop(bs, "dissolve_tolerance")
         layout.prop(bs, "dissolve_smooth")
-        row = layout.row()
+        row = layout.row(align=True)
         row.active = bs.dissolve_smooth > 0.0
         row.prop(bs, "dissolve_smooth_parents")
+        sub = row.row(align=True)
+        sub.active = bs.dissolve_smooth_parents
+        sub.prop(bs, "dissolve_parent_chain")
         layout.prop(bs, "dissolve_keep_timing")
     else:
         layout.prop(bs, "strength", slider=True)
@@ -970,9 +920,12 @@ def draw_brushes(layout, context):
     col = layout.column(heading="Dissolve", align=True)
     col.prop(bs, "dissolve_tolerance")
     col.prop(bs, "dissolve_smooth")
-    sub = col.row()
+    sub = col.row(align=True)
     sub.active = bs.dissolve_smooth > 0.0
     sub.prop(bs, "dissolve_smooth_parents")
+    sub2 = sub.row(align=True)
+    sub2.active = bs.dissolve_smooth_parents
+    sub2.prop(bs, "dissolve_parent_chain")
     col.prop(bs, "dissolve_keep_timing")
 
 
