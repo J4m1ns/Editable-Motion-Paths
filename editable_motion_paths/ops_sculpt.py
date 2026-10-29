@@ -274,6 +274,7 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
             self.snaps.append((c, core.FCurveSnapshot(tg, tg.channels(c.ptype))))
         # Smooth brush with Smooth Parents: the curves above the path it smooths too (Esc puts them back)
         self.chains = {}
+        self.pending_bake = {}      # path key -> frames whose parent space is to be worked out again
         if self.brush == 'SMOOTH' and bs.dissolve_smooth_parents:
             for c in caches:
                 tg = c.target()
@@ -707,6 +708,41 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                     # (the keys around it have new neighbors now: worth another try)
                     self.kept = {kt for kt in self.kept if kt[0] != c.key or not lo <= kt[1] <= hi}
 
+    def _live_bake(self, c, center):
+        """The path follows its parents' smoothing on the spot: its parent space worked out again on
+        the frames waiting, the nearest to the brush first, for a moment each dab (the rest at the
+        next ones; the whole path again after the stroke)."""
+        todo = self.pending_bake.get(c.key)
+        if not todo:
+            return
+        order = sorted(todo, key=lambda f: abs(f - center))
+        done = core.rebake_frames(bpy.context.scene, c, order, budget=0.025)
+        todo.difference_update(done)
+        self._preview_pending()
+
+    def _preview_pending(self):
+        """The frames still waiting (a heavy rig: a few frames a dab): dots where the path is about
+        to go - its own points there smoothed like its parents were (close; exact once worked out)."""
+        import numpy as np
+        pts = []
+        for c in self.caches:
+            todo = self.pending_bake.get(c.key)
+            tg = c.target() if todo else None
+            if not todo or tg is None:
+                continue
+            lo, hi = min(todo) - 8, max(todo) + 8
+            ts = [t for t in range(int(lo), int(hi) + 1) if c.fs <= t <= c.fe]
+            if len(ts) < 4:
+                continue
+            P = np.array([tuple(c.point(tg, float(t))) for t in ts], dtype=np.float64)
+            T = np.array(ts, dtype=np.float64)
+            for f in sorted(todo):
+                v = [smoothing.smoothed_value(np.stack([T, P[:, i]], axis=1), float(f), 2.0) for i in range(3)]
+                if None not in v:
+                    pts.append(Vector(v))
+        area = bpy.context.area
+        state.sculpt_preview = (pts, area.as_pointer()) if pts and area is not None else None
+
     def _smooth_parents(self, under, st):
         """Smooth brush, Smooth Parents: the curves above each path (its other channels, the bones it
         hangs from) a little smoother on the frames under the brush, as much as the brush there."""
@@ -723,12 +759,18 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
             ts = np.array([t for t, _w in tw])
             ws = np.array([w for _t, w in tw])
             cur = [(key, fc, smoothing.key_values(fc)) for key, fc in curves]
-            touched += smoothing.smooth_range(cur, float(ts[0]) - 0.5, float(ts[-1]) + 0.5, 2.0,
-                                              min(1.0, st.strength * 0.5),
-                                              weight=lambda t: float(np.interp(t, ts, ws)))
+            changed = smoothing.smooth_range(cur, float(ts[0]) - 0.5, float(ts[-1]) + 0.5, 2.0,
+                                             min(1.0, st.strength * 0.5),
+                                             weight=lambda t: float(np.interp(t, ts, ws)))
+            touched += changed
             c.dirty = True
+            if changed:
+                self.pending_bake.setdefault(c.key, set()).update(range(int(ts[0]), int(ts[-1]) + 1))
         if touched:
             core.update_fcurves(touched)
+            for c in by_cache:
+                center = sum(t * w for t, w in by_cache[c]) / max(sum(w for _t, w in by_cache[c]), 1e-9)
+                self._live_bake(c, center)
 
     def _smooth_keys(self, c, times, sigma):
         """Smooth: these keys' values (every channel) to the average of the keys around them as they
@@ -774,6 +816,11 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
         core.update_fcurves(touched)
         c.dirty = True
         c.refresh(force=True)
+        if self.extra.get(c.key):
+            # (its parents / other channels changed: the path follows them now, near the brush)
+            pend = self.pending_bake.setdefault(c.key, set())
+            pend.update(range(int(lo_t), int(hi_t) + 2))
+            self._live_bake(c, sum(times) / len(times))
         # the reference for the Tolerance: the smooth motion (around the smoothed keys)
         T0, P0, size = self.orig[c.key]
         lo, hi = min(times) - 3.0 * sigma - 2.0, max(times) + 3.0 * sigma + 2.0

@@ -1539,6 +1539,56 @@ def _set_value(idb, dp, index, v):
     return False
 
 
+def rebake_frames(scene, cache, frames, budget=0.025):
+    """The parent space of one path worked out again on some frames now (the nearest first, as
+    many as fit in `budget` seconds) - while a stroke smooths what the path hangs from, so the path
+    follows on the spot (the whole path is baked again after the stroke as usual). Returns the
+    frames done."""
+    obj, owner = resolve(cache.obj_name, cache.bone_name)
+    if owner is None or not cache.B:
+        return []
+    objs = {}
+    o = obj
+    while o is not None:
+        objs[o.name] = o
+        o = o.parent
+    for o in scene.objects:
+        if state.is_animated(o):
+            objs.setdefault(o.name, o)
+    hide = [o for o in _meshes_not_needed(scene, {obj.name: obj}) if state.can_hide(o, len(frames), True)]
+    saved = _pose_state(objs.values())
+    cur, sub = scene.frame_current, scene.frame_subframe
+    done = []
+    t0 = time.time()
+    state.baking = True
+    try:
+        for o in hide:
+            o.hide_viewport = True
+        for f in frames:
+            i = int(round(f)) - cache.fs
+            if not 0 <= i < len(cache.B):
+                continue
+            scene.frame_set(int(round(f)))
+            W = obj.matrix_world @ owner.matrix if cache.bone_name else owner.matrix_world.copy()
+            basis = owner.matrix_basis
+            if abs(basis.to_3x3().determinant()) > SINGULAR and abs(W.to_3x3().determinant()) > SINGULAR:
+                cache.B[i] = W @ basis.inverted_safe()
+            done.append(f)
+            if time.time() - t0 > budget:
+                break
+    finally:
+        for o in hide:
+            o.hide_viewport = False
+        scene.frame_set(cur, subframe=sub)
+        if _restore_pose_state(saved):
+            bpy.context.view_layer.update()
+        state.baking = False
+    if done:
+        cache.dirty = True
+        cache.refresh(force=True)
+    return done
+
+
 def _restore_pose_state(saved):
     """Put the saved transforms and values back; True if any had changed."""
     changed = False
