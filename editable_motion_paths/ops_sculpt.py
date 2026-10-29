@@ -272,6 +272,15 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
         for c in caches:
             tg = c.target()
             self.snaps.append((c, core.FCurveSnapshot(tg, tg.channels(c.ptype))))
+        # Smooth brush with Smooth Parents: the curves above the path it smooths too (Esc puts them back)
+        self.chains = {}
+        if self.brush == 'SMOOTH' and bs.dissolve_smooth_parents:
+            for c in caches:
+                tg = c.target()
+                if tg is not None:
+                    self.chains[c.key] = smoothing.chain_curves(tg, c.ptype, True, bs.dissolve_parent_chain)
+                    for snap in smoothing.snapshots(self.chains[c.key]):
+                        self.snaps.append((c, snap))
         self.caches = caches
         m = Vector((event.mouse_region_x, event.mouse_region_y))
         self.start = m.copy()
@@ -557,6 +566,8 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                     W = k.co.lerp(center, max(-1.0, min(1.0, wt * 0.3 * sign)))
                 by_cache.setdefault(c, []).append((k.t, W))
         self._write(context, by_cache)
+        if smooth_handles and getattr(self, "chains", None):
+            self._smooth_parents(smooth_handles, st)
         if smooth_handles:
             self._smooth_handles(context, smooth_handles)
 
@@ -695,6 +706,29 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                     self.worst = max(self.worst, dev)
                     # (the keys around it have new neighbors now: worth another try)
                     self.kept = {kt for kt in self.kept if kt[0] != c.key or not lo <= kt[1] <= hi}
+
+    def _smooth_parents(self, under, st):
+        """Smooth brush, Smooth Parents: the curves above each path (its other channels, the bones it
+        hangs from) a little smoother on the frames under the brush, as much as the brush there."""
+        import numpy as np
+        touched = []
+        by_cache = {}
+        for c, t, wt in under:
+            by_cache.setdefault(c, []).append((t, wt))
+        for c, tw in by_cache.items():
+            curves = self.chains.get(c.key)
+            if not curves:
+                continue
+            tw.sort()
+            ts = np.array([t for t, _w in tw])
+            ws = np.array([w for _t, w in tw])
+            cur = [(key, fc, smoothing.key_values(fc)) for key, fc in curves]
+            touched += smoothing.smooth_range(cur, float(ts[0]) - 0.5, float(ts[-1]) + 0.5, 2.0,
+                                              min(1.0, st.strength * 0.5),
+                                              weight=lambda t: float(np.interp(t, ts, ws)))
+            c.dirty = True
+        if touched:
+            core.update_fcurves(touched)
 
     def _smooth_keys(self, c, times, sigma):
         """Smooth: these keys' values (every channel) to the average of the keys around them as they
@@ -893,6 +927,12 @@ def _draw_settings(context, layout, tool):
         layout.prop(bs, "falloff", text="")
     if bs.brush in {'GRAB', 'SMOOTH', 'PINCH'}:
         layout.prop(bs, "insert_keys")
+    if bs.brush == 'SMOOTH':
+        row = layout.row(align=True)
+        row.prop(bs, "dissolve_smooth_parents")
+        sub = row.row(align=True)
+        sub.active = bs.dissolve_smooth_parents
+        sub.prop(bs, "dissolve_parent_chain")
     layout.prop(st, "edit_mode", text="")
     layout.separator()
     from .ui import draw_header_buttons
@@ -917,15 +957,14 @@ def draw_brushes(layout, context):
     layout.prop(bs, "falloff")
     row = layout.row(heading="Grab, Smooth, Pinch")
     row.prop(bs, "insert_keys")
+    row = layout.row(heading="Smooth, Dissolve", align=True)
+    row.prop(bs, "dissolve_smooth_parents")
+    sub = row.row(align=True)
+    sub.active = bs.dissolve_smooth_parents
+    sub.prop(bs, "dissolve_parent_chain")
     col = layout.column(heading="Dissolve", align=True)
     col.prop(bs, "dissolve_tolerance")
     col.prop(bs, "dissolve_smooth")
-    sub = col.row(align=True)
-    sub.active = bs.dissolve_smooth > 0.0
-    sub.prop(bs, "dissolve_smooth_parents")
-    sub2 = sub.row(align=True)
-    sub2.active = bs.dissolve_smooth_parents
-    sub2.prop(bs, "dissolve_parent_chain")
     col.prop(bs, "dissolve_keep_timing")
 
 

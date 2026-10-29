@@ -1186,6 +1186,28 @@ class EMP_OT_smooth(_AdjustOp, bpy.types.Operator):
                                           "path (from the key before to the key after), like the Smooth "
                                           "brush; auto handles do that by themselves")
 
+    parents: BoolProperty(name="Smooth Parents", default=False,
+                          description="Also smooth what the path shows but doesn't edit, over the same frames: "
+                                      "the bone's other channels and the bones / objects it hangs from (mocap "
+                                      "trembles on every bone). Their keys stay where they are in time")
+    chain: IntProperty(name="Chain Length", default=0, min=0, soft_max=10,
+                       description="Smooth Parents: how many bones / objects above it (0: all, like an IK "
+                                   "constraint's Chain Length)")
+    parent_frames: FloatProperty(name="Parents Smooth", default=2.0, min=0.1, soft_max=10.0,
+                                 description="Smooth Parents: over about how many frames (the Factor, up to 1, "
+                                             "says how much)")
+
+    def _extra(self, job, tg):
+        """The curves Smooth Parents smooths for this path, with their keys as they were."""
+        from . import smoothing
+        got = getattr(self, "extra_by", None)
+        if got is None:
+            got = self.extra_by = {}
+        if job.cache.key not in got:
+            got[job.cache.key] = [(key, fc, smoothing.key_values(fc))
+                                  for key, fc in smoothing.chain_curves(tg, job.cache.ptype, True, self.chain)]
+        return got[job.cache.key]
+
     def _label(self):
         return "Smooth (%s, T: %s)" % ("Shape" if self.method == 'SHAPE' else "Time",
                                        "Time" if self.method == 'SHAPE' else "Shape")
@@ -1201,11 +1223,26 @@ class EMP_OT_smooth(_AdjustOp, bpy.types.Operator):
             # Alt+S on scale paths: longer / shorter handles (whiskers) of the picked channel
             bpy.ops.emp.scale_handles('INVOKE_DEFAULT')
             return {'CANCELLED'}
-        return _AdjustOp.invoke(self, context, event)
+        self.extra_by = None
+        r = _AdjustOp.invoke(self, context, event)
+        if self.parents and 'RUNNING_MODAL' in r:
+            from . import smoothing
+            for job in self.jobs:
+                tg = job.cache.target()
+                if tg is not None:
+                    # (Esc / right click puts them back too)
+                    self.snapshots += smoothing.snapshots(self._extra(job, tg))
+        return r
 
     def _apply_job(self, job, tg, touched):
         cache = job.cache
         ch = tg.channels(cache.ptype)
+        if self.parents:
+            from . import smoothing
+            ts = [t for t, m in zip(job.times, job.mask) if m]
+            if ts:
+                touched.update(smoothing.smooth_range(self._extra(job, tg), min(ts), max(ts), self.parent_frames,
+                                                      min(max(self.factor, 0.0), 1.0)))
         if self.method == 'TIME':
             new = smooth_vectors(job.vecs, job.times, job.mask, self.factor)
         else:
