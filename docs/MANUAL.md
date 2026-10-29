@@ -389,7 +389,10 @@ bones, or only the selected ones). The farther a ghost is from the current frame
 *Show*: the **Whole** character, only the part the edited bones move (**By Weight**: their
 vertex weights, and of the bones that follow them - children, IK chains), or only the objects
 they move (**By Object**, for characters made of separate parts: a part with no weight from
-them isn't shown). Curves and texts ghost like meshes (a curve without thickness as its line),
+them isn't shown), or only one **Vertex Group** of the meshes, picked from the list below it (say
+the lower part of a handle, to follow just how it moves; a mesh without that group isn't shown -
+also for objects without a rig; not in the Bones mode). Switching *Show* is instant: the ghosts
+stay, only what is drawn of them changes. Curves and texts ghost like meshes (a curve without thickness as its line),
 empties as their own display type (cube, sphere, arrows...), cameras and lights like Blender
 draws them (an area light with its shape), other objects as the empty type chosen in the
 preferences (*Other Objects*); metaballs don't (their shape changes all the time). A ghost light

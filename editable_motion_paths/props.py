@@ -5,6 +5,22 @@ from bpy.props import (BoolProperty, BoolVectorProperty, CollectionProperty, Enu
 from . import state
 
 
+def _onion_vgroups(self, context, edit_text):
+    """The vertex groups of the meshes the onion ghosts (the Vertex Group field's list)."""
+    from . import onion
+    names = set()
+    for o, _arm, how in onion._targets(context.scene):
+        if how != 'LINES':
+            names.update(g.name for g in getattr(o, "vertex_groups", ()))
+    return sorted(n for n in names if edit_text.lower() in n.lower())
+
+
+def _onion_vgroup_changed(self, context):
+    from . import onion
+    onion._schedule()       # (the timer works out which vertices are in it)
+    _redraw(self, context)
+
+
 def _redraw(self, context):
     state.tag_redraw()
 
@@ -386,13 +402,19 @@ class EMP_Settings(bpy.types.PropertyGroup):
     com_floor_height: FloatProperty(name="Floor Height", default=0.0, subtype='DISTANCE', unit='LENGTH',
                                     update=_redraw)
     onion_show: EnumProperty(
-        name="Show", update=_redraw,
+        name="Show", update=_onion_vgroup_changed,
         items=[('WHOLE', "Whole", "The whole character (every mesh the armature moves, and what is on it)"),
                ('WEIGHT', "By Weight", "Only the part of the mesh the edited bones move (their weights, and "
                                        "of the bones that follow them: children, IK chains)"),
                ('OBJECT', "By Object", "Only the objects the edited bones move: for characters made of "
-                                       "separate parts, a part with no weight from them isn't shown")],
+                                       "separate parts, a part with no weight from them isn't shown"),
+               ('VGROUP', "Vertex Group", "Only one vertex group of the ghosted meshes (say the lower part "
+                                          "of a handle); what has no such group isn't shown")],
         default='WHOLE')
+    onion_vgroup: StringProperty(
+        name="Vertex Group", default="", update=_onion_vgroup_changed, search=_onion_vgroups,
+        description="Show: Vertex Group - the vertex group of the ghosted meshes shown (what has no such "
+                    "group isn't shown; empty: all of them)")
     onion_size: FloatProperty(name="Size", default=3.0, min=1.0, soft_max=12.0, update=_redraw,
                               description="Points / lines of the ghosts: how thick they are")
     onion_preview_pose: BoolProperty(

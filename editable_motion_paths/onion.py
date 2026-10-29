@@ -268,7 +268,7 @@ def _signature(scene, st):
     """What the captured ghosts belong to: the edited paths and the settings that change them."""
     arms, objs = _edited(scene)
     return (tuple(sorted((k, tuple(sorted(v))) for k, v in arms.items())), tuple(o.name for o in objs),
-            st.onion_max_tris, st.onion_bones, st.onion_show, _bone_state(scene, st))
+            st.onion_max_tris, st.onion_bones, _bone_state(scene, st))   # (not Show: it only filters what is drawn)
 
 
 # ---- proxies: a mesh melted down once, with its bone weights ------------------------------
@@ -330,6 +330,10 @@ class _Proxy:
         self.rest = None        # (P, 4) rest positions
         self.free = None        # (P,) no weight: follows the object
         self.keep = None        # (P,) shown in "by weight"
+        self.vg = None          # (P,) in the onion's Vertex Group (None: the object has no such group)
+        self.vg_name = None     # (the group vg is for: worked out by the timer, not while drawing)
+        self.src_inv = None     # (proxy vertex of every vertex of the mesh as made, and their count)
+        self.src_n = 0
         self.arm = None
         self.M0 = None          # object matrix when built
         self.rest_inv = None    # DEFORM: (B, 4, 4) inverse rest matrices of the bones
@@ -524,6 +528,7 @@ def _build(o, arm, how, st, dg):
     if n and not exact and (len(tri) > limit or len(ed) > limit * 1.5 or n > limit):
         co, tri, ed, inv = _decimate(co, tri, limit, ed)
     p.co, p.tri, p.edges = co, tri, ed
+    p.src_inv, p.src_n = inv, n
     p.M0 = Matrix(ev.matrix_world)
     if how == 'DEFORM':
         _weights(p, o, arm, me, inv)
@@ -534,6 +539,58 @@ def _build(o, arm, how, st, dg):
     ev.to_mesh_clear()
     _proxies[o.name] = p
     return True
+
+
+def _in_group(me, gi, inv, n):
+    """(n,) the proxy vertices (inv: the proxy vertex of every vertex of the mesh) mostly made of
+    vertices in vertex group gi."""
+    import numpy as np
+    src = np.zeros(len(me.vertices), dtype=np.float64)
+    for v in me.vertices:
+        for g in v.groups:
+            if g.group == gi and g.weight > 0.0:
+                src[v.index] = 1.0
+                break
+    if not len(src):
+        return np.zeros(n, dtype=bool)
+    got = np.bincount(inv, weights=src, minlength=n)
+    tot = np.maximum(np.bincount(inv, minlength=n), 1)
+    return got / tot >= 0.5
+
+
+def vgroup(st):
+    """The vertex group the ghosts show only (Show: Vertex Group), or ""."""
+    return st.onion_vgroup if st.onion_show == 'VGROUP' else ""
+
+
+def _group_masks(st, dg):
+    """Which proxy vertices are in the onion's Vertex Group (Show: Vertex Group), for the proxies not
+    worked out for it yet. From the mesh itself when the modifiers keep its vertices, else from the
+    mesh as made. Called by the timer (never while drawing). True when anything changed."""
+    name = vgroup(st)
+    done = False
+    for p in list(_proxies.values()):
+        if p.vg_name == name:
+            continue
+        p.vg_name, p.vg = name, None
+        done = True
+        o = bpy.data.objects.get(p.name)
+        if not name or o is None or p.how == 'LINES' or p.src_inv is None or                 name not in getattr(o, "vertex_groups", {}):
+            continue
+        gi = o.vertex_groups[name].index
+        if o.type == 'MESH' and len(o.data.vertices) == p.src_n:
+            p.vg = _in_group(o.data, gi, p.src_inv, len(p.co))
+            continue
+        ev = o.evaluated_get(dg)
+        try:
+            me = ev.to_mesh()
+        except RuntimeError:
+            me = None
+        if me is not None and len(me.vertices) == p.src_n:
+            p.vg = _in_group(me, gi, p.src_inv, len(p.co))
+        if me is not None:
+            ev.to_mesh_clear()
+    return done
 
 
 def _weights(p, o, arm, me, inv, K=4):
@@ -1292,6 +1349,8 @@ def _tick():
             clear()
             return 0.01
         status = ""
+        if _group_masks(st, bpy.context.evaluated_depsgraph_get()):
+            state.tag_redraw()
         shows = sorted(frames_to_show(scene, st), key=lambda x: abs(x[1]))
         want = [f for f, _i in shows if f not in _frames] + [f for f, _i in shows if f in _stale]
         if not want and not state.modal_running and not editing:
@@ -1602,12 +1661,19 @@ _filter_cache = [None, None]
 def _filters(scene, st):
     """{proxy name: kept vertices or None}, and the names left out (by object); worked out once
     per selection / setting (the signature) and proxy set."""
-    if st.onion_show == 'WHOLE':
-        return {}, set()
-    key = (_sig, tuple(sorted((n, id(p)) for n, p in _proxies.items())))
-    if _filter_cache[0] == key:
+    vg = vgroup(st)
+    if st.onion_show == 'WHOLE' or (st.onion_show == 'VGROUP' and not vg):
+        key = None
+    else:
+        key = (_sig, st.onion_show, vg,
+               tuple(sorted((n, id(p), p.vg_name if vg else None) for n, p in _proxies.items())))
+    if _filter_cache[0] == key and _filter_cache[1] is not None:
         return _filter_cache[1]
-    _filter_cache[1] = _filters_now(scene, st)
+    if _filter_cache[1] is not None:
+        # (other vertices kept: the batches made with the old ones go - the ghosts themselves stay)
+        for k in [k for k in _batches if k[1] != "bones"]:
+            del _batches[k]
+    _filter_cache[1] = ({}, set()) if key is None else _filters_now(scene, st)
     _filter_cache[0] = key
     return _filter_cache[1]
 
@@ -1621,7 +1687,9 @@ def _filters_now(scene, st):
             aff[name] = affected_bones(arm, edited)
     keep, out = {}, set()
     for p in _proxies.values():
-        if p.how == 'DEFORM' and p.arm in aff:
+        if st.onion_show == 'VGROUP':
+            pass
+        elif p.how == 'DEFORM' and p.arm in aff:
             k = _shown_by_weight(p, aff[p.arm])
             if st.onion_show == 'WEIGHT':
                 keep[p.name] = k
@@ -1632,6 +1700,16 @@ def _filters_now(scene, st):
             if o is not None and o.parent is not None and o.parent.type == 'ARMATURE' and \
                     o.parent.name in aff and o.parent_type == 'BONE' and o.parent_bone not in aff[o.parent.name]:
                 out.add(p.name)
+    if vgroup(st):
+        # only the chosen vertex group (what has none isn't shown; not worked out yet: whole)
+        for p in _proxies.values():
+            if p.vg_name != vgroup(st):
+                continue
+            if p.vg is None or not p.vg.any():
+                out.add(p.name)
+            elif p.name not in out:
+                k = keep.get(p.name)
+                keep[p.name] = p.vg if k is None else (p.vg & k)
     return keep, out
 
 

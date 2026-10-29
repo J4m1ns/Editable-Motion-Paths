@@ -715,8 +715,17 @@ def _draw_onion(layout, st):
             else:
                 # (the chosen mode shows nothing here: the one drawn instead is pressed)
                 row.operator("emp.onion_mode", text=names[m], depress=m == used).mode = m
-    if used != 'BONES' and has_bones and meshes:
-        layout.prop(st, "onion_show", text="Show")
+    if used != 'BONES' and meshes:
+        if has_bones:
+            layout.prop(st, "onion_show", text="Show")
+        else:
+            # (no armature: by weight / by object show nothing different)
+            row = layout.row(align=True)
+            row.label(text="Show")
+            row.prop_enum(st, "onion_show", 'WHOLE')
+            row.prop_enum(st, "onion_show", 'VGROUP')
+        if st.onion_show == 'VGROUP':
+            layout.prop(st, "onion_vgroup", text="", icon='GROUP_VERTEX')
     row = layout.row(align=True)
     row.prop(st, "onion_before")
     row.prop(st, "onion_after")
