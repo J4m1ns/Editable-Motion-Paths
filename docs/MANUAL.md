@@ -481,10 +481,15 @@ evaluated, like the onion ghosts) and follow your edits.
 
 ## Display
 
-**Global / Local** (the globe / local icon of each path in the path list): *Global* paths are the
-motion in the world; *Local* leaves the parents' motion out - the path is drawn in the parent's space as it is
-on the current frame, so it shows (and you edit) only the bone's or object's own motion, and it
-moves along with the parent when the frame changes.
+**Global / Local / Camera** (the dropdown menu under the globe / local / camera icon of each path
+in the path list; the highlighted paths all take it): *Global* paths are the motion in the world;
+*Local* leaves the parents' motion out - the path is drawn in the parent's space as it is on the
+current frame, so it shows (and you edit) only the bone's or object's own motion, and it moves
+along with the parent when the frame changes. *Camera* shows the motion as the active camera sees
+it: the path is drawn relative to the camera on the current frame, so with a camera that travels
+along with the character only what moves in its view is left (a run cycle tracked by the camera
+shows its bounce, not the distance covered). It is edited the same way, and when you change the
+camera's motion the path is worked out again.
 
 The color button in the tool header (or **U**) opens the display settings you change while
 animating, only those of the current mode (1-4); the sidebar's *Display* panel has all of them.

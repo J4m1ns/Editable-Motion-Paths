@@ -125,6 +125,19 @@ def _refresh(self, context):
 _local_busy = [False]
 
 
+def _space_get(self):
+    return 1 if self.local else (2 if self.camera else 0)
+
+
+def _space_set(self, value):
+    if value == 1:
+        self.camera = False
+        self.local = True
+    else:
+        self.local = False
+        self.camera = value == 2
+
+
 def _local_changed(self, context):
     """Global / Local of a path in the list: the paths being edited (highlighted) take it too, when
     this one is one of them - like setting a property with several objects selected."""
@@ -135,13 +148,15 @@ def _local_changed(self, context):
             mine = state.caches.get(state.entry_key(self)) if self.object is not None else None
             if st is not None and mine is not None and mine.owner_selected():
                 for e in st.paths:
-                    if e != self and e.object is not None and e.local != self.local:
+                    if e != self and e.object is not None and (e.local, e.camera) != (self.local, self.camera):
                         c = state.caches.get(state.entry_key(e))
                         if c is not None and c.owner_selected():
-                            e.local = self.local
+                            e.local, e.camera = self.local, self.camera
         finally:
             _local_busy[0] = False
     _refresh(self, context)
+    if self.camera and any(not c.Cam for c in state.caches.values() if c.B):
+        state.schedule_rebake(delay=0.05, force=True)     # (baked before: no camera matrices yet)
 
 
 _last_channels = [True, True, True, True]
@@ -221,6 +236,19 @@ class EMP_PathEntry(bpy.types.PropertyGroup):
     value_index: IntProperty(name="Index", update=_mode_changed)
     hidden_keys: StringProperty(options={'HIDDEN'}, update=_mode_changed,
                                 description="Frames of hidden keys (H / Alt+H)")
+    camera: BoolProperty(name="Camera", default=False, update=_local_changed,
+                         description="Camera space: the path as the active camera sees it")
+    space: EnumProperty(
+        name="Space", get=_space_get, set=_space_set,
+        items=[('GLOBAL', "Global", "The motion in the world (the parents' motion is in the path)", 'WORLD', 0),
+               ('LOCAL', "Local", "Only this bone's / object's own motion: the path is drawn in its parent's "
+                                  "space as it is on the current frame, so it moves along with the parent",
+                'ORIENTATION_LOCAL', 1),
+               ('CAMERA', "Camera", "The motion as the active camera sees it: the path is drawn relative to the "
+                                    "camera on the current frame (a camera that follows the character: only "
+                                    "what moves in its view is left)", 'CAMERA_DATA', 2)],
+        description="Where the path is drawn (and edited): the world, the parent's space or the active "
+                    "camera's view. The paths being edited (highlighted) all take it")
     local: BoolProperty(name="Local", default=False, update=_local_changed,
                         description="Global: the motion in the world (the parents' motion is in the path). "
                                     "Local: only this bone's / object's own motion - the path is drawn in its "

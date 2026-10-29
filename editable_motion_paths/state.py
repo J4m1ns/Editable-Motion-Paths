@@ -149,6 +149,7 @@ def sync_caches(scene=None):
             other = next((o for o in caches.values() if o is not c and o.key[:2] == k[:2] and o.B), None)
             if other is not None:
                 c.fs, c.B, c.bake_id = other.fs, other.B, other.bake_id
+                c.Cam, c.cam_fs = other.Cam, other.cam_fs
         h = hidden.get(k, set())
         if h != c.hidden:
             c.hidden = h
@@ -437,6 +438,9 @@ def _tracked_objects():
         obj = bpy.data.objects.get(name)
         if obj is not None:
             objs.update(_depends_on(obj))
+    cam = bpy.context.scene.camera if bpy.context.scene is not None else None
+    if cam is not None and any(c.cam is not None for c in caches.values()):
+        objs.update(_depends_on(cam))       # (Camera space: the camera's motion is in the paths)
     return objs
 
 

@@ -549,8 +549,7 @@ class EMP_UL_paths(bpy.types.UIList):
             if cache is not None and cache.locked:
                 row.operator("emp.lock_info", text="", icon='LOCKED', emboss=False).reason = cache.lock_reason
             # isolate this path's curves in the Graph Editor (pressed while they are isolated)
-            row.prop(item, "local", text="", emboss=False,
-                     icon='ORIENTATION_LOCAL' if item.local else 'WORLD')
+            row.prop(item, "space", text="", icon_only=True, emboss=False)
             from .ops_tools import graph_isolated
             on = graph_isolated(item)
             row.operator("emp.graph_isolate", text="", emboss=False,

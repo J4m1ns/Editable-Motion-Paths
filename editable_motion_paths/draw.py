@@ -363,7 +363,8 @@ def live_shift(cache):
     D = None
     try:
         f = bpy.context.scene.frame_current
-        if cache.local is None and cache.B and cache.fs <= f <= cache.fe and state.blender_edit_running():
+        if cache.local is None and cache.cam is None and cache.B and cache.fs <= f <= cache.fe and \
+                state.blender_edit_running():
             obj, owner = core.resolve(cache.obj_name, cache.bone_name)
             if owner is not None and not state._constrained(owner) and _parent_change_stays(obj, owner):
                 W = obj.matrix_world @ owner.matrix if cache.bone_name else owner.matrix_world
