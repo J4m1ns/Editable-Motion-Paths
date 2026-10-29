@@ -491,6 +491,16 @@ along with the character only what moves in its view is left (a run cycle tracke
 shows its bounce, not the distance covered). It is edited the same way, and when you change the
 camera's motion the path is worked out again.
 
+**Track Motion Path** (a mesh vertex): in Edit Mode, make a vertex active, right-click and pick
+*Track Motion Path* at the bottom of the menu; set the *Range* (the scene's by default) and *Create
+Motion Path*. The vertex's positions are worked out frame by frame with the mesh as Blender makes
+it (bent by its armature, shape keys, lattices...; modifiers that add geometry, like Subdivision
+Surface, are off meanwhile) - on a heavy mesh that takes a while, the header shows how far it is
+and **Esc** stops. The path is only to look at (the vertex has no keys to edit): it is listed
+under the paths with a vertex icon (the eye shows / hides it, the X removes it), drawn with a dot
+on every frame and the current frame brighter, and kept in the file. After changing the
+animation, track it again to bring it up to date.
+
 The color button in the tool header (or **U**) opens the display settings you change while
 animating, only those of the current mode (1-4); the sidebar's *Display* panel has all of them.
 The ones you set once - colors, line width, key size, ribbon widths, the rotation path length,

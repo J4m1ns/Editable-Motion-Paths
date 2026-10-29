@@ -12,12 +12,13 @@ bl_info = {
 import bpy
 
 from . import (api, draw, ops_easing, ops_fmods, ops_io, ops_keys, ops_sculpt, ops_select, ops_shape,
-               ops_slide, ops_timetools, ops_timing, ops_tools, ops_transform, ops_value, props, state, ui)
+               ops_slide, ops_timetools, ops_timing, ops_tools, ops_transform, ops_value, ops_vertex, props,
+               state, ui)
 
 _classes = (ops_transform.classes + ops_slide.classes + ops_keys.classes + ops_select.classes +
             ops_shape.classes + ops_tools.classes + ops_timing.classes + ops_io.classes +
             ops_value.classes + ops_timetools.classes + ops_fmods.classes + ops_easing.classes +
-            ops_sculpt.classes)
+            ops_sculpt.classes + ops_vertex.classes)
 
 
 def register():

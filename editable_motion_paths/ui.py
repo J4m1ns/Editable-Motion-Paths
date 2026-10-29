@@ -595,6 +595,16 @@ class EMP_PT_main(_Panel, bpy.types.Panel):
         col.separator()
         col.operator("emp.path_update", text="", icon='FILE_REFRESH')
         col.operator("emp.path_remove", text="", icon='TRASH').scope = 'ALL'
+        if len(st.vertex_paths):
+            # tracked vertices (Edit Mode, right-click: Track Motion Path): only to look at
+            box = layout.column(align=True)
+            for i, e in enumerate(st.vertex_paths):
+                row = box.row(align=True)
+                row.prop(e, "show", text="", emboss=False, icon='HIDE_OFF' if e.show else 'HIDE_ON')
+                name = "%s  ·  vertex %d" % (e.object.name if e.object else "?", e.index)
+                row.label(text=name, icon='VERTEXSEL')
+                row.label(text="%d - %d" % (e.frame_start, e.frame_start + max(len(e.points) - 1, 0)))
+                row.operator("emp.vertex_path_remove", text="", icon='X', emboss=False).index = i
 
         tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
         active = tool is not None and tool.idname in {"emp.edit_path_pose", "emp.edit_path_object"}
@@ -1038,6 +1048,8 @@ def register():
     bpy.app.timers.register(_late_hotkeys, first_interval=1.0)
     bpy.types.VIEW3D_MT_pose_context_menu.append(_context_menu_entry)
     bpy.types.VIEW3D_MT_object_context_menu.append(_context_menu_entry)
+    from . import ops_vertex
+    bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(ops_vertex.context_menu_entry)
     # right click on a setting in the U / J / P panels: a Reset to Default that works there
     if not hasattr(bpy.types, "WM_MT_button_context"):
         bpy.utils.register_class(_ButtonContext)
@@ -1064,6 +1076,8 @@ def unregister():
     _addon_keymaps.clear()
     bpy.types.VIEW3D_MT_pose_context_menu.remove(_context_menu_entry)
     bpy.types.VIEW3D_MT_object_context_menu.remove(_context_menu_entry)
+    from . import ops_vertex
+    bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(ops_vertex.context_menu_entry)
     if hasattr(bpy.types, "WM_MT_button_context"):
         bpy.types.WM_MT_button_context.remove(ops_tools.button_context_entry)
     bpy.types.VIEW3D_PT_overlay.remove(overlay_entry)

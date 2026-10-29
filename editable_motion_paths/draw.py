@@ -884,6 +884,32 @@ def _lead_view(ctx):
     return max(views, key=rank) == area
 
 
+def _draw_vertex_paths(scene, st):
+    """Tracked vertices: their paths (only to look at) - a line, a dot on every frame, the current
+    frame brighter."""
+    cur = scene.frame_current
+    base = tuple(st.color)
+    gpu.state.blend_set('ALPHA')
+    gpu.state.depth_test_set('NONE' if st.on_top else 'LESS_EQUAL')
+    for e in st.vertex_paths:
+        if not e.show or e.object is None or len(e.points) < 2:
+            continue
+        pts = [tuple(p.co) for p in e.points]
+        cols = [base + (0.75,)] * len(pts)
+        _lines(pts, cols, 1.5 * compat.ui_scale(), 'LINE_STRIP')
+        sh = gpu.shader.from_builtin('UNIFORM_COLOR')
+        gpu.state.point_size_set(3.0 * compat.ui_scale())
+        sh.uniform_float("color", base + (0.9,))
+        batch_for_shader(sh, 'POINTS', {"pos": pts}).draw(sh)
+        i = cur - e.frame_start
+        if 0 <= i < len(pts):
+            gpu.state.point_size_set(7.0 * compat.ui_scale())
+            sh.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
+            batch_for_shader(sh, 'POINTS', {"pos": [pts[i]]}).draw(sh)
+        gpu.state.point_size_set(1.0)
+    gpu.state.depth_test_set('NONE')
+
+
 def _draw_view():
     from . import pick
     ctx = bpy.context
@@ -909,6 +935,11 @@ def _draw_view():
                 gpu.state.depth_mask_set(False)
                 gpu.state.line_width_set(1.0)
                 gpu.state.point_size_set(1.0)
+    if len(st.vertex_paths):
+        try:
+            _draw_vertex_paths(scene, st)
+        except Exception as ex:
+            _part_failed("Vertex paths", ex)
     if not st.paths:
         return
     caches = state.visible_caches(scene)

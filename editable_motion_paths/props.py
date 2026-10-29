@@ -223,6 +223,19 @@ class EMP_BrushSettings(bpy.types.PropertyGroup):
                     "the shape of the path counts, so more keys can go")
 
 
+class EMP_VertexPoint(bpy.types.PropertyGroup):
+    co: FloatVectorProperty(size=3)
+
+
+class EMP_VertexPath(bpy.types.PropertyGroup):
+    """A mesh vertex's motion path (Track Motion Path): only to look at - kept as worked out."""
+    object: PointerProperty(type=bpy.types.Object)
+    index: IntProperty()
+    frame_start: IntProperty()
+    show: BoolProperty(name="Show", default=True, update=_redraw)
+    points: CollectionProperty(type=EMP_VertexPoint)
+
+
 class EMP_PathEntry(bpy.types.PropertyGroup):
     object: PointerProperty(type=bpy.types.Object)
     bone_name: StringProperty()
@@ -259,6 +272,7 @@ class EMP_PathEntry(bpy.types.PropertyGroup):
 
 class EMP_Settings(bpy.types.PropertyGroup):
     paths: CollectionProperty(type=EMP_PathEntry)
+    vertex_paths: CollectionProperty(type=EMP_VertexPath)
     active_index: IntProperty()
     edit_mode: EnumProperty(
         name="Edit",
@@ -837,7 +851,7 @@ GRAPH_LOOK = PREF_NAMES[-18:-3]
 for _n in PREF_NAMES:
     setattr(EMP_Settings, _n, _pref_property(_n))
 
-classes = (EMP_BrushSettings, EMP_PathEntry, EMP_Settings, EMP_Preferences)
+classes = (EMP_BrushSettings, EMP_VertexPoint, EMP_VertexPath, EMP_PathEntry, EMP_Settings, EMP_Preferences)
 
 
 def register():
