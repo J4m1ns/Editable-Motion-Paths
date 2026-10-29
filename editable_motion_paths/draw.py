@@ -1883,14 +1883,24 @@ def _draw_pixel():
         _flat(pts, (1.0, 1.0, 1.0, 0.8), 'LINE_LOOP', 1.5)
 
     if state.hud is not None and ctx.area is not None and ctx.area.as_pointer() == state.hud_area:
-        text, (x, y) = state.hud
+        text, (x, y) = state.hud[:2]
         blf.size(font, 13 * us)
         w, h = blf.dimensions(font, text)
         sh = gpu.shader.from_builtin('UNIFORM_COLOR')
         gpu.state.blend_set('ALPHA')
         pad = 5 * us
-        x += 18 * us
-        y += 14 * us
+        sg = state.speed_graph
+        if len(state.hud) > 2 and state.hud[2] == 'GRAPH' and sg is not None and \
+                sg["area"] == ctx.area.as_pointer():
+            # above the speed graph's block, over its title and hint line (not over them)
+            x = sg["x0"]
+            y = sg["y1"] + (5.0 + 14.0 * getattr(st, "graph_text_size", 1.0) + 8.0) * us + pad
+        else:
+            x += 18 * us
+            y += 14 * us
+        # (never off the region)
+        x = min(max(x, pad + 2 * us), ctx.region.width - w - pad - 2 * us)
+        y = min(max(y, pad + 2 * us), ctx.region.height - h - pad - 2 * us)
         coords = [(x - pad, y - pad), (x + w + pad, y - pad), (x + w + pad, y + h + pad), (x - pad, y + h + pad)]
         sh.uniform_float("color", (0.0, 0.0, 0.0, 0.6))
         batch_for_shader(sh, 'TRI_FAN', {"pos": coords}).draw(sh)

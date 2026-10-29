@@ -193,7 +193,7 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   under the mouse - bumps, dips and steps at keys even out while you hold the button. Stroke as
   often as you like: the wheel sets the radius, **Shift+wheel** how much a stroke smooths (the band
   under the mouse is paler for a weak stroke, richer for a strong one; radius, strength and mode
-  are also written next to the mouse), **Esc** takes the strokes back (and you go on smoothing; Esc
+  are also written above the graph), **Esc** takes the strokes back (and you go on smoothing; Esc
   again leaves), Enter or a click is done - all of it one undo step. The strength and the mode stay
   for the next time.
   The path keeps its shape and the keys their frames (keys are added where needed, like *Ease*;
@@ -203,7 +203,9 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   under the brush move to where the smoothed speed brings the path to their poses, so the steps at
   keys go too. The keys keep their poses and order, keys next to each other never come closer
   than a frame (or than they were), the path's first and last keys and keys at a hold stay, and no
-  keys are added - the keys may end up on subframes. T again: the keys stay on their frames. after a drag the keys at both ends
+  keys are added. The keys land on whole frames (a weak stroke that doesn't move a key a whole
+  frame isn't lost: the next one goes on from there); hold **Ctrl** for subframes. T again: the
+  keys stay on their frames. after a drag the keys at both ends
   of the graph are selected too (one key selected: its neighbors - *Keep the Graph's Keys*), so
   the graph doesn't jump to other keys. While you drag, the graph keeps its frames and height.
 * Where the chart and the graph are and how they look - the **corner**, margins, width, heights,

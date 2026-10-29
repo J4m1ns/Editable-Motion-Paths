@@ -11,7 +11,7 @@ from . import compat
 caches = {}          # (obj_name, bone_name, type) -> core.PathCache
 baking = False       # True while frame-stepping for a bake
 modal_running = 0    # >0 while one of our modal operators is editing
-hud = None           # (text, (x, y)) shown next to the cursor
+hud = None           # (text, (x, y)[, 'GRAPH': above the speed graph instead]) shown next to the cursor
 hud_area = 0         # as_pointer() of the area showing the HUD
 box = None           # (x0, y0, x1, y1, mode) box-select rectangle in region space
 box_area = 0

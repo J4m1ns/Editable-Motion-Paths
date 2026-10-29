@@ -756,22 +756,25 @@ def change_speed(obj, bone=None, frame=None, amount=0.0, reach=1.0, mode=None):
                    amount=amount, reach=reach, **props)
 
 
-def smooth_speed(obj, bone=None, frames=None, radius=3.0, passes=3, mode=None, strength=0.5, slide_keys=False):
+def smooth_speed(obj, bone=None, frames=None, radius=3.0, passes=3, mode=None, strength=0.5, slide_keys=False,
+                 subframes=False):
     """Even out the speed (bumps, dips, steps at keys) between the first and last of `frames`
     (None: the whole path) - the right-drag brush of the speed graph, run along it `passes`
     times, `strength` (0.1 - 1) of the way each time. The path keeps its shape and the keys their
     frames - or (slide_keys, T in the graph) the keys in between slide in time with the smoothed
-    speed, so the steps in it at keys go too (the first and last keys stay; no keys added)."""
+    speed, so the steps in it at keys go too (on whole frames unless subframes; the first and last
+    keys stay; no keys added)."""
     from .ops_timetools import smooth_speed as _smooth
     with _in_mode(_valid_mode(mode)):
         c = _cache(obj, bone, mode)
         ks = [k.t for k in c.keys]
         a, b = (ks[0], ks[-1]) if not frames else (min(frames), max(frames))
         step = max(radius * 0.5, 0.5)
+        residual = {}
         for _p in range(max(1, int(passes))):
             t = a
             while t <= b + 1e-6:
-                _smooth(c, t, radius, None, min(max(strength, 0.1), 1.0), slide_keys)
+                _smooth(c, t, radius, None, min(max(strength, 0.1), 1.0), slide_keys, subframes, residual)
                 t += step
         c.refresh(force=True)
     _push("Smooth Speed")

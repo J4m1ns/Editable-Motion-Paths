@@ -91,7 +91,9 @@ class Fitter:
         self.target = target
         self._vals = {}
         self._der = {}
-        n = max(1, int(round((r1 - r0) / STEP)))
+        # (at least 8 steps: on a range of a frame or two, 2 - 3 samples left the slopes at its ends
+        # to chance - the speed dipped at every key)
+        n = max(8, int(round((r1 - r0) / STEP)))
         self.S = [r0 + (r1 - r0) * i / n for i in range(n + 1)]
         self.moff = _modifier_offsets(ch, self.chans, self.S)
         self.Y = [self.value(t) for t in self.S]
