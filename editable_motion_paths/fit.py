@@ -349,7 +349,9 @@ class Fitter:
             # the whole frame nearest to the worst error that isn't a key yet
             base = float(round(t))
             cand = [base + d for d in (0.0, -1.0, 1.0, -2.0, 2.0)]
-            cand = [x for x in cand if x not in knots and self.r0 < x < self.r1]
+            # (not right next to a key on a subframe: Blender would merge the two)
+            cand = [x for x in cand if self.r0 + 0.25 < x < self.r1 - 0.25 and
+                    min(abs(x - k) for k in knots) > 0.25]
             if not cand:
                 break
             bisect.insort(knots, cand[0])
@@ -422,7 +424,9 @@ def write(fitter, knots, slopes, select=True):
             kps.insert(t, fitter.value(t)[c], options={'FAST'})
         at = {round(kp.co[0], 3): kp for kp in kps}
         for i, t in enumerate(knots):
-            kp = at[round(t, 3)]
+            kp = at.get(round(t, 3))
+            if kp is None:      # (Blender merged it with a key a hair away: that one)
+                kp = min(kps, key=lambda k, t=t: abs(k.co[0] - t))
             y = fitter.value(t)[c]
             ml = slopes[t][0][c]
             mr = slopes[t][1][c]

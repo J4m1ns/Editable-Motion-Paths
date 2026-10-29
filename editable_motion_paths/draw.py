@@ -1504,7 +1504,10 @@ def _draw_speed_graph(ctx, st, us):
     reach = state.speed_reach
     if reach is not None and reach[0] == cache.key:
         # how far a speed drag spreads (the mouse wheel): a band, as strong as the change there
-        _key, tc, sl, sr = reach
+        _key, tc, sl, sr = reach[:4]
+        # (smoothing: paler for a weak stroke, richer for a strong one; key-coloured when keys slide)
+        power = 0.5 if len(reach) < 5 else reach[4]
+        bc = kc if len(reach) > 5 and reach[5] else sc
         a, b = max(tc - 3.0 * sl, t0), min(tc + 3.0 * sr, t1)
         if b > a:
             band, bar = [], []
@@ -1518,9 +1521,11 @@ def _draw_speed_graph(ctx, st, us):
                 band.append(((xa, gy0), (xb, gy0 + gh), wgt))
                 bar.append(((xa, gy0), (xb, gy0 + bh), wgt))
             for (xa, ya), (xb, yb), wgt in band:
-                _flat([(xa, ya), (xb, ya), (xb, yb), (xa, ya), (xb, yb), (xa, yb)], sc + (0.10 * wgt,), 'TRIS')
+                _flat([(xa, ya), (xb, ya), (xb, yb), (xa, ya), (xb, yb), (xa, yb)],
+                      bc + (0.20 * power * wgt,), 'TRIS')
             for (xa, ya), (xb, yb), wgt in bar:
-                _flat([(xa, ya), (xb, ya), (xb, yb), (xa, ya), (xb, yb), (xa, yb)], sc + (0.25 + 0.65 * wgt,), 'TRIS')
+                _flat([(xa, ya), (xb, ya), (xb, yb), (xa, ya), (xb, yb), (xa, yb)],
+                      bc + ((0.25 + 0.65 * wgt) * (1.0 if len(reach) < 5 else 0.3 + 0.7 * power),), 'TRIS')
     cur = ctx.scene.frame_current
     fc = tuple(st.graph_frame_color)
     if t0 <= cur <= t1:

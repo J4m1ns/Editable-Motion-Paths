@@ -1136,9 +1136,9 @@ def bump_frames(job, tg, dv, tc, sl, sr):
 
 class EMP_OT_speed_smooth(bpy.types.Operator):
     """Right-drag on the speed graph: smooth the speed under the mouse - bumps and dips even out, """ \
-        """also across keys (the keys keep their frames, the path its shape). Stroke as often as """ \
-        """you like; mouse wheel: the radius; Esc: take the strokes back (again: leave); Enter or """ \
-        """a click: done - one undo step"""
+        """also across keys (the keys keep their frames - T: they slide in time - the path its shape). """ \
+        """Stroke as often as you like; mouse wheel: the radius, Shift+wheel: the strength; Esc: take """ \
+        """the strokes back (again: leave); Enter or a click: done - one undo step"""
     bl_idname = "emp.speed_smooth"
     bl_label = "Smooth Speed"
     bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
@@ -1148,8 +1148,14 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
     radius: FloatProperty(name="Radius", default=3.0, min=0.25, soft_max=30.0,
                           description="How many frames around the mouse are smoothed (the mouse wheel while "
                                       "smoothing)")
+    strength: FloatProperty(name="Strength", default=0.5, min=0.1, max=1.0, subtype='FACTOR',
+                            description="How much a stroke smooths (Shift+wheel while smoothing)")
+    slide: BoolProperty(name="Slide Keys", default=False,
+                        description="The keys under the brush slide in time with the smoothed speed, so "
+                                    "a step in it at a key goes too (T while smoothing)")
 
     DAB = 0.08          # seconds between dabs while the button is held
+    last = (0.5, False)  # (the strength and the mode a session ended with: the next one starts with them)
 
     def _cache(self, context):
         for c in state.editable_caches(context.scene):
@@ -1164,10 +1170,11 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
             return {'CANCELLED'}
         self.c, self.sg, self.area = c, dict(sg), context.area
         tg = c.target()
-        self.snapshot = core.FCurveSnapshot(tg, tg.channels(c.ptype))
+        self.snapshot = pose_snapshot(c)      # (sliding keys moves the whole pose)
         self.sel = {round(k.t, 3) for k in c.keys if k.sel}
         self.tc = self._frame_at(event.mouse_region_x)
         self.dabs = 0                   # since the start (or the last Esc)
+        self.strength, self.slide = EMP_OT_speed_smooth.last
         self.painting = True            # (the right button that started it is held)
         state.speed_hold = {"cache": c.key, "lo": sg["lo"], "hi": sg["hi"], "vmax": sg["vmax"]}
         state.modal_running += 1
@@ -1183,17 +1190,19 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
 
     def _show(self):
         s = self.radius * 0.5
-        state.speed_reach = (self.c.key, self.tc, s, s)
+        # (the band: paler for a weak stroke, richer for a strong one; key-coloured when keys slide)
+        state.speed_reach = (self.c.key, self.tc, s, s, self.strength, self.slide)
+        mode = "keys slide (T)" if self.slide else "keys stay (T)"
         # (next to the mouse too: the header line is easy to miss)
         mouse = getattr(self, "mouse", None)
         if mouse is not None:
             state.hud_area = self.area.as_pointer()
-            state.hud = ("Smooth: radius %.1f (wheel)   strength %d%% (Shift+wheel)" % (
-                self.radius, round(getattr(self, "strength", 0.5) * 100)), (mouse[0] + 16, mouse[1] + 16))
+            state.hud = ("Smooth: radius %.1f (wheel)   strength %d%% (Shift+wheel)   %s" % (
+                self.radius, round(self.strength * 100), mode), (mouse[0] + 16, mouse[1] + 16))
         self.area.header_text_set(
             "Smooth Speed: right-drag over the bumps (as often as you like)   radius %.1f frames (wheel)   "
-            "strength %d%% (Shift+wheel)   Esc: take the strokes back%s   Enter / click: done" % (
-                self.radius, round(getattr(self, "strength", 0.5) * 100),
+            "strength %d%% (Shift+wheel)   %s   Esc: take the strokes back%s   Enter / click: done" % (
+                self.radius, round(self.strength * 100), mode,
                 "" if self.dabs else " (nothing to take back: Esc again leaves)"))
         state.tag_redraw()
 
@@ -1214,9 +1223,12 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
             wider = t in {'WHEELUPMOUSE', 'PAGE_UP', 'NUMPAD_PLUS'}
             if event.shift:
                 # Shift+wheel: how much a dab smooths (a stroke that doesn't smooth enough: more)
-                self.strength = min(max(getattr(self, "strength", 0.5) + (0.1 if wider else -0.1), 0.1), 1.0)
+                self.strength = min(max(self.strength + (0.1 if wider else -0.1), 0.1), 1.0)
             else:
                 self.radius = min(max(self.radius * (1.25 if wider else 0.8), 0.25), 60.0)
+            self._show()
+        elif t == 'T' and v == 'PRESS':
+            self.slide = not self.slide     # (the keys keep their frames / slide in time)
             self._show()
         elif t == 'RIGHTMOUSE' and v == 'PRESS':
             self.painting = True        # another stroke
@@ -1245,7 +1257,10 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def _dab(self):
-        smooth_speed(self.c, self.tc, self.radius, self.sel, getattr(self, "strength", 0.5))
+        moved = smooth_speed(self.c, self.tc, self.radius, self.sel, self.strength, self.slide)
+        if moved:
+            mv = {round(a, 3): b for a, b in moved.items()}
+            self.sel = {round(mv.get(t, t), 3) for t in self.sel}
 
     def _end(self, context, ok):
         if getattr(self, "_timer", None) is not None:
@@ -1253,6 +1268,7 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
             self._timer = None
         state.modal_running = max(0, state.modal_running - 1)
         state.speed_hold = None
+        EMP_OT_speed_smooth.last = (self.strength, self.slide)
         state.speed_reach = None
         state.hud = None
         self.area.header_text_set(None)
@@ -1265,20 +1281,22 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
         return {'FINISHED'} if ok else {'CANCELLED'}
 
 
-def smooth_speed(c, tc, radius, sel=None, strength=0.5):
+def smooth_speed(c, tc, radius, sel=None, strength=0.5, slide=False):
     """One dab of speed smoothing on path c around frame tc: within `radius` frames the speed
-    moves `strength` of the way (halfway) to its blurred self (also across keys); every segment
-    between keys still takes its frames and the path keeps its shape. sel: the key frames to keep
-    selected."""
+    moves `strength` of the way (halfway) to its blurred self (also across keys); the path keeps its
+    shape. Every segment between keys still takes its frames - or (slide) the keys under the brush
+    slide in time with the smoothed speed, so a step in it at a key goes too (they keep their order,
+    keys next to each other never come closer than a frame; the path's first and last keys and keys
+    at a hold stay). sel: the key frames to keep selected. Returns {old: new frame} of the keys slid."""
     import numpy as np
     c.refresh(force=True)
     sig = max(radius * 0.5, 0.1)
     ks = [float(k.t) for k in c.keys]
     segs = [(a, b) for a, b in zip(ks, ks[1:]) if b - a > 1e-6 and b > tc - 3 * sig and a < tc + 3 * sig]
     if not segs:
-        return
+        return {}
     tg = c.target()
-    jobs, ts, vs, owner = [], [], [], []
+    jobs, ts, vs, owner, dts = [], [], [], [], []
     for j, (a, b) in enumerate(segs):
         job = SpaceJob(c, tg, a, b)
         n = int(min(400, max(8, round((b - a) * 4))))
@@ -1289,25 +1307,123 @@ def smooth_speed(c, tc, radius, sel=None, strength=0.5):
             ts.append(a + dt * (i + 0.5))
             vs.append(max(s[i + 1] - s[i], 0.0) / dt)
             owner.append(j)
-    ts, vs, owner = np.array(ts), np.array(vs), np.array(owner)
+            dts.append(dt)
+    ts, vs, owner, dts = np.array(ts), np.array(vs), np.array(owner), np.array(dts)
     # (the blur reaches across keys: a step in the speed at a key evens out too)
     sb = max(sig * 0.5, 0.35)
     d = (ts[:, None] - ts[None, :]) / sb
     kern = np.exp(-0.5 * d * d)
     blur = (kern @ vs) / kern.sum(axis=1)
-    w = min(max(strength, 0.0), 1.0) * np.exp(-0.5 * ((ts - tc) / sig) ** 2)
+    reach = np.exp(-0.5 * ((ts - tc) / sig) ** 2)
+    w = min(max(strength, 0.0), 1.0) * reach
     new = vs + w * (blur - vs)
     from .props import prefs
     p = prefs()
+    keep_sel = True if p is None or p.speed_select_new or sel is None else sel
+    done, moved = set(), {}
+    if slide:
+        moved, done, keep_sel = _slide_keys(c, tg, segs, jobs, owner, dts, vs, new, reach, ks, tc, sig,
+                                            sel, keep_sel)
+        tg = c.target()
     for j, (job, n, dt) in enumerate(jobs):
-        if job.arc[-1] < 1e-9:
-            continue                # (a hold)
+        if j in done or job.arc[-1] < 1e-9:
+            continue                # (slid already / a hold)
         m = owner == j
         v = list(new[m] * dt)
         fn = speed_target(job, tg, v, [1.0 - x / 0.5 for x in w[m]])
-        refit(job, tg, fn, True if p is None or p.speed_select_new or sel is None else sel)
+        refit(job, tg, fn, keep_sel, **({"tolerance": SLIDE_TOLERANCE} if slide else {}))
         tg = c.target()
     c.refresh(force=True)
+    return moved
+
+
+SLIDE_TOLERANCE = 1e9     # (refit with sliding keys: no keys added - they slide instead)
+
+
+def _slide_keys(c, tg, segs, jobs, owner, dts, vs, new, reach, ks, tc, sig, sel, keep_sel):
+    """smooth_speed with sliding keys: the keys under the brush go where the smoothed speed
+    takes the path to their poses; the motion between them follows it. Returns ({old: new frame},
+    the segments done, the frames to keep selected)."""
+    import numpy as np
+    holds = {j for j, (job, n, dt) in enumerate(jobs) if job.arc[-1] < 1e-9}
+    fixed = set()
+    for j, (a, b) in enumerate(segs):
+        for t in (a, b):
+            if j in holds or t <= ks[0] + 1e-6 or t >= ks[-1] - 1e-6 or abs(t - tc) >= 3.0 * sig:
+                fixed.add(t)
+    # spans between fixed keys, every segment of them under the brush and none a hold
+    spans, cur = [], []
+    for j, (a, b) in enumerate(segs):
+        if cur and abs(segs[cur[-1]][1] - a) > 1e-6:
+            cur = []                # (not joined: a zero-length segment between)
+        if not cur and a not in fixed:
+            continue                # (the brush starts mid-span: its start lies outside the reach)
+        cur.append(j)
+        if b in fixed:
+            if len(cur) > 1:
+                spans.append(cur)
+            cur = []
+    moved, done = {}, set()
+    for span in spans:
+        idx = np.concatenate([np.nonzero(owner == j)[0] for j in span])
+        dt, v0, v1, rw = dts[idx], vs[idx], new[idx], 1.0 - reach[idx]
+        total = float((v0 * dt).sum())
+        if total < 1e-9:
+            continue
+        # (what the blur gains or loses on the way is made up away from the brush - else evenly)
+        need = total - float((v1 * dt).sum())
+        room = v0 * dt * rw
+        made = v1 * dt + (need * room / room.sum() if room.sum() > 0.05 * total else 0.0)
+        if made.min() < 0.0 or room.sum() <= 0.05 * total:
+            made = np.maximum(v1 * dt, 0.0)
+            made *= total / max(made.sum(), 1e-12)
+        a0 = segs[span[0]][0]
+        edges = np.concatenate([[a0], a0 + np.cumsum(dt)])
+        S0 = np.concatenate([[0.0], np.cumsum(v0 * dt)])        # (old arc, by old time)
+        S1 = np.concatenate([[0.0], np.cumsum(made)])           # (new arc, by old time's grid)
+        # a key's new frame: where the new arc reaches its pose (the old arc at its frame)
+        inner = [segs[j][1] for j in span[:-1]]
+        at = [float(np.interp(t, edges, S0)) for t in inner]
+        frames = np.interp(np.array(at), S1, edges) if S1[-1] > S1[0] else np.array(inner)
+        # in order, and keys next to each other no closer than a frame (or than they were)
+        lo, hi = segs[span[0]][0], segs[span[-1]][1]
+        bounds = [lo] + inner + [hi]
+        gaps = [min(bb - aa, 1.0) for aa, bb in zip(bounds, bounds[1:])]
+        out = list(frames)
+        for i in range(len(out)):
+            out[i] = max(out[i], (lo if i == 0 else out[i - 1]) + gaps[i])
+        for i in reversed(range(len(out))):
+            out[i] = min(out[i], (hi if i == len(out) - 1 else out[i + 1]) - gaps[i + 1])
+        # (a key that would hardly move stays where it is: new_t below must be where the keys are)
+        out = [t if abs(x - t) < 0.02 else round(float(x), 3) for x, t in zip(out, inner)]
+        if all(x == t for x, t in zip(out, inner)):
+            continue
+        # the motion over the span: the path as it was, travelled with the new speed
+        new_t = [lo] + out + [hi]
+        span_moved = {t: x for t, x in zip(inner, out) if x != t}
+        move_keys_in_time(c, span_moved, [t for t in span_moved if sel is not None and round(t, 3) in sel])
+        moved.update(span_moved)
+        if keep_sel is not True:
+            mv = {round(t, 3): x for t, x in span_moved.items()}
+            keep_sel = {round(mv.get(t, t), 3) for t in keep_sel}
+        tg = c.target()
+        for k in range(len(new_t) - 1):
+            ta, tb = new_t[k], new_t[k + 1]
+            # (the new arc over this segment, stretched to reach the next key's pose exactly - the
+            # segment as it was: sampled from key to key, so the poses at the keys stay as they were)
+            sa, sb = float(np.interp(ta, edges, S1)), float(np.interp(tb, edges, S1))
+            old = jobs[span[k]][0]
+
+            def fn(t, ta=ta, tb=tb, sa=sa, sb=sb, old=old):
+                s = float(np.interp(t, edges, S1))
+                u = (s - sa) / (sb - sa) if sb - sa > 1e-12 else (t - ta) / max(tb - ta, 1e-9)
+                tt = old._time_at_arc(old.arc[-1] * min(max(u, 0.0), 1.0))
+                return c.solve(tg, t, old._at(old.pts, tt), old._at(old.vals, tt))
+            # (no keys added: the keys slide instead - else every stroke would leave more keys)
+            refit(SpaceJob(c, tg, ta, tb), tg, fn, keep_sel, tolerance=SLIDE_TOLERANCE)
+            tg = c.target()
+        done.update(span)
+    return moved, done, keep_sel
 
 
 def speed_target(job, tg, v, rest_w=None):
