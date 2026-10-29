@@ -319,6 +319,23 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                 size = max(float(np.linalg.norm(P.max(axis=0) - P.min(axis=0))), 1e-6) if len(P) else 1e-6
                 self.orig[c.key] = (np.asarray(c.times, dtype=np.float64), P, size)
                 state.ghosts[c.key] = pts
+            # Smooth: the keys' own values as they were (every key is smoothed from these, once:
+            # the result doesn't depend on the order the brush goes over them)
+            self.raw, self.smoothed = {}, {}
+            if _bs().dissolve_smooth > 0.0:
+                for c in caches:
+                    tg = c.target()
+                    if tg is None:
+                        continue
+                    raw = []
+                    for fc in tg.channels(c.ptype).fcurves:
+                        kps = fc.keyframe_points if fc is not None else ()
+                        co = np.empty(len(kps) * 2, dtype=np.float64)
+                        if len(kps):
+                            kps.foreach_get("co", co)
+                        raw.append(co.reshape(-1, 2))
+                    self.raw[c.key] = raw
+                    self.smoothed[c.key] = set()
             # (many keys under the brush: a dab tries them for a while, a timer goes on with the
             # rest - also those the brush has already left - so the view keeps up; keys that had
             # to stay aren't tried again until a neighbor goes)
@@ -624,6 +641,11 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                 if s is not None and (s - m).length < self.radius:
                     under[r] = (s - m).length
                     todo.add(r)
+            if self.raw.get(c.key) is not None:
+                fresh = [alive[r] for r in under if r not in self.smoothed[c.key]]
+                if fresh:
+                    self._smooth_keys(c, fresh, st.dissolve_smooth)
+                    ks = [k for k in c.keys if not k.hidden]
             # under the brush now first (the nearest first), then those it went over before
             cands = sorted((r not in under, under.get(r, 0.0), alive[r]) for r in todo
                            if r in alive and (c.key, r) not in self.kept)
@@ -661,6 +683,62 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                     self.worst = max(self.worst, dev)
                     # (the keys around it have new neighbors now: worth another try)
                     self.kept = {kt for kt in self.kept if kt[0] != c.key or not lo <= kt[1] <= hi}
+
+    def _smooth_keys(self, c, times, sigma):
+        """Smooth: these keys' values (every channel) to the average of the keys around them as they
+        were (a Gaussian over ~sigma frames; the path's first and last key stay). The Tolerance then
+        counts from the smooth motion."""
+        import numpy as np
+        tg = c.target()
+        if tg is None:
+            return
+        want = {round(t, 3) for t in times}
+        touched = []
+        for fc, raw in zip(tg.channels(c.ptype).fcurves, self.raw[c.key]):
+            if fc is None or len(raw) < 3:
+                continue
+            T, V = raw[:, 0], raw[:, 1]
+            changed = False
+            for kp in fc.keyframe_points:
+                t = kp.co[0]
+                if round(t, 3) not in want or t <= T[0] + 1e-6 or t >= T[-1] - 1e-6:
+                    continue
+                # a curve through the keys around it (a parabola, weighted by distance in time):
+                # the tremble goes, the arcs stay (a plain average would flatten them)
+                x = T - t
+                w = np.exp(-(x * x) / (2.0 * sigma * sigma))
+                w[np.abs(x) > 3.0 * sigma] = 0.0
+                use = w > 1e-6
+                if use.sum() >= 4:
+                    X = np.stack([np.ones(use.sum()), x[use], x[use] * x[use]], axis=1)
+                    Wx = X * w[use][:, None]
+                    try:
+                        v = float(np.linalg.solve(X.T @ Wx, Wx.T @ V[use])[0])
+                    except np.linalg.LinAlgError:
+                        v = float((w * V).sum() / max(w.sum(), 1e-12))
+                else:
+                    v = float((w * V).sum() / max(w.sum(), 1e-12))
+                d = v - kp.co[1]
+                if abs(d) < 1e-12:
+                    continue
+                kp.co[1] = v
+                kp.handle_left[1] += d
+                kp.handle_right[1] += d
+                changed = True
+            if changed:
+                touched.append(fc)
+        self.smoothed[c.key].update(want)
+        if not touched:
+            return
+        core.update_fcurves(touched)
+        c.dirty = True
+        c.refresh(force=True)
+        # the reference for the Tolerance: the smooth motion (around the smoothed keys)
+        T0, P0, size = self.orig[c.key]
+        lo, hi = min(times) - 3.0 * sigma - 2.0, max(times) + 3.0 * sigma + 2.0
+        if len(c.times) == len(T0):
+            sel = np.nonzero((T0 >= lo) & (T0 <= hi))[0]
+            P0[sel] = np.array([tuple(c.points[i]) for i in sel], dtype=np.float64).reshape(-1, 3)
 
     def _write(self, context, by_cache):
         for c, moves in by_cache.items():
@@ -795,6 +873,7 @@ def _draw_settings(context, layout, tool):
     layout.prop(bs, "radius")
     if bs.brush == 'DISSOLVE':
         layout.prop(bs, "dissolve_tolerance")
+        layout.prop(bs, "dissolve_smooth")
         layout.prop(bs, "dissolve_keep_timing")
     else:
         layout.prop(bs, "strength", slider=True)
@@ -827,6 +906,7 @@ def draw_brushes(layout, context):
     row.prop(bs, "insert_keys")
     col = layout.column(heading="Dissolve", align=True)
     col.prop(bs, "dissolve_tolerance")
+    col.prop(bs, "dissolve_smooth")
     col.prop(bs, "dissolve_keep_timing")
 
 

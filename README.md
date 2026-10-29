@@ -29,7 +29,8 @@ bumps. The path keeps its shape and the keys stay on their frames.
 
 **Sculpt it.** The *Sculpt Motion Path* tool has brushes for the shape (Grab, Smooth, Pinch)
 and the timing (Slow, Fast, Even) - and **Dissolve**: one stroke over baked or mocap motion
-removes every key the path doesn't need, keeping it within the tolerance you set.
+removes every key the path doesn't need, keeping it within the tolerance you set - and with
+*Smooth*, the mocap tremble goes in the same stroke.
 
 ![One Dissolve stroke over a baked mocap path: hundreds of keys gone, the motion the same](docs/media/mocap-cleanup.gif)
 

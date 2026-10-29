@@ -171,6 +171,12 @@ class EMP_BrushSettings(bpy.types.PropertyGroup):
         name="Tolerance", subtype='PERCENTAGE', default=1.0, min=0.01, soft_max=10.0,
         description="Dissolve: a key goes only if the path then moves less than this (percent of the "
                     "path size)")
+    dissolve_smooth: FloatProperty(
+        name="Smooth", default=0.0, min=0.0, soft_max=10.0, precision=1,
+        description="Dissolve: first smooth out the tremble of the keys under the brush (mocap), over "
+                    "about this many frames around each key; then the keys the smooth motion doesn't need "
+                    "go (the Tolerance counts from the smooth motion). 0: off - only keys go, the motion "
+                    "stays exactly as it was")
     dissolve_keep_timing: BoolProperty(
         name="Keep Timing", default=True,
         description="Dissolve: the timing must stay too (where the bone is on every frame). Off: only "

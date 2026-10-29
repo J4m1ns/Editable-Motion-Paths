@@ -339,8 +339,12 @@ Its header also has the onion skin, center of mass, display and modifier buttons
 * **Dissolve**: paint over the keys the path doesn't need and they go - one by one, the nearest
   to the brush first, each only if the motion stays within *Tolerance* (percent of the path
   size). *Keep Timing* (on): where the bone is on every frame must stay; off: only the shape of
-  the path counts, so more keys can go. The old path shows as a ghost while you paint, and one
-  note at the end says how many keys went and how far the path moved. The ends of the path stay.
+  the path counts, so more keys can go. **Smooth** (frames; 0: off) is for mocap: the tremble of
+  the keys under the brush is smoothed out first (each key follows a curve through the keys
+  around it over about that many frames - arcs keep their shape), then the keys the smooth motion
+  doesn't need go, the *Tolerance* counting from the smooth motion. 1-3 frames removes the usual
+  mocap jitter. The old path shows as a ghost while you paint, and one note at the end says how
+  many keys went and how far the path moved. The ends of the path stay.
 
 **F**: radius, **Shift+F**: strength (shown like Blender's radial control), **Ctrl**: the
 opposite effect (Slow Down becomes Speed Up, Pinch pushes away), **Shift**: Smooth,
