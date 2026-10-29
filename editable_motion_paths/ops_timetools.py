@@ -1184,6 +1184,12 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
     def _show(self):
         s = self.radius * 0.5
         state.speed_reach = (self.c.key, self.tc, s, s)
+        # (next to the mouse too: the header line is easy to miss)
+        mouse = getattr(self, "mouse", None)
+        if mouse is not None:
+            state.hud_area = self.area.as_pointer()
+            state.hud = ("Smooth: radius %.1f (wheel)   strength %d%% (Shift+wheel)" % (
+                self.radius, round(getattr(self, "strength", 0.5) * 100)), (mouse[0] + 16, mouse[1] + 16))
         self.area.header_text_set(
             "Smooth Speed: right-drag over the bumps (as often as you like)   radius %.1f frames (wheel)   "
             "strength %d%% (Shift+wheel)   Esc: take the strokes back%s   Enter / click: done" % (
@@ -1195,6 +1201,7 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
         t, v = event.type, event.value
         if t in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             self.tc = self._frame_at(event.mouse_region_x)
+            self.mouse = (event.mouse_region_x, event.mouse_region_y)
             self._show()
         elif t == 'TIMER':
             if self.painting:
@@ -1247,6 +1254,7 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
         state.modal_running = max(0, state.modal_running - 1)
         state.speed_hold = None
         state.speed_reach = None
+        state.hud = None
         self.area.header_text_set(None)
         if not ok:
             self.snapshot.restore()

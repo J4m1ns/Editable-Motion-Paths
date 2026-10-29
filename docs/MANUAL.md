@@ -347,9 +347,8 @@ Its header also has the onion skin, center of mass, display and modifier buttons
   hangs from: Smooth also smooths the bone's other channels (its location in a rotation path)
   and, with *Smooth Parents* (off by default), the bones above it (shoulder, chest...) over the
   same frames - *Chain Length* says how many (0: all, like an IK constraint). Their keys stay,
-  only the path's own keys are dissolved. The path follows the parents' change while you paint,
-  near the brush first (on a heavy rig a few frames a dab - orange dots show where it is about to
-  go), and it is worked out whole again when the stroke ends. The **Smooth** brush has *Smooth Parents* and *Chain Length*
+  only the path's own keys are dissolved. While you paint, orange dots show where the path is
+  about to go (close, not exact); the path itself is worked out again when the stroke ends. The **Smooth** brush has *Smooth Parents* and *Chain Length*
   too, and so has the **Smooth** tool (Alt+S, in its redo panel, with *Parents Smooth*: over how
   many frames). The old path shows as a ghost while you paint, and one note at the end says how
   many keys went and how far the path moved. The ends of the path stay.

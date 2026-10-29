@@ -709,15 +709,13 @@ class EMP_OT_sculpt_stroke(bpy.types.Operator):
                     self.kept = {kt for kt in self.kept if kt[0] != c.key or not lo <= kt[1] <= hi}
 
     def _live_bake(self, c, center):
-        """The path follows its parents' smoothing on the spot: its parent space worked out again on
-        the frames waiting, the nearest to the brush first, for a moment each dab (the rest at the
-        next ones; the whole path again after the stroke)."""
+        """Show where the path goes as its parents are smoothed: dots for the frames the brush went
+        over (the path itself is worked out again after the stroke)."""
         todo = self.pending_bake.get(c.key)
         if not todo:
             return
-        order = sorted(todo, key=lambda f: abs(f - center))
-        done = core.rebake_frames(bpy.context.scene, c, order, budget=0.025)
-        todo.difference_update(done)
+        # (working the parent space out again here was too slow on a heavy rig - a frame of it
+        # costs as much as a frame of the whole rig: only the dots, the path after the stroke)
         self._preview_pending()
 
     def _preview_pending(self):
