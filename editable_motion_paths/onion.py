@@ -171,12 +171,24 @@ def _targets(scene):
                 if o.visible_get() and _how(o):
                     add(o, arm, _how(o))
     for obj in objs:
-        if _how(obj):
-            add(obj, None, _how(obj))
-        for o in obj.children_recursive:
-            if o.visible_get() and _how(o):
+        # (a mesh bent by an armature is ghosted bent - not as one stiff piece)
+        for o in [obj] + [o for o in obj.children_recursive if o.visible_get()]:
+            arm = deformed_by(o)
+            if arm is not None:
+                add(o, arm, 'DEFORM')
+            elif _how(o):
                 add(o, None, _how(o))
     return out
+
+
+def deformed_by(o):
+    """The armature bending a mesh (its first Armature modifier shown in the viewport), or None."""
+    if o.type != 'MESH':
+        return None
+    for m in o.modifiers:
+        if m.type == 'ARMATURE' and m.show_viewport and m.object is not None and m.object.type == 'ARMATURE':
+            return m.object
+    return None
 
 
 def _how(o):
@@ -883,6 +895,15 @@ def _watched_curves(scene):
             out += [(ob, fc) for fc in fcs if fc.data_path.startswith(pre) or not fc.data_path.startswith("pose.")]
         else:
             out += [(ob, fc) for fc in fcs]
+            # (a mesh bent by an armature: the armature's curves bend its ghosts too)
+            arm = deformed_by(ob)
+            if arm is not None and arm.name not in arms:
+                ad = arm.animation_data
+                if ad is not None and ad.action is not None:
+                    if getattr(ad, "use_tweak_mode", False) or any(not t.mute for t in ad.nla_tracks) or \
+                            getattr(ad.action, "use_cyclic", False):
+                        return None
+                    out += [(arm, fc) for fc in compat.get_fcurves(arm) or ()]
     return out
 
 

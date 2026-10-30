@@ -21,19 +21,31 @@ _DEFORMS = {'ARMATURE', 'CAST', 'CLOTH', 'CORRECTIVE_SMOOTH', 'CURVE', 'DISPLACE
 
 
 def active_vertex(obj):
-    """The index of the mesh's active vertex in Edit Mode (or its only selected one), or None."""
+    """The index of the mesh's active vertex in Edit Mode - or the vertex selected last, or its only
+    selected one - or None."""
     import bmesh
     if obj is None or obj.type != 'MESH' or obj.mode != 'EDIT':
         return None
     bm = bmesh.from_edit_mesh(obj.data)
-    act = bm.select_history.active
-    if isinstance(act, bmesh.types.BMVert):
-        bm.verts.index_update()
-        return act.index
-    sel = [v for v in bm.verts if v.select]
-    if len(sel) == 1:
-        bm.verts.index_update()
-        return sel[0].index
+    hist = [e for e in bm.select_history if isinstance(e, bmesh.types.BMVert) and e.select]
+    v = hist[-1] if hist else None
+    if v is None:
+        sel = [x for x in bm.verts if x.select]
+        v = sel[0] if len(sel) == 1 else None
+    if v is None:
+        return None
+    bm.verts.index_update()
+    return v.index
+
+
+def tracked_vertex(context):
+    """(object, vertex index) to track: the active object's active vertex, else another object's in
+    Edit Mode (several meshes edited at once); None when there is none."""
+    objs = [context.edit_object] + [o for o in (context.objects_in_mode or []) if o != context.edit_object]
+    for o in objs:
+        i = active_vertex(o)
+        if i is not None:
+            return o, i
     return None
 
 
@@ -52,7 +64,12 @@ class EMP_OT_track_vertex(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return active_vertex(context.edit_object) is not None
+        if context.mode != 'EDIT_MESH':
+            return False
+        if tracked_vertex(context) is None:
+            cls.poll_message_set("Click a vertex first (Vertex select mode): the active vertex is tracked")
+            return False
+        return True
 
     def invoke(self, context, event):
         sc = context.scene
@@ -69,11 +86,13 @@ class EMP_OT_track_vertex(bpy.types.Operator):
         row.prop(self, "frame_end")
 
     def execute(self, context):
-        obj = context.edit_object
-        idx = active_vertex(obj)
-        if idx is None:
-            self.report({'WARNING'}, "No active vertex")
+        got = tracked_vertex(context)
+        if got is None:
+            self.report({'WARNING'}, "No active vertex: click a vertex first")
             return {'CANCELLED'}
+        obj, idx = got
+        if context.view_layer.objects.active != obj:
+            context.view_layer.objects.active = obj
         a, b = sorted((self.frame_start, self.frame_end))
         sc = context.scene
         self.obj_name, self.idx, self.f0, self.f1 = obj.name, idx, a, b
@@ -157,18 +176,20 @@ class EMP_OT_track_vertex(bpy.types.Operator):
 
 
 class EMP_OT_vertex_path_remove(bpy.types.Operator):
-    """Remove this vertex's motion path"""
+    """Remove this vertex's motion path (-1: the one picked in the list)"""
     bl_idname = "emp.vertex_path_remove"
     bl_label = "Remove Vertex Path"
     bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
 
-    index: IntProperty()
+    index: IntProperty(default=-1)
 
     def execute(self, context):
         st = state.settings(context.scene)
-        if st is None or not 0 <= self.index < len(st.vertex_paths):
+        i = st.vertex_active_index if self.index < 0 else self.index
+        if st is None or not 0 <= i < len(st.vertex_paths):
             return {'CANCELLED'}
-        st.vertex_paths.remove(self.index)
+        st.vertex_paths.remove(i)
+        st.vertex_active_index = min(st.vertex_active_index, len(st.vertex_paths) - 1)
         state.tag_redraw()
         return {'FINISHED'}
 
@@ -179,4 +200,17 @@ def context_menu_entry(self, context):
     self.layout.operator(EMP_OT_track_vertex.bl_idname, icon='VERTEXSEL')
 
 
-classes = (EMP_OT_track_vertex, EMP_OT_vertex_path_remove)
+class EMP_UL_vertex_paths(bpy.types.UIList):
+    """The tracked vertices: their paths are only to look at."""
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        row = layout.row(align=True)
+        row.prop(item, "show", text="", emboss=False, icon='HIDE_OFF' if item.show else 'HIDE_ON')
+        name = "%s  ·  %d" % (item.object.name if item.object else "?", item.index)
+        row.label(text=name, icon='VERTEXSEL')
+        sub = row.row()
+        sub.alignment = 'RIGHT'
+        sub.label(text="%d - %d" % (item.frame_start, item.frame_start + max(len(item.points) - 1, 0)))
+
+
+classes = (EMP_OT_track_vertex, EMP_OT_vertex_path_remove, EMP_UL_vertex_paths)

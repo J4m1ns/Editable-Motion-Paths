@@ -48,7 +48,8 @@ range goes once around it and the current frame runs around (Display > Layout: A
 Path / Circle, with radius and frame range).
 
 In the path list, a click on a path's name edits only that path (its bone / object gets
-selected, also from the other mode), **Shift+click** adds it or takes it out; the paths being
+selected, also from the other mode), **Shift+click** adds it (on a highlighted one: makes it the
+active one; on the active one: takes it out - like Blender's Shift+click); the paths being
 edited are highlighted, like selected rows in the Outliner (the active one is also the list's
 highlighted row); **−** takes all the highlighted paths out of the list (with none, the active one).
 The arrow button next to a path isolates its curves of the current mode in
@@ -194,7 +195,7 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   often as you like: the wheel sets the radius, **Shift+wheel** how much a stroke smooths (the band
   under the mouse is paler for a weak stroke, richer for a strong one; radius, strength and mode
   are also written above the graph), **Esc** takes the strokes back (and you go on smoothing; Esc
-  again leaves), Enter or a click is done - all of it one undo step. The strength and the mode stay
+  again leaves), Enter or a click is done - all of it one undo step. The strength stays
   for the next time.
   The speed is smoothed as a curve, over the keys too - nothing holds it at a key, so the steps
   there even out as well: the keys keep their frames and their poses slide along the path. The
@@ -482,16 +483,18 @@ current frame, so it shows (and you edit) only the bone's or object's own motion
 along with the parent when the frame changes. *Camera* shows the motion as the active camera sees
 it: the path is drawn relative to the camera on the current frame, so with a camera that travels
 along with the character only what moves in its view is left (a run cycle tracked by the camera
-shows its bounce, not the distance covered). It is edited the same way, and when you change the
-camera's motion the path is worked out again.
+shows its bounce, not the distance covered). It is edited the same way; moving the camera by hand
+shows at once, and when you change the camera's motion (or pick another camera) the path is worked
+out again.
 
 **Track Motion Path** (a mesh vertex): in Edit Mode, make a vertex active, right-click and pick
 *Track Motion Path* at the bottom of the menu; set the *Range* (the scene's by default) and *Create
 Motion Path*. The vertex's positions are worked out frame by frame with the mesh as Blender makes
 it (bent by its armature, shape keys, lattices...; modifiers that add geometry, like Subdivision
 Surface, are off meanwhile) - on a heavy mesh that takes a while, the header shows how far it is
-and **Esc** stops. The path is only to look at (the vertex has no keys to edit): it is listed
-under the paths with a vertex icon (the eye shows / hides it, the X removes it), drawn with a dot
+and **Esc** stops. The path is only to look at (the vertex has no keys to edit): it is in its own
+list under the paths (vertex icon; the eye shows / hides it, **-** removes the picked one, **+**
+tracks the active vertex in Edit Mode), drawn with a dot
 on every frame and the current frame brighter, and kept in the file. After changing the
 animation, track it again to bring it up to date.
 

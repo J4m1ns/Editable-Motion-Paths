@@ -273,6 +273,7 @@ class EMP_PathEntry(bpy.types.PropertyGroup):
 class EMP_Settings(bpy.types.PropertyGroup):
     paths: CollectionProperty(type=EMP_PathEntry)
     vertex_paths: CollectionProperty(type=EMP_VertexPath)
+    vertex_active_index: IntProperty(name="Vertex Path", default=0)
     active_index: IntProperty()
     edit_mode: EnumProperty(
         name="Edit",

@@ -522,9 +522,59 @@ class EMP_OT_onion_mode(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class EMP_OT_path_space(bpy.types.Operator):
+    """Draw (and edit) the path in this space; the highlighted paths all take it"""
+    bl_idname = "emp.path_space"
+    bl_label = "Path Space"
+    bl_options = {'UNDO', 'INTERNAL'}
+
+    index: IntProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    space: EnumProperty(items=[('GLOBAL', "Global", ""), ('LOCAL', "Local", ""), ('CAMERA', "Camera", "")],
+                        options={'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, context, props):
+        from .props import EMP_PathEntry
+        it = {i.identifier: i for i in EMP_PathEntry.bl_rna.properties["space"].enum_items}.get(props.space)
+        return it.description if it is not None else ""
+
+    def execute(self, context):
+        st = state.settings(context.scene)
+        if not 0 <= self.index < len(st.paths):
+            return {'CANCELLED'}
+        st.paths[self.index].space = self.space
+        return {'FINISHED'}
+
+
+class EMP_OT_path_space_menu(bpy.types.Operator):
+    """Global / Local / Camera: the world, only the bone's / object's own motion, or as the active """ \
+        """camera sees it. The highlighted paths all take it"""
+    bl_idname = "emp.path_space_menu"
+    bl_label = "Path Space"
+    bl_options = {'INTERNAL'}
+
+    index: IntProperty(options={'HIDDEN', 'SKIP_SAVE'})
+
+    def invoke(self, context, event):
+        index = self.index
+        st = state.settings(context.scene)
+        if not 0 <= index < len(st.paths):
+            return {'CANCELLED'}
+        cur = st.paths[index].space
+
+        def draw(menu, _context):
+            for sp, name, icon in (('GLOBAL', "Global", 'WORLD'), ('LOCAL', "Local", 'ORIENTATION_LOCAL'),
+                                   ('CAMERA', "Camera", 'CAMERA_DATA')):
+                op = menu.layout.operator("emp.path_space", text=name, icon=icon, depress=sp == cur)
+                op.index, op.space = index, sp
+        context.window_manager.popup_menu(draw, title="Space")
+        return {'FINISHED'}
+
+
 class EMP_OT_path_pick(bpy.types.Operator):
-    """Edit this path: its bone / object gets selected (Shift: added to the selection, or taken out """ \
-        """of it - edit several paths at once)"""
+    """Edit this path: its bone / object gets selected (Shift: added to the selection - edit several """ \
+        """paths at once; on one already selected it becomes the active one, on the active one it is """ \
+        """taken out - like Blender's Shift+click)"""
     bl_idname = "emp.path_pick"
     bl_label = "Pick Path"
     bl_options = {'UNDO'}                  # (no redo panel: a click in a list)
@@ -562,7 +612,8 @@ class EMP_OT_path_pick(bpy.types.Operator):
                 vl.objects.active = ob
                 bpy.ops.object.mode_set(mode='POSE')
             if self.extend:
-                on = not compat.bone_selected(pb)
+                # (like Blender: selected but not active -> active; active -> out of the selection)
+                on = not (compat.bone_selected(pb) and ob.data.bones.active == pb.bone)
                 compat.bone_select_set(pb, on)
                 if on:
                     ob.data.bones.active = pb.bone
@@ -583,7 +634,7 @@ class EMP_OT_path_pick(bpy.types.Operator):
             if context.mode != 'OBJECT':
                 bpy.ops.object.mode_set(mode='OBJECT')
             if self.extend:
-                on = not ob.select_get()
+                on = not (ob.select_get() and vl.objects.active == ob)
                 ob.select_set(on)
                 if on:
                     vl.objects.active = ob
@@ -2077,7 +2128,7 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
             touched.add(fc)
 
 
-classes = (EMP_OT_com_reset_all, EMP_OT_com_set_weights, EMP_OT_path_pick, EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
+classes = (EMP_OT_com_reset_all, EMP_OT_com_set_weights, EMP_OT_path_pick, EMP_OT_path_space, EMP_OT_path_space_menu, EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
            EMP_OT_reset_graph_look, EMP_OT_com_limb_reset, EMP_OT_edit_limb_weight,
            EMP_OT_smoothing_none, EMP_OT_set_view, EMP_OT_onion_mode, EMP_OT_onion_update, EMP_OT_path_update,
            EMP_OT_edit_tool,

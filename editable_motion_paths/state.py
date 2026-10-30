@@ -149,7 +149,7 @@ def sync_caches(scene=None):
             other = next((o for o in caches.values() if o is not c and o.key[:2] == k[:2] and o.B), None)
             if other is not None:
                 c.fs, c.B, c.bake_id = other.fs, other.B, other.bake_id
-                c.Cam, c.cam_fs = other.Cam, other.cam_fs
+                c.Cam, c.cam_fs, c.cam_obj = other.Cam, other.cam_fs, other.cam_obj
         h = hidden.get(k, set())
         if h != c.hidden:
             c.hidden = h
@@ -592,7 +592,14 @@ _unhide_cost = {}       # mesh name -> seconds showing it again took (it is rebu
 def can_hide(o, frames, quick=False):
     """Hiding a bent mesh while stepping through `frames` frames saves evaluating it on each of
     them - worth it unless showing it again costs more: a heavy subdivided mesh is rebuilt from
-    scratch then (seconds), while a frame of it costs some 20-60 ms."""
+    scratch then (seconds), while a frame of it costs some 20-60 ms. Never one that is selected or
+    active: hiding takes it out of the selection (and it is what is being worked on)."""
+    try:
+        vl = bpy.context.view_layer
+        if o.select_get() or (vl is not None and vl.objects.active == o):
+            return False
+    except (RuntimeError, ReferenceError):
+        pass
     cost = _unhide_cost.get(o.name)
     if quick:
         # (a step of the background bake: showing it again must not stall that step)

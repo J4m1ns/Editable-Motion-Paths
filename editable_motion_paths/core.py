@@ -508,6 +508,8 @@ class PathCache:
         self.Cam = []           # the active camera's matrix on every baked frame (from cam_fs)
         self.cam_fs = 0
         self.cam = None         # Camera space: the frame whose camera view every frame is drawn in
+        self.cam_obj = ""       # (the camera the matrices are of)
+        self.cam_live = None    # Camera space: the camera's matrix right now (moved by hand meanwhile)
         self._cam_B = None      # (what it was made from, the parent spaces as seen from the camera)
         self.bake_id = 0
         self.sig = None
@@ -598,7 +600,9 @@ class PathCache:
         """Camera space: the parent spaces as the active camera sees them, from where it is on the
         current frame - the motion relative to the camera (a camera that follows the character:
         only what moves in its view is left)."""
-        key = (id(self.B), len(self.B), self.fs, self.cam, id(self.Cam))
+        if not self.Cam:
+            return self.B           # (not baked with a camera yet: it is being baked again)
+        key = (id(self.B), len(self.B), self.fs, self.cam, id(self.Cam), self.cam_live)
         if self._cam_B is not None and self._cam_B[0] == key:
             return self._cam_B[1]
         Cam, n = self.Cam, len(self.Cam)
@@ -606,7 +610,12 @@ class PathCache:
         def at(f):
             return Cam[min(max(int(round(f)) - self.cam_fs, 0), n - 1)]
         now = at(self.cam)
-        out = [now @ at(self.fs + i).inverted_safe() @ b for i, b in enumerate(self.B)]
+        # the camera moved by hand since the bake (G on it): that move taken as made on every frame -
+        # live = D @ now, every frame's camera D @ Cam(f), so the view of frame f is
+        # live @ Cam(f)^-1 @ D^-1 (a camera standing still: the world path, as it should be)
+        live = Matrix(self.cam_live) if self.cam_live is not None else now
+        back = now @ live.inverted_safe()
+        out = [live @ at(self.fs + i).inverted_safe() @ back @ b for i, b in enumerate(self.B)]
         self._cam_B = (key, out)
         return out
 
@@ -796,16 +805,28 @@ class PathCache:
         self.value_side = settings.value_side if settings else 'OUTSIDE'
         self.local = None
         self.cam = None
+        self.cam_live = None
         for e in (settings.paths if settings else ()):
             if e.object is not None and e.object.name == self.obj_name and e.bone_name == self.bone_name:
                 if e.local:
                     self.local = float(bpy.context.scene.frame_current)
-                elif e.camera and self.Cam:
-                    self.cam = float(bpy.context.scene.frame_current)
+                elif e.camera:
+                    scene = bpy.context.scene
+                    self.cam = float(scene.frame_current)
+                    camera = scene.camera
+                    if camera is not None:
+                        self.cam_live = tuple(tuple(round(x, 6) for x in row) for row in camera.matrix_world)
+                        ask = (self.bake_id, camera.name)
+                        if (not self.Cam or self.cam_obj != camera.name) and self.B and \
+                                getattr(self, "_cam_asked", None) != ask:
+                            # (baked without this camera: again, with it - once per bake, no endless baking)
+                            self._cam_asked = ask
+                            state.schedule_rebake(force=True, keep=True)
                 break
         lay = (settings.layout, settings.circle_radius, settings.circle_use_range, settings.circle_start,
                settings.circle_end) if settings and self.ptype in (SCALE, VALUE) else None
         sig = (self.bake_id, self.rot_len, tg.rot_mode, self.track_mode, self.value_side, lay, self.local, self.cam,
+               self.cam_live,
                tuple(tuple(_fc_signature(fc) for fc in ch.fcurves) for ch in used),
                tuple(tuple(ch.static) for ch in used))
         if not force and not self.dirty and sig == self.sig and self.valid:
@@ -1827,13 +1848,15 @@ class BakeJob:
             return
         alive = set(id(c) for c in state.caches.values())
         cams = self.cams if self.cams and all(m is not None for m in self.cams) else []
+        scene = scene_by_name(self.scene_name)
+        cam_obj = scene.camera.name if scene is not None and scene.camera is not None and cams else ""
         for c, mats, ok in self.items:
             if id(c) not in alive:
                 continue
             _fill_singular(mats, ok)
             c.fs = self.fs
             c.B = mats
-            c.Cam, c.cam_fs = cams, self.fs
+            c.Cam, c.cam_fs, c.cam_obj = cams, self.fs, cam_obj
             c.failed = False
             c.bake_id += 1
             c.dirty = True

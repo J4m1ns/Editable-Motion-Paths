@@ -549,7 +549,14 @@ class EMP_UL_paths(bpy.types.UIList):
             if cache is not None and cache.locked:
                 row.operator("emp.lock_info", text="", icon='LOCKED', emboss=False).reason = cache.lock_reason
             # isolate this path's curves in the Graph Editor (pressed while they are isolated)
-            row.prop(item, "space", text="", icon_only=True, emboss=False)
+            # Global / Local / Camera: the icon, and a white arrow a little apart (a dropdown menu)
+            icon = {'GLOBAL': 'WORLD', 'LOCAL': 'ORIENTATION_LOCAL', 'CAMERA': 'CAMERA_DATA'}[item.space]
+            sp = row.row(align=True)
+            sp.operator("emp.path_space_menu", text="", icon=icon, emboss=False).index = index
+            sp.separator(factor=0.4)
+            arrow = sp.row(align=True)
+            arrow.scale_x = 0.55
+            arrow.operator("emp.path_space_menu", text="\N{BLACK DOWN-POINTING TRIANGLE}", emboss=False).index = index  # (text: white)
             from .ops_tools import graph_isolated
             on = graph_isolated(item)
             row.operator("emp.graph_isolate", text="", emboss=False,
@@ -595,16 +602,13 @@ class EMP_PT_main(_Panel, bpy.types.Panel):
         col.separator()
         col.operator("emp.path_update", text="", icon='FILE_REFRESH')
         col.operator("emp.path_remove", text="", icon='TRASH').scope = 'ALL'
-        if len(st.vertex_paths):
+        if len(st.vertex_paths) or context.mode == 'EDIT_MESH':
             # tracked vertices (Edit Mode, right-click: Track Motion Path): only to look at
-            box = layout.column(align=True)
-            for i, e in enumerate(st.vertex_paths):
-                row = box.row(align=True)
-                row.prop(e, "show", text="", emboss=False, icon='HIDE_OFF' if e.show else 'HIDE_ON')
-                name = "%s  ·  vertex %d" % (e.object.name if e.object else "?", e.index)
-                row.label(text=name, icon='VERTEXSEL')
-                row.label(text="%d - %d" % (e.frame_start, e.frame_start + max(len(e.points) - 1, 0)))
-                row.operator("emp.vertex_path_remove", text="", icon='X', emboss=False).index = i
+            row = layout.row()
+            row.template_list("EMP_UL_vertex_paths", "", st, "vertex_paths", st, "vertex_active_index", rows=2)
+            col = row.column(align=True)
+            col.operator("emp.track_vertex", text="", icon='ADD')
+            col.operator("emp.vertex_path_remove", text="", icon='REMOVE').index = -1
 
         tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
         active = tool is not None and tool.idname in {"emp.edit_path_pose", "emp.edit_path_object"}
@@ -712,7 +716,6 @@ def _draw_onion(layout, st):
     scene = bpy.context.scene
     ms = onion.modes(scene)
     used = onion.mode_used(scene, st)
-    has_bones = 'BONES' in ms
     meshes = 'POINTS' in ms
     if len(ms) > 1:
         # only the modes that show something here (a light: no silhouette, no bones)
@@ -725,14 +728,7 @@ def _draw_onion(layout, st):
                 # (the chosen mode shows nothing here: the one drawn instead is pressed)
                 row.operator("emp.onion_mode", text=names[m], depress=m == used).mode = m
     if used != 'BONES' and meshes:
-        if has_bones:
-            layout.prop(st, "onion_show", text="Show")
-        else:
-            # (no armature: by weight / by object show nothing different)
-            row = layout.row(align=True)
-            row.label(text="Show")
-            row.prop_enum(st, "onion_show", 'WHOLE')
-            row.prop_enum(st, "onion_show", 'VGROUP')
+        layout.prop(st, "onion_show", text="Show")     # (a dropdown menu, with a rig or without)
         if st.onion_show == 'VGROUP':
             layout.prop(st, "onion_vgroup", text="", icon='GROUP_VERTEX')
     row = layout.row(align=True)
