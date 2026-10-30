@@ -196,16 +196,10 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   are also written above the graph), **Esc** takes the strokes back (and you go on smoothing; Esc
   again leaves), Enter or a click is done - all of it one undo step. The strength and the mode stay
   for the next time.
-  The path keeps its shape and the keys their frames (keys are added where needed, like *Ease*;
-  they are selected - *Select New Keys* in the preferences). With the keys on their frames, a step
-  in the speed right at a key can't fully go: each segment still takes its frames. Press **T**
-  while smoothing to let the **keys slide in time** (the band turns the key colour): the keys
-  under the brush move to where the smoothed speed brings the path to their poses, so the steps at
-  keys go too. The keys keep their poses and order, keys next to each other never come closer
-  than a frame (or than they were), the path's first and last keys and keys at a hold stay, and no
-  keys are added. The keys land on whole frames (a weak stroke that doesn't move a key a whole
-  frame isn't lost: the next one goes on from there); hold **Ctrl** for subframes. T again: the
-  keys stay on their frames. after a drag the keys at both ends
+  The speed is smoothed as a curve, over the keys too - nothing holds it at a key, so the steps
+  there even out as well: the keys keep their frames and their poses slide along the path. The
+  path keeps its shape, the motion outside the brush stays, and a hold stays a hold (keys are added
+  where needed, like *Ease*; they are selected - *Select New Keys* in the preferences); after a drag the keys at both ends
   of the graph are selected too (one key selected: its neighbors - *Keep the Graph's Keys*), so
   the graph doesn't jump to other keys. While you drag, the graph keeps its frames and height.
 * Where the chart and the graph are and how they look - the **corner**, margins, width, heights,

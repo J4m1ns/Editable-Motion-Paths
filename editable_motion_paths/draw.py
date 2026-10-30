@@ -1537,9 +1537,9 @@ def _draw_speed_graph(ctx, st, us):
     if reach is not None and reach[0] == cache.key:
         # how far a speed drag spreads (the mouse wheel): a band, as strong as the change there
         _key, tc, sl, sr = reach[:4]
-        # (smoothing: paler for a weak stroke, richer for a strong one; key-coloured when keys slide)
+        # (smoothing: paler for a weak stroke, richer for a strong one)
         power = 0.5 if len(reach) < 5 else reach[4]
-        bc = kc if len(reach) > 5 and reach[5] else sc
+        bc = sc
         a, b = max(tc - 3.0 * sl, t0), min(tc + 3.0 * sr, t1)
         if b > a:
             band, bar = [], []
