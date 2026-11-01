@@ -761,16 +761,17 @@ def smooth_speed(obj, bone=None, frames=None, radius=3.0, passes=3, mode=None, s
     (None: the whole path) - the right-drag brush of the speed graph, run along it `passes`
     times, `strength` (0.1 - 1) of the way each time. The path keeps its shape and the keys their
     frames (their poses slide along the path)."""
-    from .ops_timetools import smooth_speed as _smooth
+    from .ops_timetools import SpeedSmoother
     with _in_mode(_valid_mode(mode)):
         c = _cache(obj, bone, mode)
         ks = [k.t for k in c.keys]
         a, b = (ks[0], ks[-1]) if not frames else (min(frames), max(frames))
         step = max(radius * 0.5, 0.5)
+        sm = SpeedSmoother(c)
         for _p in range(max(1, int(passes))):
             t = a
             while t <= b + 1e-6:
-                _smooth(c, t, radius, None, min(max(strength, 0.1), 1.0))
+                sm.dab(t, radius, min(max(strength, 0.1), 1.0))
                 t += step
         c.refresh(force=True)
     _push("Smooth Speed")

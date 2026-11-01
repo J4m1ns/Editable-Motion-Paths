@@ -548,15 +548,10 @@ class EMP_UL_paths(bpy.types.UIList):
         if item.object is not None:
             if cache is not None and cache.locked:
                 row.operator("emp.lock_info", text="", icon='LOCKED', emboss=False).reason = cache.lock_reason
-            # isolate this path's curves in the Graph Editor (pressed while they are isolated)
-            # Global / Local / Camera: the icon, and a white arrow a little apart (a dropdown menu)
+            # Global / Local / Camera: the icon opens a menu of the three
             icon = {'GLOBAL': 'WORLD', 'LOCAL': 'ORIENTATION_LOCAL', 'CAMERA': 'CAMERA_DATA'}[item.space]
-            sp = row.row(align=True)
-            sp.operator("emp.path_space_menu", text="", icon=icon, emboss=False).index = index
-            sp.separator(factor=0.4)
-            arrow = sp.row(align=True)
-            arrow.scale_x = 0.55
-            arrow.operator("emp.path_space_menu", text="\N{BLACK DOWN-POINTING TRIANGLE}", emboss=False).index = index  # (text: white)
+            row.operator("emp.path_space_menu", text="", icon=icon, emboss=False).index = index
+            # isolate this path's curves in the Graph Editor (pressed while they are isolated)
             from .ops_tools import graph_isolated
             on = graph_isolated(item)
             row.operator("emp.graph_isolate", text="", emboss=False,

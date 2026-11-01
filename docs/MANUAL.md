@@ -38,7 +38,8 @@ to Blender's normal bone / object behaviour.
 | Mode | What is drawn | What editing changes |
 |---|---|---|
 | **1 Location** | Trajectory of the bone head / object origin | Location keys |
-| **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. A selected key (with several selected: the active one) shows the bone's **X, Y and Z rings**, like Blender's rotate gizmo: drag a ring to turn around that axis only (it follows the mouse steadily even when the ring is seen edge-on); the green Y ring around the bone twists it around its own axis (like Ctrl+T). Dragging the key itself turns the tip freely, like a **trackball**. The faint circle shows how far the tip can reach; drag it to turn around the view axis (like R). A purple **ribbon** along the path, turned like the bone's X axis, shows the twist (only shown: the rings edit it; Display: width and side). **Ctrl+T** twists the bone around its own axis |
+| **2 Rotation** | Trajectory of the bone **tip** | Rotation keys (Euler, Quaternion, Axis Angle). Dragging a point turns the bone so the tip lands under the mouse. A selected key (with several selected: the active one) shows the bone's **X, Y and Z rings**, like Blender's rotate gizmo (only their near halves, as
+there): drag a ring to turn around that axis only (it follows the mouse steadily even when the ring is seen edge-on); the green Y ring around the bone twists it around its own axis (like Ctrl+T). Dragging the key itself turns the tip freely, like a **trackball**. The faint circle shows how far the tip can reach; drag it to turn around the view axis (like R). A purple **ribbon** along the path, turned like the bone's X axis, shows the twist (only shown: the rings edit it; Display: width and side). **Ctrl+T** twists the bone around its own axis |
 | **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale, and a third green ribbon beside them for the Y scale (*outside* or *inside* the path's curves, like the Value track; on a circle always outside) that grows from a fixed inner edge like a graph, as wide as the Y scale, with one handle on its outer edge - or, in the preferences (*Scale Y: Color*), the Y scale as the color of the two ribbons (blue below 1, red above). A box at the current frame shows the current scale, its values written next to it (Display: *Box Values*; *Values at Keys* writes them at the keys) | Scale keys: a selected key shows a **scale gizmo** whose X and Z handles sit on the ribbon edges (drag an edge to make that ribbon wider; Y along the bone; the white one scales all). **Click** a gizmo handle to show that channel's handles as **whiskers** along the ribbon (time along the path, value across it) and pick both of them; drag a whisker to edit it. **V** and **T** (handle type, interpolation) work on the selected keys of that channel only, like on one curve in the Graph Editor. Clicking a whisker picks that handle (Shift: add another; undo brings the picking back). **Alt+S** makes the picked handles longer or shorter, **Alt+Shift+S** moves them up or down (both handles of a smooth key tilt together; one handle: the other one follows in line); with none picked, the channel's handles of the selected keys; I / O / B: before the key, after it, both. So the handles can be shaped from the keyboard alone. **S** scales all axes (X / Y / Z: one) |
 | **4 Value** | A **track** for one animated value (IK/FK switch, custom property, constraint influence…), *above the path* or *beside the path* (follows its shape in the plane of the motion, *outside* or *inside* its curves, and stays put when the view turns; on a circle a bigger value is always farther out) | That value: move its keys away from / toward the path. Pick the value in the sidebar or tool header |
 
@@ -194,9 +195,11 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   under the mouse - bumps, dips and steps at keys even out while you hold the button. Stroke as
   often as you like: the wheel sets the radius, **Shift+wheel** how much a stroke smooths (the band
   under the mouse is paler for a weak stroke, richer for a strong one; radius, strength and mode
-  are also written above the graph), **Esc** takes the strokes back (and you go on smoothing; Esc
-  again leaves), Enter or a click is done - all of it one undo step. The strength stays
-  for the next time.
+  are also written above the graph), **Ctrl+Z** takes back the last stroke, **Esc** all of them
+  (and you go on smoothing; Esc again leaves), Enter or a click is done - all of it one undo step
+  (like the knife). The strength stays for the next time. However many strokes, it never runs
+  away: every stroke works from the path as it was when you started, and where the bone can't
+  follow (a parent moving meanwhile) that stroke leaves the motion as it was.
   The speed is smoothed as a curve, over the keys too - nothing holds it at a key, so the steps
   there even out as well: the keys keep their frames and their poses slide along the path. The
   path keeps its shape, the motion outside the brush stays, and a hold stays a hold (keys are added
@@ -483,7 +486,8 @@ current frame, so it shows (and you edit) only the bone's or object's own motion
 along with the parent when the frame changes. *Camera* shows the motion as the active camera sees
 it: the path is drawn relative to the camera on the current frame, so with a camera that travels
 along with the character only what moves in its view is left (a run cycle tracked by the camera
-shows its bounce, not the distance covered). It is edited the same way; moving the camera by hand
+shows its bounce, not the distance covered; looking through the camera, its own path isn't
+drawn). It is edited the same way; moving the camera by hand
 shows at once, and when you change the camera's motion (or pick another camera) the path is worked
 out again.
 

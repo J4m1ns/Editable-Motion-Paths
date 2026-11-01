@@ -57,8 +57,9 @@ class EMP_OT_track_vertex(bpy.types.Operator):
     bl_label = "Track Motion Path"
     bl_options = {'REGISTER'}
 
-    frame_start: IntProperty(name="Start", description="First frame of the path")
-    frame_end: IntProperty(name="End", description="Last frame of the path")
+    # (never remembered from the last time: no range given means the scene's)
+    frame_start: IntProperty(name="Start", description="First frame of the path", options={'SKIP_SAVE'})
+    frame_end: IntProperty(name="End", description="Last frame of the path", options={'SKIP_SAVE'})
 
     BUDGET = 0.04       # seconds of frame stepping per tick (Blender stays responsive)
 
@@ -93,8 +94,13 @@ class EMP_OT_track_vertex(bpy.types.Operator):
         obj, idx = got
         if context.view_layer.objects.active != obj:
             context.view_layer.objects.active = obj
-        a, b = sorted((self.frame_start, self.frame_end))
         sc = context.scene
+        if not (self.properties.is_property_set("frame_start") or self.properties.is_property_set("frame_end")):
+            self.frame_start, self.frame_end = sc.frame_start, sc.frame_end     # (no range given: the scene's)
+        a, b = sorted((self.frame_start, self.frame_end))
+        if b - a < 1:
+            self.report({'WARNING'}, "The range needs at least two frames")
+            return {'CANCELLED'}
         self.obj_name, self.idx, self.f0, self.f1 = obj.name, idx, a, b
         self.f = a
         self.pts = []
@@ -170,8 +176,8 @@ class EMP_OT_track_vertex(bpy.types.Operator):
             e.points.add().co = p
         e.show = True
         state.tag_redraw()
-        self.report({'INFO'}, "Motion path of vertex %d: %d frames (%.1f s)" % (
-            self.idx, len(self.pts), time.time() - self.t_start))
+        self.report({'INFO'}, "Motion path of vertex %d: frames %d - %d (%.1f s)" % (
+            self.idx, self.f0, self.f0 + len(self.pts) - 1, time.time() - self.t_start))
         return {'FINISHED'}
 
 
@@ -197,6 +203,8 @@ class EMP_OT_vertex_path_remove(bpy.types.Operator):
 def context_menu_entry(self, context):
     """Edit Mode right-click menu, at the bottom."""
     self.layout.separator()
+    # (the menu may run its items without their popups - this one asks for the range first)
+    self.layout.operator_context = 'INVOKE_DEFAULT'
     self.layout.operator(EMP_OT_track_vertex.bl_idname, icon='VERTEXSEL')
 
 

@@ -846,6 +846,34 @@ def gizmo_key(cache):
     return sel[0]
 
 
+def front_runs(pts, center, rv3d):
+    """The parts of a closed ring (pts around center) on the side facing the view: [[points]]."""
+    if rv3d is None:
+        return [pts]
+    vi = rv3d.view_matrix.inverted()
+    if rv3d.is_perspective:
+        eye = vi.translation
+        toward = (eye - center).normalized()
+    else:
+        toward = (vi.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
+    front = [(p - center).dot(toward) >= 0.0 for p in pts]
+    if all(front):
+        return [pts]
+    runs, cur = [], []
+    n = len(pts)
+    start = next((i for i in range(n) if not front[i]), 0)     # (begin on the back: runs don't wrap)
+    for j in range(1, n + 1):
+        i = (start + j) % n
+        if front[i]:
+            cur.append(pts[i])
+        elif cur:
+            runs.append(cur)
+            cur = []
+    if cur:
+        runs.append(cur)
+    return [r for r in runs if len(r) > 1]
+
+
 def _draw_rot_rings(st, cache, tg, keys, rv3d, us):
     from . import space
     if not (st.show_rot_rings or st.show_reach):
@@ -859,8 +887,11 @@ def _draw_rot_rings(st, cache, tg, keys, rv3d, us):
             circ = space.reach_circle(center, r, rv3d)
             _lines(circ, [(1.0, 1.0, 1.0, 0.22)] * len(circ), 1.2 * us, 'LINE_STRIP')
         if st.show_rot_rings:
+            # (like Blender's rotate gizmo: only the half of each ring facing the view - its shape
+            # reads at once, and what is grabbed is on the near side)
             for part, pts in rings.items():
-                _lines(pts, [RING_COLORS[part] + (0.9,)] * len(pts), 2.0 * us, 'LINE_STRIP')
+                for run in front_runs(pts, center, rv3d):
+                    _lines(run, [RING_COLORS[part] + (0.9,)] * len(run), 2.0 * us, 'LINE_STRIP')
 
 
 def _lead_view(ctx):
@@ -942,7 +973,7 @@ def _draw_view():
             _part_failed("Vertex paths", ex)
     if not st.paths:
         return
-    caches = state.visible_caches(scene)
+    caches = [c for c in state.visible_caches(scene) if not state.seen_from_itself(c, ctx)]
     if not caches:
         return
     region, rv3d = ctx.region, ctx.region_data
@@ -1077,7 +1108,7 @@ def _draw_points(ctx, st, us):
         return project_many(region, rv3d, pts if shift[0] is None else [shift[0] @ p for p in pts])
 
     for cache in state.visible_caches(scene):
-        if not cache.valid:
+        if not cache.valid or state.seen_from_itself(cache, ctx):
             continue
         shift[0] = live_shift(cache)
         obj = bpy.data.objects.get(cache.obj_name)

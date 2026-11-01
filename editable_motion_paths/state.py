@@ -1232,3 +1232,14 @@ def unregister():
         if bpy.app.timers.is_registered(fn):
             bpy.app.timers.unregister(fn)
     caches.clear()
+
+
+def seen_from_itself(cache, context=None):
+    """The 3D view looks through the camera this path is of (its points would sit on the lens,
+    flickering): not drawn, not picked there."""
+    ctx = context or bpy.context
+    rv3d = getattr(ctx, "region_data", None)
+    scene = getattr(ctx, "scene", None)
+    cam = scene.camera if scene is not None else None
+    return rv3d is not None and cam is not None and getattr(rv3d, "view_perspective", "") == 'CAMERA' and \
+        cache.obj_name == cam.name and not cache.bone_name

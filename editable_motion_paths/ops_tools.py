@@ -630,6 +630,15 @@ class EMP_OT_path_pick(bpy.types.Operator):
                 ob.data.bones.active = pb.bone
                 state.forget_selected(state.selection_order())
                 state.note_selected((ob.name, e.bone_name))
+        elif self.extend and context.mode == 'POSE' and ob.type != 'ARMATURE':
+            # (Shift with bone paths being edited: the object joins them - its armature stays in
+            # Pose Mode, so the bones' paths stay edited too; the active object stays the armature)
+            on = not ob.select_get()
+            ob.select_set(on)
+            if on:
+                state.note_selected((ob.name, ""))
+            else:
+                state.forget_selected([(ob.name, "")])
         else:
             if context.mode != 'OBJECT':
                 bpy.ops.object.mode_set(mode='OBJECT')

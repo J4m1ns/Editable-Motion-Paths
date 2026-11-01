@@ -1138,7 +1138,8 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
     """Right-drag on the speed graph: smooth the speed under the mouse - bumps and dips even out, """ \
         """also across keys (the keys keep their frames, their poses slide along the path, the path """ \
         """keeps its shape). Stroke as often as you like; mouse wheel: the radius, Shift+wheel: the """ \
-        """strength; Esc: take the strokes back (again: leave); Enter or a click: done - one undo step"""
+        """strength; Ctrl+Z: take back the last stroke, Esc: all of them (again: leave); Enter or a """ \
+        """click: done - one undo step"""
     bl_idname = "emp.speed_smooth"
     bl_label = "Smooth Speed"
     bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
@@ -1166,13 +1167,16 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
         if sg is None or c is None:
             return {'CANCELLED'}
         self.c, self.sg, self.area = c, dict(sg), context.area
-        tg = c.target()
-        self.snapshot = pose_snapshot(c)      # (sliding keys moves the whole pose)
+        self.snapshot = pose_snapshot(c)
+        self.smoother = SpeedSmoother(c)
+        self.S0 = self.smoother.S.copy() if self.smoother.ok else None
+        self.strokes = []               # (the curves and the timing before each stroke: Ctrl+Z)
         self.sel = {round(k.t, 3) for k in c.keys if k.sel}
         self.tc = self._frame_at(event.mouse_region_x)
         self.dabs = 0                   # since the start (or the last Esc)
         self.strength = EMP_OT_speed_smooth.last
         self.painting = True            # (the right button that started it is held)
+        self._stroke_start()
         state.speed_hold = {"cache": c.key, "lo": sg["lo"], "hi": sg["hi"], "vmax": sg["vmax"]}
         state.modal_running += 1
         self._timer = context.window_manager.event_timer_add(self.DAB, window=context.window)
@@ -1195,7 +1199,8 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
             self.radius, round(self.strength * 100)), (0, 0), 'GRAPH')
         self.area.header_text_set(
             "Smooth Speed: right-drag over the bumps (as often as you like)   radius %.1f frames (wheel)   "
-            "strength %d%% (Shift+wheel)   Esc: take the strokes back%s   Enter / click: done" % (
+            "strength %d%% (Shift+wheel)   Ctrl+Z: the last stroke back   Esc: all of them%s   "
+            "Enter / click: done" % (
                 self.radius, round(self.strength * 100),
                 "" if self.dabs else " (nothing to take back: Esc again leaves)"))
         state.tag_redraw()
@@ -1221,8 +1226,11 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
             else:
                 self.radius = min(max(self.radius * (1.25 if wider else 0.8), 0.25), 60.0)
             self._show()
+        elif t == 'Z' and v == 'PRESS' and event.ctrl and not event.shift:
+            self._undo_stroke()
         elif t == 'RIGHTMOUSE' and v == 'PRESS':
             self.painting = True        # another stroke
+            self._stroke_start()
             self.tc = self._frame_at(event.mouse_region_x)
         elif t == 'RIGHTMOUSE' and v == 'RELEASE':
             if self.painting and not self.dabs:
@@ -1237,6 +1245,9 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
             self.snapshot.restore()
             self.c.dirty = True
             self.c.refresh(force=True)
+            if self.S0 is not None:
+                self.smoother.S[:] = self.S0
+            self.strokes.clear()
             self.dabs = 0
             self.painting = False
             pick.tag_anim_editors()
@@ -1248,7 +1259,27 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def _dab(self):
-        smooth_speed(self.c, self.tc, self.radius, self.sel, self.strength)
+        self.smoother.dab(self.tc, self.radius, self.strength, self.sel)
+
+    def _stroke_start(self):
+        if self.smoother.ok:
+            self.strokes.append((pose_snapshot(self.c), self.smoother.S.copy(), self.dabs))
+
+    def _undo_stroke(self):
+        """Ctrl+Z while smoothing: the last stroke taken back (like the knife's cuts)."""
+        while self.strokes:
+            snap, S, dabs = self.strokes.pop()
+            if dabs == self.dabs and self.strokes:
+                continue            # (a stroke not painted yet - a click without dabs: the one before)
+            snap.restore()
+            self.smoother.S[:] = S
+            self.dabs = dabs
+            self.painting = False
+            self.c.dirty = True
+            self.c.refresh(force=True)
+            pick.tag_anim_editors()
+            break
+        self._show()
 
     def _end(self, context, ok):
         if getattr(self, "_timer", None) is not None:
@@ -1270,77 +1301,125 @@ class EMP_OT_speed_smooth(bpy.types.Operator):
 
 
 def smooth_speed(c, tc, radius, sel=None, strength=0.5):
-    """One dab of speed smoothing on path c around frame tc: within `radius` frames the speed moves
-    `strength` of the way to its blurred self - as a curve, over the keys too (nothing holds it at a
-    key: no step stays). The keys keep their frames; their poses slide along the path where the
-    smoothed speed takes it. Worked out over the span from the key before the brush to the key
-    after it (a hold is left as it is), the path keeps its shape and the motion outside stays.
-    sel: the key frames to keep selected."""
-    import numpy as np
-    c.refresh(force=True)
-    sig = max(radius * 0.5, 0.1)
-    ks = [float(k.t) for k in c.keys]
-    if len(ks) < 2:
-        return
-    lo = max([k for k in ks if k <= tc - 3.0 * sig], default=ks[0])
-    hi = min([k for k in ks if k >= tc + 3.0 * sig], default=ks[-1])
-    if hi - lo < 1e-6:
-        return
-    tg = c.target()
-    # (a hold under the brush stays a hold: the spans end at it)
-    inner = [k for k in ks if lo - 1e-6 <= k <= hi + 1e-6]
-    spans, start = [], inner[0]
-    for x, y in zip(inner, inner[1:]):
-        if y - x > 1e-6 and (c.point(tg, y) - c.point(tg, x)).length < 1e-6 and \
-                (c.point(tg, (x + y) * 0.5) - c.point(tg, x)).length < 1e-6:
-            if x - start > 1e-6:
-                spans.append((start, x))
-            start = y
-    if inner[-1] - start > 1e-6:
-        spans.append((start, inner[-1]))
-    from .props import prefs
-    p = prefs()
-    keep_sel = True if p is None or p.speed_select_new or sel is None else sel
-    for r0, r1 in spans:
-        job = SpaceJob(c, tg, r0, r1)
-        total = job.arc[-1]
-        if total < 1e-9:
-            continue
-        n = int(min(1200, max(16, round((r1 - r0) * 4))))
-        g = np.linspace(r0, r1, n + 1)
-        s0 = np.interp(g, job.ts, job.arc)
-        dt = np.diff(g)
-        v = np.maximum(np.diff(s0), 0.0) / dt
-        ts = (g[:-1] + g[1:]) * 0.5
-        sb = max(sig * 0.5, 0.35)
-        d = (ts[:, None] - ts[None, :]) / sb
-        kern = np.exp(-0.5 * d * d)
-        blur = (kern @ v) / kern.sum(axis=1)
-        w = min(max(strength, 0.0), 1.0) * np.exp(-0.5 * ((ts - tc) / sig) ** 2)
-        steps = np.maximum(_smoothed_steps(v, blur, w, dt), 0.0)
-        steps *= total / max(float(steps.sum()), 1e-12)
-        arc = np.concatenate([[0.0], np.cumsum(steps)])
+    """One dab of speed smoothing on path c around frame tc (see SpeedSmoother.dab)."""
+    SpeedSmoother(c).dab(tc, radius, strength, sel)
 
-        def fn(t, job=job, arc=arc, g=g):
-            tt = job._time_at_arc(float(np.interp(t, g, arc)))
-            return c.solve(tg, t, job._at(job.pts, tt), job._at(job.vals, tt))
-        refit(job, tg, fn, keep_sel)
+
+class SpeedSmoother:
+    """Speed smoothing over a session of strokes. The path's shape is taken once, when it starts;
+    the strokes change only when the motion is where along it (a timing of its own, kept here) and
+    every dab writes the motion anew from that shape - the curves' small fitting errors never add
+    up (measured from the curves again and again, they made the path longer and longer: it blew
+    up). The speed is smoothed as a curve, over the keys too: the keys keep their frames, their poses
+    slide along the path; a hold stays a hold."""
+
+    STEP = 0.25         # frames per step of the timing
+
+    def __init__(self, c):
+        import numpy as np
+        c.refresh(force=True)
+        self.c = c
+        ks = [float(k.t) for k in c.keys]
+        self.ok = len(ks) >= 2 and ks[-1] - ks[0] > 1e-6
+        if not self.ok:
+            return
         tg = c.target()
-    c.refresh(force=True)
+        self.base = SpaceJob(c, tg, ks[0], ks[-1])
+        n = max(2, int(round((ks[-1] - ks[0]) / self.STEP)))
+        self.g = np.linspace(ks[0], ks[-1], n + 1)
+        self.S = np.interp(self.g, self.base.ts, self.base.arc)
+        mid = (self.g[:-1] + self.g[1:]) * 0.5
+        self.hold = np.zeros(n, dtype=bool)
+        self.holds = []
+        for x, y in zip(ks, ks[1:]):
+            sx, sy = (float(np.interp(t, self.base.ts, self.base.arc)) for t in (x, y))
+            if y - x > 1e-6 and sy - sx < 1e-6 * max(self.base.arc[-1], 1e-6):
+                self.hold |= (mid > x) & (mid < y)
+                self.holds.append((x, y))
+
+    def dab(self, tc, radius, strength, sel=None):
+        import numpy as np
+        if not self.ok:
+            return
+        c, g, S = self.c, self.g, self.S
+        sig = max(radius * 0.5, 0.1)
+        dt = g[1] - g[0]
+        v = np.maximum(np.diff(S), 0.0) / dt
+        ts = (g[:-1] + g[1:]) * 0.5
+        i0 = int(np.searchsorted(ts, tc - 3.7 * sig))
+        i1 = int(np.searchsorted(ts, tc + 3.7 * sig))
+        i0, i1 = max(0, i0), min(len(ts), i1)
+        if i1 - i0 < 2:
+            return
+        # (the blur sees a little past the brush: the speed there joins in)
+        sb = max(sig * 0.5, 0.35)
+        pad = int(3.0 * sb / dt) + 1
+        j0, j1 = max(0, i0 - pad), min(len(ts), i1 + pad)
+        tt = ts[j0:j1]
+        d = (tt[:, None] - tt[None, :]) / sb
+        kern = np.exp(-0.5 * d * d)
+        blur = ((kern @ v[j0:j1]) / kern.sum(axis=1))[i0 - j0:i1 - j0]
+        w = min(max(strength, 0.0), 1.0) * np.exp(-0.5 * ((ts[i0:i1] - tc) / sig) ** 2)
+        w[self.hold[i0:i1]] = 0.0
+        total = float(S[i1] - S[i0])
+        if total < 1e-12:
+            return
+        steps = np.maximum(_smoothed_steps(v[i0:i1], blur, w, np.full(i1 - i0, dt)), 0.0)
+        steps *= total / max(float(steps.sum()), 1e-12)
+        S_old = S[i0:i1 + 1].copy()
+        S[i0 + 1:i1 + 1] = S[i0] + np.cumsum(steps)
+        # the motion written anew from the shape, from the key before the brush to the key after it
+        ks = [float(k.t) for k in c.keys]
+        lo = max([k for k in ks if k <= g[i0] + 1e-6], default=ks[0])
+        hi = min([k for k in ks if k >= g[i1] - 1e-6], default=ks[-1])
+        if hi - lo < 1e-6:
+            return
+        from .props import prefs
+        p = prefs()
+        keep_sel = True if p is None or p.speed_select_new or sel is None else sel
+        tg = c.target()
+        base = self.base
+
+        def fn(t):
+            tt = base._time_at_arc(float(np.interp(t, g, S)))
+            return c.solve(tg, t, base._at(base.pts, tt), base._at(base.vals, tt))
+
+        def length():
+            c.refresh(force=True)
+            t2 = c.target()
+            n = max(2, int((hi - lo) * 4))
+            pts = [c.point(t2, lo + (hi - lo) * i / n) for i in range(n + 1)]
+            return sum((q - p).length for p, q in zip(pts, pts[1:]))
+        before = length()
+        snap = core.FCurveSnapshot(tg, tg.channels(c.ptype))
+        # (a hold under the brush is left out: the pieces on either side are fitted up to it)
+        cuts = sorted({lo, hi} | {t for x, y in self.holds for t in (x, y) if lo < t < hi})
+        for a, b in zip(cuts, cuts[1:]):
+            if b - a > 1e-6 and not any(abs(a - x) < 1e-6 and abs(b - y) < 1e-6 for x, y in self.holds):
+                refit(SpaceJob(c, tg, a, b), tg, fn, keep_sel)
+                tg = c.target()
+        # the same path at another pace is as long as it was: much longer, the motion goes back and
+        # forth along it (what the bone can't reach on those frames - a parent moving meanwhile):
+        # that dab is taken back
+        if length() > before * 1.1 + 1e-9:
+            snap.restore()
+            S[i0:i1 + 1] = S_old
+            c.dirty = True
+        c.refresh(force=True)
 
 
 def _smoothed_steps(v, blur, w, dt):
     """The distance per step after smoothing, the same in all: under the brush the speed goes to
     its blurred self; what that gains or loses is made up by the rest - in proportion to how little
-    the brush holds it there (a smooth weight: no notch), or, with too little of it left, by scaling
-    the whole of it."""
+    the brush holds it there (a smooth weight: no notch) when that is only a little, else by
+    scaling the whole of it (a big share on the brush's edges would make spikes there)."""
     import numpy as np
     v, blur, w, dt = (np.asarray(x, dtype=np.float64) for x in (v, blur, w, dt))
     total = float((v * dt).sum())
     new = (v + w * (blur - v)) * dt
     need = total - float(new.sum())
     room = v * (1.0 - w) * dt
-    if room.sum() > 1e-12 and 1.0 + need / room.sum() >= 0.2:
+    if room.sum() > 1e-12 and abs(need) <= 0.5 * room.sum():
         return new + room * (need / room.sum())
     return new * (total / max(float(new.sum()), 1e-12))
 

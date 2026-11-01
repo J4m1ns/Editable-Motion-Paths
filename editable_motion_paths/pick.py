@@ -84,7 +84,7 @@ def hit_test(context, mx, my, radius=None):
     # inside the drawn disc of a key, the key always wins over handles (a handle seen
     # end-on can be drawn right on top of its key)
     key_r = st.key_size * 0.5 * compat.ui_scale() + 2.0
-    for cache in state.visible_caches(context.scene):
+    for cache in [c for c in state.visible_caches(context.scene) if not state.seen_from_itself(c, context)]:
         if not cache.refresh():
             continue
         editable = cache.owner_selected()
@@ -97,7 +97,10 @@ def hit_test(context, mx, my, radius=None):
             if editable and cache.ptype == core.ROTATION and k is gk and (st.show_rot_rings or st.show_reach):
                 rings, _c, _r = space.rot_rings(cache, cache.target(), k, 32)
                 for part, pts in (rings.items() if st.show_rot_rings else ()):
-                    d = _polyline_distance(region, rv3d, pts, m)
+                    # (only the half drawn: the one facing the view)
+                    ds = [_polyline_distance(region, rv3d, run, m) for run in draw.front_runs(pts, _c, rv3d)]
+                    ds = [d for d in ds if d is not None]
+                    d = min(ds) if ds else None
                     if d is not None and d <= radius * 0.8:
                         cands.append((part, None, d + 0.8))
                 if st.show_reach:
@@ -138,7 +141,7 @@ def _dot_hit(context, region, rv3d, st, m):
         return None
     r = 6.0 * compat.ui_scale()
     best = None
-    for cache in state.editable_caches(context.scene):
+    for cache in [c for c in state.editable_caches(context.scene) if not state.seen_from_itself(c, context)]:
         lo, hi = draw.path_window(context.scene, st, cache)
         keys = {round(k.t, 3) for k in cache.keys}
         n = len(cache.times)
@@ -164,7 +167,7 @@ def line_hit(context, mx, my, radius=None):
     radius = radius or _radius()
     m = Vector((mx, my))
     best = None
-    for cache in state.editable_caches(context.scene):
+    for cache in [c for c in state.editable_caches(context.scene) if not state.seen_from_itself(c, context)]:
         lo, hi = draw.path_window(context.scene, st, cache)
         prev = None
         n = len(cache.times)
