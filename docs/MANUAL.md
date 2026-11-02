@@ -25,7 +25,8 @@ Remove button for extensions in the Add-ons tab).
 1. In Pose Mode, select one or more bones (or objects in Object Mode).
 2. Open Sidebar (N) > **Motion Paths** > **+**.
 3. Press **Edit Paths**, pick the *Edit Motion Path* tool in the toolbar, or press **Ctrl+T**
-   (Pose Mode).
+   (Pose Mode). **Sculpt Paths** under it turns the sculpt brushes on the same way (pressed
+   again: back to the tool you had).
 4. Click a key on the path to show its handles, then drag the key or a handle, or use
    G / R / S like on a mesh.
 
@@ -49,8 +50,11 @@ range goes once around it and the current frame runs around (Display > Layout: A
 Path / Circle, with radius and frame range).
 
 In the path list, a click on a path's name edits only that path (its bone / object gets
-selected, also from the other mode), **Shift+click** adds it (on a highlighted one: makes it the
-active one; on the active one: takes it out - like Blender's Shift+click); the paths being
+selected, also from the other mode), **Shift+click** (or Ctrl+click, like in the Outliner) adds
+it - a bone's path and an object's path can be edited together - on a highlighted one it makes it
+the active one, on the active one it takes it out (like Blender's Shift+click); what a row shows
+is what counts (a bone left selected while its armature was out of Pose Mode doesn't come back
+with it); the paths being
 edited are highlighted, like selected rows in the Outliner (the active one is also the list's
 highlighted row); **−** takes all the highlighted paths out of the list (with none, the active one).
 The arrow button next to a path isolates its curves of the current mode in

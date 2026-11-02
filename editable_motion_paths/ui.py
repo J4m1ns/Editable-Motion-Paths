@@ -606,11 +606,15 @@ class EMP_PT_main(_Panel, bpy.types.Panel):
             col.operator("emp.vertex_path_remove", text="", icon='REMOVE').index = -1
 
         tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
-        active = tool is not None and tool.idname in {"emp.edit_path_pose", "emp.edit_path_object"}
-        row = layout.row()
-        row.scale_y = 1.4
-        row.operator("emp.edit_tool", text="Editing Paths" if active else "Edit Paths",
-                     icon='CURVE_BEZCURVE', depress=active)
+        idname = tool.idname if tool is not None else ""
+        col = layout.column(align=True)
+        col.scale_y = 1.4
+        active = idname in {"emp.edit_path_pose", "emp.edit_path_object"}
+        col.operator("emp.edit_tool", text="Editing Paths" if active else "Edit Paths",
+                     icon='CURVE_BEZCURVE', depress=active).kind = 'EDIT'
+        active = idname in {"emp.sculpt_path_pose", "emp.sculpt_path_object"}
+        col.operator("emp.edit_tool", text="Sculpting Paths" if active else "Sculpt Paths",
+                     icon='SCULPTMODE_HLT', depress=active).kind = 'SCULPT'
         _draw_proportional(layout, st)
 
 

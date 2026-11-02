@@ -847,29 +847,36 @@ def gizmo_key(cache):
 
 
 def front_runs(pts, center, rv3d):
-    """The parts of a closed ring (pts around center) on the side facing the view: [[points]]."""
+    """The parts of a closed ring (pts around center, the last one = the first) on the side facing
+    the view: [[points]]. Cut exactly where the ring crosses the plane through its center (a point
+    put there), so the ends glide while the view turns instead of jumping a segment at a time."""
     if rv3d is None:
         return [pts]
     vi = rv3d.view_matrix.inverted()
     if rv3d.is_perspective:
-        eye = vi.translation
-        toward = (eye - center).normalized()
+        toward = (vi.translation - center).normalized()
     else:
         toward = (vi.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
-    front = [(p - center).dot(toward) >= 0.0 for p in pts]
-    if all(front):
+    d = [(p - center).dot(toward) for p in pts]
+    if min(d) >= 0.0:
         return [pts]
+    n = len(pts) - 1 if len(pts) > 1 and (pts[0] - pts[-1]).length < 1e-9 else len(pts)
+    start = next(i for i in range(n) if d[i] < 0.0)      # (begin on the back: no run wraps around)
     runs, cur = [], []
-    n = len(pts)
-    start = next((i for i in range(n) if not front[i]), 0)     # (begin on the back: runs don't wrap)
-    for j in range(1, n + 1):
-        i = (start + j) % n
-        if front[i]:
-            cur.append(pts[i])
-        elif cur:
-            runs.append(cur)
-            cur = []
-    if cur:
+    for j in range(n):
+        i0, i1 = (start + j) % n, (start + j + 1) % n
+        a, b = d[i0], d[i1]
+        if (a < 0.0) != (b < 0.0):
+            x = pts[i0].lerp(pts[i1], a / (a - b))      # (where it crosses the plane)
+            if b >= 0.0:
+                cur = [x]
+            else:
+                cur.append(x)
+                runs.append(cur)
+                cur = []
+        if b >= 0.0:
+            cur.append(pts[i1])
+    if len(cur) > 1:
         runs.append(cur)
     return [r for r in runs if len(r) > 1]
 
@@ -882,7 +889,7 @@ def _draw_rot_rings(st, cache, tg, keys, rv3d, us):
     for k in keys:
         if k is not gk:
             continue
-        rings, center, r = space.rot_rings(cache, tg, k)
+        rings, center, r = space.rot_rings(cache, tg, k, 96)      # (smooth: the cut glides)
         if st.show_reach:
             circ = space.reach_circle(center, r, rv3d)
             _lines(circ, [(1.0, 1.0, 1.0, 0.22)] * len(circ), 1.2 * us, 'LINE_STRIP')

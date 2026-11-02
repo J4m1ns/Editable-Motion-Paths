@@ -583,7 +583,8 @@ class EMP_OT_path_pick(bpy.types.Operator):
     extend: BoolProperty(name="Extend", default=False, options={'HIDDEN', 'SKIP_SAVE'})
 
     def invoke(self, context, event):
-        self.extend = event.shift
+        # (Shift or Ctrl, like the Outliner's Ctrl+click: add to the paths being edited)
+        self.extend = event.shift or event.ctrl
         return self.execute(context)
 
     def execute(self, context):
@@ -595,14 +596,38 @@ class EMP_OT_path_pick(bpy.types.Operator):
         if ob is None or not ob.visible_get():
             self.report({'WARNING'}, "Its object is hidden or gone")
             return {'CANCELLED'}
-        st.active_index = self.index
         vl = context.view_layer
+        pb = None
         if e.bone_name:
             pb = ob.pose.bones.get(e.bone_name) if ob.pose else None
             if pb is None:
                 return {'CANCELLED'}
+        # what the row shows decides (not the selection flags Blender keeps out of sight - a bone
+        # stays "selected" while its armature is out of Pose Mode, and its row isn't highlighted):
+        # Shift on a row not highlighted adds it, on a highlighted one makes it the active one, on
+        # the active one takes it out - like Shift+click in Blender
+        c = state.caches.get(state.entry_key(e))
+        shown = c is not None and c.owner_selected()
+        if self.extend and shown:
+            if st.active_index == self.index:
+                if pb is not None:
+                    compat.bone_select_set(pb, False)
+                else:
+                    ob.select_set(False)
+                state.forget_selected([(ob.name, e.bone_name)])
+            else:
+                st.active_index = self.index
+                if pb is not None:
+                    ob.data.bones.active = pb.bone
+                elif context.mode == 'OBJECT':
+                    vl.objects.active = ob
+            state.tag_redraw()
+            return {'FINISHED'}
+        st.active_index = self.index
+        if pb is not None:
             if context.mode != 'POSE' or ob not in (context.objects_in_mode or []):
-                # (its armature into Pose Mode; with Shift the other armatures already in it stay)
+                # (its armature into Pose Mode; with Shift the other armatures already in it stay,
+                # the objects selected stay selected)
                 if context.mode != 'OBJECT':
                     bpy.ops.object.mode_set(mode='OBJECT')
                 if not self.extend:
@@ -611,52 +636,35 @@ class EMP_OT_path_pick(bpy.types.Operator):
                 ob.select_set(True)
                 vl.objects.active = ob
                 bpy.ops.object.mode_set(mode='POSE')
-            if self.extend:
-                # (like Blender: selected but not active -> active; active -> out of the selection)
-                on = not (compat.bone_selected(pb) and ob.data.bones.active == pb.bone)
-                compat.bone_select_set(pb, on)
-                if on:
-                    ob.data.bones.active = pb.bone
-                    state.note_selected((ob.name, e.bone_name))      # (Offset Cascade: picked in this order)
-                else:
-                    state.forget_selected([(ob.name, e.bone_name)])
-            else:
+                # (its bones selected from before, not highlighted then, don't come up now)
+                for other in ob.pose.bones:
+                    if compat.bone_selected(other):
+                        compat.bone_select_set(other, False)
+            if not self.extend:
                 for o in context.objects_in_mode or [ob]:
                     if o.pose:
                         for other in o.pose.bones:
                             if compat.bone_selected(other):
                                 compat.bone_select_set(other, False)
-                compat.bone_select_set(pb, True)
-                ob.data.bones.active = pb.bone
                 state.forget_selected(state.selection_order())
-                state.note_selected((ob.name, e.bone_name))
+            compat.bone_select_set(pb, True)
+            ob.data.bones.active = pb.bone
+            state.note_selected((ob.name, e.bone_name))      # (Offset Cascade: picked in this order)
         elif self.extend and context.mode == 'POSE' and ob.type != 'ARMATURE':
             # (Shift with bone paths being edited: the object joins them - its armature stays in
             # Pose Mode, so the bones' paths stay edited too; the active object stays the armature)
-            on = not ob.select_get()
-            ob.select_set(on)
-            if on:
-                state.note_selected((ob.name, ""))
-            else:
-                state.forget_selected([(ob.name, "")])
+            ob.select_set(True)
+            state.note_selected((ob.name, ""))
         else:
             if context.mode != 'OBJECT':
                 bpy.ops.object.mode_set(mode='OBJECT')
-            if self.extend:
-                on = not (ob.select_get() and vl.objects.active == ob)
-                ob.select_set(on)
-                if on:
-                    vl.objects.active = ob
-                    state.note_selected((ob.name, ""))
-                else:
-                    state.forget_selected([(ob.name, "")])
-            else:
+            if not self.extend:
                 for o in context.selected_objects:
                     o.select_set(False)
-                ob.select_set(True)
-                vl.objects.active = ob
                 state.forget_selected(state.selection_order())
-                state.note_selected((ob.name, ""))
+            ob.select_set(True)
+            vl.objects.active = ob
+            state.note_selected((ob.name, ""))
         state.tag_redraw()
         return {'FINISHED'}
 
@@ -713,10 +721,22 @@ class EMP_OT_edit_tool(bpy.types.Operator):
     bl_idname = "emp.edit_tool"
     bl_label = "Edit Paths"
 
-    _previous = {}      # mode -> tool that was active before the path tool
+    kind: EnumProperty(items=[('EDIT', "Edit", ""), ('SCULPT', "Sculpt", "")], default='EDIT',
+                       options={'HIDDEN', 'SKIP_SAVE'})
+
+    _previous = {}      # mode -> tool that was active before the path tools
+    TOOLS = {"emp.edit_path_pose", "emp.edit_path_object", "emp.sculpt_path_pose", "emp.sculpt_path_object"}
+
+    @classmethod
+    def description(cls, context, props):
+        if props.kind == 'SCULPT':
+            return ("Turn the Sculpt Motion Path tool on or off (brushes: Grab, Smooth, Relax, Pinch, Dissolve, "
+                    "timing brushes...)")
+        return cls.__doc__
 
     def execute(self, context):
-        tool = "emp.edit_path_pose" if context.mode == 'POSE' else "emp.edit_path_object"
+        sculpt = self.kind == 'SCULPT'
+        tool = ("emp.sculpt_path_" if sculpt else "emp.edit_path_") + ("pose" if context.mode == 'POSE' else "object")
         if context.mode not in {'POSE', 'OBJECT'}:
             self.report({'WARNING'}, "Switch to Pose or Object Mode")
             return {'CANCELLED'}
@@ -731,7 +751,9 @@ class EMP_OT_edit_tool(bpy.types.Operator):
             # pressed again: back to the tool used before (like toggling a mode)
             new = EMP_OT_edit_tool._previous.get(context.mode) or "builtin.select_box"
         else:
-            EMP_OT_edit_tool._previous[context.mode] = cur
+            if cur not in self.TOOLS:
+                # (from Edit to Sculpt: pressed again, back to the tool before both)
+                EMP_OT_edit_tool._previous[context.mode] = cur
             new = tool
         with context.temp_override(area=area, region=next(r for r in area.regions if r.type == 'WINDOW')):
             bpy.ops.wm.tool_set_by_id(name=new)
