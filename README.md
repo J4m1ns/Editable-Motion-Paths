@@ -8,7 +8,12 @@ change goes straight into the F-Curves - you may never open the Graph Editor aga
 **No setup required:** it works on the rig you already have - any bones, constraints, IK,
 drivers, controls - and on plain objects. Nothing to add to the rig, nothing to bake.
 
-![Dragging a key of a hand's arc: the motion, its spacing and the onion ghosts follow live](docs/media/hero.gif)
+**Production-safe.** It only writes ordinary keys and handles - files open fine without the
+add-on, undo works as usual. Tested on Blender Studio's production rig *Rain*, also linked as
+a library override, with its constraints, drivers and IK.
+
+![A hand's arc and a head's rotation path edited by their keys and handles: the motion follows live](docs/media/hero.gif)
+<sub>Character: Rain by Blender Studio ([CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/))</sub>
 
 Free and open source, for Blender 4.4 and newer (tested on 4.4 and 5.2). Designed by an animator,
 written by an AI - [How it was made](#how-it-was-made) · [Support the project](#support-the-project).
@@ -18,7 +23,10 @@ written by an AI - [How it was made](#how-it-was-made) · [Support the project](
 **Shape the motion where you see it.** Click a key on the path, drag it, turn its handles, or
 select a few and press G, R, S. Rotation paths trace the bone tip, with rotation rings like
 Blender's gizmo; scale and custom values are drawn as ribbons and tracks along the path.
-Several bones can be edited at once, like multi-object Edit Mode.
+Several bones can be edited at once, like multi-object Edit Mode. Knife, bevel, loop cut and
+extrude work on the motion like on a mesh: cut a long move to add a key, round off a sharp turn.
+
+![Bevel rounding a sharp turn of the motion, then the knife cutting new keys into it](docs/media/knife-bevel.gif)
 
 **Draw the timing.** A dot per frame shows the spacing; the speed graph and the timing chart
 in the corner of the view can be dragged: pull a key's speed down for a slow-in, grab the curve
@@ -32,20 +40,29 @@ and the timing (Slow, Fast, Even) - and **Dissolve**: one stroke over baked or m
 removes every key the path doesn't need, keeping it within the tolerance you set - and with
 *Smooth*, the mocap tremble goes in the same stroke.
 
-![One Dissolve stroke over a baked mocap path: hundreds of keys gone, the motion the same](docs/media/mocap-cleanup.gif)
+![One Dissolve stroke over a path keyed on every frame: the keys and the tremble gone, the motion the same](docs/media/mocap-cleanup.gif)
 
 **See what the motion does.** Onion-skin ghosts of the whole character update while you edit;
 the path can be colored by speed or by a jitter heat map that finds hitches; the center of mass
 shows whether a pose is balanced and whether a jump's arc is a parabola.
 
-**Animator tools built in.** Easing presets with a live preview (P), Breakdown (blend a key
-between the poses around it), Moving Hold, Scale Time, Offset Cascade for overlap (in the order
-you pick the paths), Clean Up for baked keys, F-Curve modifiers as a stack, paths to curves and
-back.
+![Onion-skin ghosts of a hand updating while its path is edited; bending forward, the center of mass leaves the feet (red) and comes back over them (green)](docs/media/see-the-motion.gif)
 
-**Production-safe.** It only writes ordinary keys and handles - files open fine without the
-add-on, undo works as usual. Tested on Blender Studio's production rig *Rain*, also linked as
-a library override, with its constraints, drivers and IK.
+**Animator tools built in.** Easing presets with a live preview (P), Breakdown (blend a key
+between the poses around it), Moving Hold, Scale Time, Clean Up for baked keys, F-Curve
+modifiers as a stack, paths to curves and back.
+
+![The easing gallery: hovering a preset previews it on the path, Apply writes it](docs/media/easing-presets.gif)
+
+**Overlap in one drag.** *Offset Cascade* shifts bones in time in the order you click them:
+a ponytail or a tail waves instead of swinging like a stick.
+
+![Offset Cascade: the bones of a ponytail clicked from the root to the tip, one drag turns the swing into a wave](docs/media/offset-cascade.gif)
+
+**Loops stay loops.** *Shift Phase* moves a looping animation inside its loop: start the walk
+on the other foot - the frames, the length and the cycle stay the same.
+
+![Shift Phase on a walk cycle: the feet's loops keep their shape, the step starts on the other foot](docs/media/shift-phase.gif)
 
 **Ready for AI assistants.** A Python API lets an assistant such as Claude (through Blender MCP)
 read the motion (`analyze`), see it (`render_view`) and edit it in world space - see
@@ -81,26 +98,6 @@ Works on Blender **4.4 and newer**: the whole test suite runs on both 4.4 and 5.
 
 Everything else - every tool, setting and hotkey - is in the **[manual](docs/MANUAL.md)**.
 
-## Support the project
-
-The add-on is free and will stay free. What helps it most:
-
-* **Bug reports and feedback** - [open an issue](../../issues/new/choose); the form asks for
-  everything needed to track a bug down.
-* **Difficult rigs**, if you can share them: unusual constraints, space switches, drivers,
-  heavy characters. Every rig that breaks something makes the add-on better for everyone.
-
-And if it saves you time and you'd like to say thanks, I'd be very grateful for a donation:
-
-> **USDT (TRC20)** - TRON network only
->
-> ```
-> TUX1J4TEwDJNWNfjZUw6TocroKFPFz5B8F
-> ```
->
-> <img src="docs/media/usdt-trc20-qr.svg" alt="QR code of the USDT TRC20 address" width="160">
-
-
 ## How it was made
 
 I want to be clear about this: I'm a 3D artist, not a programmer. I designed this add-on - what
@@ -108,6 +105,36 @@ it should do, how it should feel in the hands of an animator - and I tested ever
 work, but I didn't write its code. The code, the tests and the documentation were written by
 **Claude**, Anthropic's AI model, following my design and my feedback, change by change. So the
 ideas and the decisions are mine, the development is Claude's.
+
+## Support the project
+
+The add-on is free and will stay free. What helps it most:
+
+* **Bug reports and feedback** - [open an issue](../../issues/new/choose); the form asks for
+  everything needed to track a bug down.
+* **Ideas** - something missing, slow or awkward in your animation work?
+  [Share an idea](../../issues/new?template=feature_request.yml): what you're trying to do and
+  how you imagine it.
+* **Difficult rigs**, if you can share them: unusual constraints, space switches, drivers,
+  heavy characters. Every rig that breaks something makes the add-on better for everyone.
+
+And if it saves you time and you'd like to say thanks, I'd be very grateful for a donation:
+
+> **BNB or USDT (BEP20)** - BNB Smart Chain, low fees
+>
+> ```
+> 0x73CF1632f6EBe87D22C8Aa60d57d7e3720e4aBcD
+> ```
+>
+> **USDT (TRC20)** - TRON network only
+>
+> ```
+> TUX1J4TEwDJNWNfjZUw6TocroKFPFz5B8F
+> ```
+>
+> <img src="docs/media/bnb-bep20-qr.svg" alt="QR code of the BNB Smart Chain (BEP20) address" width="180">
+> &nbsp;&nbsp;
+> <img src="docs/media/usdt-trc20-qr.svg" alt="QR code of the USDT TRC20 address" width="180">
 
 ## For developers
 
