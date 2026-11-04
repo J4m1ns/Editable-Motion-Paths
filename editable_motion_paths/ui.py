@@ -880,6 +880,8 @@ def _draw_display(layout, st, popover=False, context=None):
     col.prop(st, "show_handles")
     col.prop(st, "show_frame_numbers")
     col.prop(st, "show_all_handles")
+    if every or m == 'LOCATION':
+        col.prop(st, "show_move_gizmo")
     if every or m == 'ROTATION':
         col.prop(st, "show_rot_rings")
         col.prop(st, "show_reach")

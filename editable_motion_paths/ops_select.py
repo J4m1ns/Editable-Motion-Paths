@@ -146,6 +146,12 @@ class EMP_OT_click(bpy.types.Operator):
             state.tag_redraw()
             bpy.ops.emp.scale_whisker('INVOKE_DEFAULT', frame=hit.key.t, part=hit.part)
             return {'FINISHED'}
+        if hit.part in space.MOVE_AXES:
+            # move gizmo: drag an arrow to move along that axis, a square to move in its plane
+            self.gizmo = self.ring = None
+            self.move = hit.part
+            self._start_wait(context, event, hit, None)
+            return {'RUNNING_MODAL'}
         if hit.part in space.RING_AXES:
             # rotation ring: drag it to turn around its axis
             self.gizmo = None
@@ -266,7 +272,12 @@ class EMP_OT_click(bpy.types.Operator):
         if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             m = Vector((event.mouse_region_x, event.mouse_region_y))
             if (m - self.press).length >= max(self.threshold, 3):
-                if getattr(self, "ring", None) in {'RY', 'RB'}:
+                if getattr(self, "move", None):
+                    axis, plane = space.MOVE_AXES[self.move]
+                    bpy.ops.emp.transform('INVOKE_DEFAULT', mode='TRANSLATE', release_confirm=True,
+                                          start_x=int(self.press.x), start_y=int(self.press.y),
+                                          axis_index=axis, axis_plane=plane, header_orient=True)
+                elif getattr(self, "ring", None) in {'RY', 'RB'}:
                     # the green ring / the ribbon's handle: twist the bone around its own axis
                     bpy.ops.emp.transform('INVOKE_DEFAULT', mode='ROTATE', twist=True, release_confirm=True,
                                           start_x=int(self.press.x), start_y=int(self.press.y),
@@ -309,8 +320,9 @@ class EMP_OT_click(bpy.types.Operator):
                                   {(self.hit_key, round(self.hit_t, 3), ch, s) for s in ('L', 'R')}, context.scene)
             state.tag_redraw()
             return {'FINISHED'}
-        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and getattr(self, "ring", None):
-            return {'FINISHED'}         # rings are only dragged
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and \
+                (getattr(self, "ring", None) or getattr(self, "move", None)):
+            return {'FINISHED'}         # rings and the move gizmo are only dragged
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
             cache, k = self._find_key()
             if k is not None and self.release_action is not None:

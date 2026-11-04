@@ -901,6 +901,64 @@ def _draw_rot_rings(st, cache, tg, keys, rv3d, us):
                     _lines(run, [RING_COLORS[part] + (0.9,)] * len(run), 2.0 * us, 'LINE_STRIP')
 
 
+MOVE_COLORS = {'MX': GIZMO_COLORS['GX'][:3], 'MY': GIZMO_COLORS['GY'][:3], 'MZ': GIZMO_COLORS['GZ'][:3]}
+
+
+def _draw_move_gizmo(ctx, st, cache, keys, rv3d, us):
+    """Location paths: Blender's move gizmo at the selected (active) key - arrows along the axes
+    of the header's orientation and squares for the planes across them. Hidden while keys are
+    being moved."""
+    from . import space
+    if not st.show_move_gizmo or state.modal_running:
+        return
+    gk = gizmo_key(cache)
+    if gk is None or not any(k is gk for k in keys):
+        return
+    g = space.move_gizmo(ctx, cache, gk, ctx.region, rv3d)
+    if not g:
+        return
+    if rv3d.is_perspective:
+        view = (gk.co - rv3d.view_matrix.inverted().translation).normalized()
+    else:
+        view = (rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))).normalized()
+    tris, tcols, lines, lcols, edges, ecols = [], [], [], [], [], []
+    for part in ('MPX', 'MPY', 'MPZ'):
+        if part in g:
+            c, a = g[part]
+            col = MOVE_COLORS['M' + part[2]]
+            tris += [c[0], c[1], c[2], c[0], c[2], c[3]]
+            tcols += [col + (0.35 * a,)] * 6
+            for i in range(4):
+                lines += [c[i], c[(i + 1) % 4]]
+            lcols += [col + (0.9 * a,)] * 8
+    for part in ('MX', 'MY', 'MZ'):
+        if part not in g:
+            continue
+        a, b, alpha = g[part]
+        col = MOVE_COLORS[part]
+        ax = b - a
+        L = ax.length / 0.78           # (the arrow starts at 0.22 of the gizmo's size)
+        ax.normalize()
+        side = ax.cross(view)
+        if side.length < 1e-6:
+            continue
+        side.normalize()
+        head = b - ax * (L * 0.2)
+        lines += [a, head]
+        lcols += [col + (alpha,)] * 2
+        # (the arrowhead faces the view, so it reads from any side)
+        tri = [b, head + side * (L * 0.07), head - side * (L * 0.07)]
+        tris += tri
+        tcols += [col + (alpha,)] * 3
+        for i in range(3):
+            edges += [tri[i], tri[(i + 1) % 3]]
+        ecols += [col + (alpha,)] * 6
+    _smooth(tris, tcols, 'TRIS')
+    # (the filled triangles have no anti-aliasing: a thin smooth outline gives them soft edges)
+    _lines(edges, ecols, 1.0 * us)
+    _lines(lines, lcols, 2.0 * us)
+
+
 def _lead_view(ctx):
     """True for the 3D view a value track turns to face: with several views open (a camera view
     beside the working one), only one of them - not a camera view, the biggest - or the track
@@ -1037,6 +1095,8 @@ def _draw_view():
 
         if cache.ptype == core.SCALE:
             _draw_scale_gizmos(st, cache, keys, us)
+        elif cache.ptype == core.LOCATION and cache.circle is None:
+            _draw_move_gizmo(ctx, st, cache, keys, rv3d, us)
 
         if cache.ptype == core.ROTATION and st.show_spokes:
             tg = cache.target()
@@ -1870,6 +1930,9 @@ def _draw_mode_indicator(ctx, st, us):
                 any(k.sel for k in cache.keys):
             hint = "Drag a ring: turn around that axis (green: twist)   drag the key: turn freely   " \
                    "the faint circle: around the view"
+        if cache.ptype == core.LOCATION and st.show_move_gizmo and cache.owner_selected() and \
+                cache.circle is None and any(k.sel for k in cache.keys):
+            hint = "Drag an arrow: move along that axis   a square: in its plane   the key: freely"
     widths = [blf.dimensions(font, t)[0] for t, _a in parts]
     x = (region.width - sum(widths)) * 0.5
     y = 24 * us

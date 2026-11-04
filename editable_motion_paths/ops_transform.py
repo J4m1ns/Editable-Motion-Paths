@@ -421,6 +421,8 @@ class EMP_OT_transform(bpy.types.Operator):
     measure_from: FloatVectorProperty(size=3, options={'HIDDEN', 'SKIP_SAVE'})
     use_measure_from: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
     axis_plane: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    # the move gizmo: the axis (axis_index) is one of the header's orientation, like Blender's
+    header_orient: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
     ring_axis: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
     key_trackball: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'},
                                 description="Rotation keys turn like a trackball (dragging the key)")
@@ -773,6 +775,8 @@ class EMP_OT_transform(bpy.types.Operator):
             self.mouse_last = Vector((event.mouse_region_x, event.mouse_region_y))
         self.constraint = (self.axis_index, self.axis_plane) if self.axis_index >= 0 else None
         self.orient = 'GLOBAL'
+        if self.header_orient:
+            self._set_orient(context, space.orientation_type(context))
         self.numinput = NumInput()
         self.value = (1.0, 1.0, 1.0) if self.mode == 'SCALE' else (0.0, 0.0, 0.0)
         self.angle = 0.0

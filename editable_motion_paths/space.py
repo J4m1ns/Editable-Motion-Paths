@@ -7,7 +7,7 @@ from . import core, state
 
 ORIENTATIONS = [
     ('GLOBAL', "Global", "World axes"),
-    ('LOCAL', "Local", "Channel axes of each key (what the F-Curves edit)"),
+    ('LOCAL', "Local", "Axes of each key's bone (its channel axes) or object (turned with it)"),
     ('NORMAL', "Path", "Along the path: Y = direction of motion, X = sideways, Z = up"),
     ('VIEW', "View", "Screen axes"),
     ('CURSOR', "Cursor", "Axes of the 3D cursor"),
@@ -66,7 +66,12 @@ def path_frame(cache, t):
 
 
 def element_basis(cache, tg, k):
-    """Channel axes of a key in world space."""
+    """Local axes of a key in world space: a bone's channel axes; an object's own axes, turned
+    with it on the key's frame (like Blender's Local orientation - its location channels are in
+    its parent's space)."""
+    if cache.ptype == core.LOCATION and not tg.is_bone and cache.circle is None:
+        rot = tg.rot.values(k.t)
+        return _normalized((cache.B_at(k.t) @ tg.basis((0.0, 0.0, 0.0), rot, (1.0, 1.0, 1.0))).to_3x3())
     if cache.ptype != core.ROTATION:
         return _normalized(cache.B_at(k.t).to_3x3())
     M, _u = cache.rot_frame(tg, k.t)
@@ -94,6 +99,49 @@ def rot_rings(cache, tg, k, segments=48):
     return out, center, r
 
 
+# the move gizmo of location paths: (axis, in its plane - the square across that axis)
+MOVE_AXES = {'MX': (0, False), 'MY': (1, False), 'MZ': (2, False),
+             'MPX': (0, True), 'MPY': (1, True), 'MPZ': (2, True)}
+
+
+def move_gizmo(context, cache, k, region, rv3d):
+    """Location paths: the move gizmo at key k, like Blender's - arrows along the axes of the
+    header's orientation {'MX', 'MY', 'MZ': (start, tip, alpha)} (from a gap around the key, so
+    the key itself stays free to drag) and squares to move in the plane across an axis {'MPX',
+    'MPY', 'MPZ': ([4 corners], alpha)}. As big on the screen as Blender's gizmo (Preferences >
+    Viewport > Gizmo Size) at any zoom; an arrow pointing at the view / a square seen edge-on
+    fades out."""
+    from . import compat, pick
+    if region is None or rv3d is None:
+        return {}
+    us = compat.ui_scale()
+    per_px = pick.handle_min_world(region, rv3d, k.co) / (pick.MIN_HANDLE_PX * us)
+    if per_px <= 0.0:
+        return {}
+    L = context.preferences.view.gizmo_size * us * per_px
+    A = orientation_matrix(context, orientation_type(context), cache, k)
+    if rv3d.is_perspective:
+        view = (k.co - rv3d.view_matrix.inverted().translation).normalized()
+    else:
+        view = (rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))).normalized()
+    out = {}
+    for i, part in enumerate(('MX', 'MY', 'MZ')):
+        ax = A.col[i].normalized()
+        d = abs(ax.dot(view))
+        alpha = 1.0 if d < 0.9 else max(0.0, (0.98 - d) / 0.08)
+        if alpha > 0.05:
+            out[part] = (k.co + ax * (L * 0.22), k.co + ax * L, alpha)
+    for i, part in enumerate(('MPX', 'MPY', 'MPZ')):
+        u, v = A.col[(i + 1) % 3].normalized(), A.col[(i + 2) % 3].normalized()
+        d = abs(A.col[i].normalized().dot(view))
+        alpha = 1.0 if d > 0.3 else max(0.0, (d - 0.12) / 0.18)
+        if alpha > 0.05:
+            a0, a1 = L * 0.3, L * 0.48
+            out[part] = ([k.co + u * a0 + v * a0, k.co + u * a1 + v * a0, k.co + u * a1 + v * a1,
+                          k.co + u * a0 + v * a1], alpha)
+    return out
+
+
 def reach_circle(center, r, rv3d, segments=64):
     """The circle facing the view that shows how far the tip reaches."""
     import math
@@ -104,9 +152,23 @@ def reach_circle(center, r, rv3d, segments=64):
 
 
 def parent_basis(cache, tg, k):
-    if cache.ptype != core.ROTATION:
-        return _normalized(cache.B_at(k.t).to_3x3())
-    return _normalized(cache.rot_frame(tg, k.t)[0].to_3x3())
+    """Axes of the parent (like Blender's Parent orientation): a bone's parent bone (the
+    armature for a root bone), an object's parent object - on the key's frame. The channel space
+    also holds a bone's rest offset from its parent / an object's parent inverse: taken out."""
+    B = cache.B_at(k.t) if cache.ptype != core.ROTATION else cache.rot_frame(tg, k.t)[0]
+    B = B.to_3x3()
+    try:
+        if tg.is_bone:
+            bone = tg.owner.bone
+            off = bone.matrix_local.to_3x3().inverted()
+            if bone.parent is not None:
+                off = off @ bone.parent.matrix_local.to_3x3()
+            B = B @ off
+        elif tg.owner.parent is not None:
+            B = B @ tg.owner.matrix_parent_inverse.to_3x3().inverted()
+    except (ValueError, AttributeError):
+        pass            # (a singular rest / parent inverse: the channel space as it is)
+    return _normalized(B)
 
 
 def orientation_matrix(context, otype, cache=None, k=None):

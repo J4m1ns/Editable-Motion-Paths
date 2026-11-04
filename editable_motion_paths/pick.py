@@ -68,6 +68,12 @@ def _polyline_distance(region, rv3d, pts, m):
     return best
 
 
+def _in_quad(q, m):
+    """Is the screen point m inside the convex quad q (4 screen points, either winding)?"""
+    sides = [(q[(i + 1) % 4] - q[i]).cross(m - q[i]) for i in range(4)]
+    return all(s >= 0.0 for s in sides) or all(s <= 0.0 for s in sides)
+
+
 def hit_test(context, mx, my, radius=None):
     """Nearest key point or visible handle end under the mouse."""
     from . import draw as _draw
@@ -108,6 +114,17 @@ def hit_test(context, mx, my, radius=None):
                     d = _polyline_distance(region, rv3d, space.reach_circle(_c, _r, rv3d, 48), m)
                     if d is not None and d <= radius * 0.8:
                         cands.append(('RV', None, d + 1.2))
+            if editable and cache.ptype == core.LOCATION and k is gk and st.show_move_gizmo and \
+                    cache.circle is None:
+                for part, g in space.move_gizmo(context, cache, k, region, rv3d).items():
+                    if part in ('MX', 'MY', 'MZ'):
+                        d = _polyline_distance(region, rv3d, [g[0], g[1]], m)
+                        if d is not None and d <= radius * 0.8:
+                            cands.append((part, None, d + 0.6))
+                    else:
+                        corners = [location_3d_to_region_2d(region, rv3d, p) for p in g[0]]
+                        if all(s is not None for s in corners) and _in_quad(corners, m):
+                            cands.append((part, None, 0.4))
             if editable and cache.ptype == core.SCALE and k is gk:
                 cands += [(part, p, 0.3) for part, p in
                           draw.scale_gizmo_points(st, cache, k, region, rv3d).items() if part != 'GYb']
