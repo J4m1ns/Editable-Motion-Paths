@@ -479,7 +479,8 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
             self.report({'WARNING'}, self.WHY)
             return {'CANCELLED'}
         # (the order, on each path's first selected key - or its first key)
-        pts = [next((k.co.copy() for k in c.keys if k.sel), c.keys[0].co.copy()) for c in caches]
+        pts = [next((k.co.copy() for k in c.keys if k.sel), c.keys[0].co.copy() if c.keys else c.points[0].copy())
+               for c in caches]
         state.markers = (pts, context.area.as_pointer(), [str(i + 1) for i in range(len(caches))])
         return _HorizontalDrag.invoke(self, context, event)
 
@@ -488,9 +489,15 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
         _HorizontalDrag._finish(self, context)
 
     def _caches(self, context):
-        # (keys selected: those paths; none: every path of the selected bones / objects, whole)
-        caches = _selected_caches(context) or [c for c in state.editable_caches(context.scene) if c.keys]
-        self.whole = not any(k.sel for c in caches for k in c.keys)
+        # (keys selected on 2 paths or more: those paths; else every path of the selected bones /
+        # objects, whole - a click on a bone also picks the key under it, on that one path only)
+        caches = _selected_caches(context)
+        if len(caches) < 2:
+            # (a path with no keys in this mode moves too: its bone's other channels are its animation)
+            caches = [c for c in state.editable_caches(context.scene) if c.keys or c.points]
+            self.whole = True
+        else:
+            self.whole = False
         order = {k: i for i, k in enumerate(state.selection_order(context.scene))}
 
         def depth(c):
@@ -516,6 +523,10 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
                 shift_phase(c, d, self.loop, self.affect, ch)
                 continue
             sel = [k.t for k in c.keys if k.sel]
+            if len(sel) == len(c.keys):
+                # (every key of it: the whole animation moves - inside its loop, if it loops)
+                shift_phase(c, d, self.loop, self.affect, ch)
+                continue
             move_keys_in_time(c, {t: t + d for t in sel}, sel, affect=self.affect, channels=ch)
 
 

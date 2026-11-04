@@ -43,6 +43,7 @@ _watch_last = None
 force_numbers = False  # show key frame numbers (while sliding)
 ghosts = {}          # path key -> list of world points shown while dragging
 _action_hashes = {}  # action name -> {(data_path, index): hash}
+_bake_memo = []      # [(animation signature, {path key: its parent spaces...})] - the last bakes
 _bake_due = 0.0
 _bake_timer_on = False
 _force_bake = False
@@ -442,6 +443,50 @@ def _tracked_objects():
     if cam is not None and any(c.cam is not None for c in caches.values()):
         objs.update(_depends_on(cam))       # (Camera space: the camera's motion is in the paths)
     return objs
+
+
+def anim_signature(scene, hashes=None):
+    """What the paths' parent spaces are baked from, as one number: every curve, NLA, driver and
+    constraint that moves them (hashes: {object name: hashes} already worked out), and the range."""
+    from . import core
+    st = settings(scene)
+    if hashes is None:
+        hashes = {name: _fcurve_hashes(obj) for name, obj in _tracked_objects().items()}
+    cs = [c for c in caches.values()]
+    rng = core.bake_range(scene, st, cs) if st is not None and cs else None
+    return hash((tuple(sorted((n, tuple(sorted(h.items()))) for n, h in hashes.items())), rng,
+                 scene.camera.name if scene.camera is not None else ""))
+
+
+def remember_bake(sig, baked):
+    """A bake done: kept (the last few) by what it was baked from - Ctrl+Z back to that animation
+    takes them again at once, nothing baked anew."""
+    global _bake_memo
+    _bake_memo = [m for m in _bake_memo if m[0] != sig][-7:] + [(sig, baked)]
+
+
+def _bake_from_memo(scene):
+    """After an undo: the parent spaces baked for this very animation before, if they were.
+    True when every path got them."""
+    if not _bake_memo or not caches:
+        return False
+    sig = anim_signature(scene)
+    got = next((b for s, b in _bake_memo if s == sig), None)
+    if got is None:
+        return False
+    done = True
+    for k, c in caches.items():
+        m = got.get(k)
+        if m is None:
+            done = False
+            continue
+        c.fs, c.B, c.Cam, c.cam_fs, c.cam_obj = m
+        c.bake_id += 1
+        c.dirty = True
+        c.failed = False
+    if done:
+        remember_action_hashes()
+    return done
 
 
 def remember_action_hashes():
@@ -915,9 +960,17 @@ def _on_undo(*_args):
         sync_caches()
     except Exception:
         pass
+    # (the animation as it was before: its parent spaces were baked then - taken again at once,
+    # the paths show it right away instead of after a new bake)
+    try:
+        memo = _bake_from_memo(bpy.context.scene)
+        if memo:
+            _job = None         # (a bake half done was for the animation undone)
+    except Exception:
+        memo = False
     tag_redraw()
     st = settings()
-    if st is not None and st.auto_update and caches:
+    if st is not None and st.auto_update and caches and not memo:
         # a re-bake half done was for the animation before the undo: it starts over
         restart = _job is not None
         _job = None
@@ -941,6 +994,7 @@ def _on_load(*_args):
     caches.clear()
     ghosts.clear()
     _action_hashes.clear()
+    _bake_memo.clear()
     st = settings()
     if st is not None and st.paths:
         bpy.app.timers.register(_load_bake, first_interval=0.2)

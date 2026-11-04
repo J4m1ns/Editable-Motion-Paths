@@ -1753,6 +1753,7 @@ class BakeJob:
         self.t_spent = 0.0
         # the hashes of now: what changes while this runs is seen as a change afterwards
         state.remember_action_hashes()
+        self.memo_sig = state.anim_signature(scene, state._action_hashes)
 
     @property
     def done(self):
@@ -1848,6 +1849,7 @@ class BakeJob:
             return
         alive = set(id(c) for c in state.caches.values())
         cams = self.cams if self.cams and all(m is not None for m in self.cams) else []
+        baked = {}
         scene = scene_by_name(self.scene_name)
         cam_obj = scene.camera.name if scene is not None and scene.camera is not None and cams else ""
         for c, mats, ok in self.items:
@@ -1857,10 +1859,13 @@ class BakeJob:
             c.fs = self.fs
             c.B = mats
             c.Cam, c.cam_fs, c.cam_obj = cams, self.fs, cam_obj
+            baked[c.key] = (c.fs, c.B, c.Cam, c.cam_fs, c.cam_obj)
             c.failed = False
             c.bake_id += 1
             c.dirty = True
             c.refresh(force=True)
+        if baked:
+            state.remember_bake(getattr(self, "memo_sig", None), baked)
 
 
 def bake(scene, caches):

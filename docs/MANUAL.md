@@ -225,8 +225,10 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   * *Offset Cascade*: several bones / objects one after another (overlap, follow-through), **in
     the order you selected them** - click a key on the hand, Shift+click the hip, then the foot
     (or click the bones themselves in that order, or Shift+click their paths in the path list):
-    the first stays, the hip moves half as far as the foot. With keys selected those keys move;
-    with none, the whole animation of each bone / object. Numbers on the paths show the order
+    the first stays, the hip moves half as far as the foot. With keys selected on two paths or
+    more those keys move (every key of a path selected: its whole animation, inside its loop);
+    otherwise - none, or only the key a click on a bone picked - the whole animation of each bone
+    / object, also of a path with no keys in this mode (a tail turned only). Numbers on the paths show the order
     while you drag; box / circle selecting a path adds it as the next one, and after **A** every
     key goes in that order. *Loop* (on): looping curves (Cycles) shift inside their loop - its
     frames and length stay;
