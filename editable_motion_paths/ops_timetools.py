@@ -523,8 +523,11 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
                 shift_phase(c, d, self.loop, self.affect, ch)
                 continue
             sel = [k.t for k in c.keys if k.sel]
-            if len(sel) == len(c.keys):
-                # (every key of it: the whole animation moves - inside its loop, if it loops)
+            tg = c.target()
+            loops = self.loop and any(core.cycle_info(fc) for fc in affected_fcurves(tg, c, self.affect, ch))
+            if loops and len(sel) == len(c.keys):
+                # (every key of a looping path: its whole animation moves inside its loop - moved as
+                # keys, they would go past its end)
                 shift_phase(c, d, self.loop, self.affect, ch)
                 continue
             move_keys_in_time(c, {t: t + d for t in sel}, sel, affect=self.affect, channels=ch)

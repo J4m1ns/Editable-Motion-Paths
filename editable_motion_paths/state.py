@@ -480,6 +480,8 @@ def _bake_from_memo(scene):
         if m is None:
             done = False
             continue
+        if c.B is m[1] and c.fs == m[0]:
+            continue            # (the very bake it has: nothing to take again)
         c.fs, c.B, c.Cam, c.cam_fs, c.cam_obj = m
         c.bake_id += 1
         c.dirty = True
