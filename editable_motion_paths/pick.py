@@ -74,7 +74,7 @@ def _in_quad(q, m):
     return all(s >= 0.0 for s in sides) or all(s <= 0.0 for s in sides)
 
 
-def hit_test(context, mx, my, radius=None, fresh=True):
+def hit_test(context, mx, my, radius=None, fresh=True, dots=True):
     """Nearest key point or visible handle end under the mouse. fresh=False (hovering, on every
     mouse move): the paths as last drawn, not checked against their F-Curves again."""
     import numpy as np
@@ -169,7 +169,7 @@ def hit_test(context, mx, my, radius=None, fresh=True):
             if part == 'KEY' and d <= key_r and (best_key is None or d < best_key.dist):
                 best_key = Hit(cache, k, part, d)
     if best_key is None and best is None:
-        return _dot_hit(context, region, rv3d, st, m, fresh)
+        return _dot_hit(context, region, rv3d, st, m, fresh) if dots else None
     return best_key or best
 
 

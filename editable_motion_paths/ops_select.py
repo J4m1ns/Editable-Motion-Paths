@@ -33,12 +33,21 @@ def hover_hit(context, mx, my):
         return None
     if _chart_tick(context, mx, my) is not None:
         return None
-    hit = pick.hit_test(context, mx, my, fresh=False)
-    if hit is None and _paths_first():
-        hit = pick.hit_test(context, mx, my, radius=pick._radius() * PATHS_FIRST_REACH, fresh=False)
-        if hit is not None and (hit.part == 'DOT' or not hit.cache.owner_selected()):
-            hit = None
-    return hit
+    # (one pass with the wider reach of Paths First, then the same choice a click makes: a hit
+    # within the usual radius; else a frame dot; else - Paths First - the farther key of a path
+    # being edited)
+    near = pick._radius()
+    wide = near * PATHS_FIRST_REACH if _paths_first() else near
+    hit = pick.hit_test(context, mx, my, radius=wide, fresh=False, dots=False)
+    if hit is not None and hit.dist <= near:
+        return hit
+    dot = pick._dot_hit(context, context.region, context.region_data, state.settings(context.scene),
+                        Vector((mx, my)), fresh=False)
+    if dot is not None:
+        return dot
+    if hit is not None and hit.cache.owner_selected():
+        return hit
+    return None
 
 
 class EMP_OT_click(bpy.types.Operator):

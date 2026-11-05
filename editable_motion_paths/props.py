@@ -656,6 +656,10 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         name="Smooth Display", default=True, update=_redraw,
         description="Anti-aliased lines and dots (paths, keys, handles, ribbons, charts): softer edges, a "
                     "little more drawing work")
+    hover_highlight: BoolProperty(
+        name="Highlight Under Mouse", default=True, update=_redraw,
+        description="Light up what a click would grab: a key, a handle, a frame dot, a gizmo arrow or ring "
+                    "under the mouse (like Blender's gizmos)")
     scale_y_display: EnumProperty(
         name="Scale Y", update=_redraw,
         items=[('RIBBON', "Ribbon", "The Y scale is a third ribbon beside the other two, as wide as it; drag "
@@ -758,6 +762,7 @@ class EMP_Preferences(bpy.types.AddonPreferences):
         layout.use_property_split = True
         layout.use_property_decorate = False
         layout.prop(self, "smooth_display")       # (all of the add-on's drawing)
+        layout.prop(self, "hover_highlight")
         layout.separator()
         col = layout.column(heading="Keys")
         col.prop(self, "hotkey_priority")
@@ -848,7 +853,7 @@ def _pref_property(name):
 
 PREF_NAMES = ("color", "jitter_threshold", "show_ghost", "show_spokes", "show_repeats", "on_top", "line_width",
               "key_size", "rot_length", "ribbon_width", "rot_ribbon_width", "scale_box_size", "scale_y_display",
-              "smooth_display",
+              "smooth_display", "hover_highlight",
               "onion_color_before", "onion_color_after",
               "onion_other_display", "com_limb_color", "com_bone_color", "com_floor_detail", "graph_corner", "graph_margin_x", "graph_margin_y", "graph_width",
               "chart_height", "speed_height", "graph_text_size", "graph_bg", "speed_curve_color", "speed_fill_opacity",

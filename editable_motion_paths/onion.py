@@ -43,8 +43,32 @@ def busy():
 
 # ---- what to ghost --------------------------------------------------------------------
 
+_edited_memo = [None, None]     # (draw pass, scene) -> what _edited found: asked several times a pass
+
+
 def _edited(scene):
     """{armature name: {edited bone names}} and [edited objects that aren't armatures]."""
+    dp = state.draw_pass
+    if dp is not None and _edited_memo[0] == (dp, id(scene)):
+        arms, objs = _edited_memo[1]
+        return {k: set(v) for k, v in arms.items()}, list(objs)
+    arms, objs = _edited_now(scene)
+    if dp is not None:
+        _edited_memo[:] = [(dp, id(scene)), ({k: set(v) for k, v in arms.items()}, list(objs))]
+    return arms, objs
+
+
+def _selected_bone_names(ob):
+    """Names of the selected pose bones of ob - from Blender's own list when the context has one
+    (a rig with thousands of bones: no Python loop over all of them)."""
+    from . import compat
+    sel = getattr(bpy.context, "selected_pose_bones", None)
+    if sel is not None:
+        return {pb.name for pb in sel if pb.id_data == ob}
+    return {pb.name for pb in ob.pose.bones if compat.bone_selected(pb)}
+
+
+def _edited_now(scene):
     arms, objs = {}, []
     for c in state.visible_caches(scene):
         if not c.owner_selected():
@@ -60,11 +84,10 @@ def _edited(scene):
             objs.append(obj)
     if not arms and not objs:
         # no path shown: the selection (the ghosts don't need a path)
-        from . import compat
         vl = bpy.context.view_layer
         ob = vl.objects.active if vl else None
         if ob is not None and ob.type == 'ARMATURE' and ob.mode == 'POSE':
-            arms[ob.name] = {pb.name for pb in ob.pose.bones if compat.bone_selected(pb)}
+            arms[ob.name] = _selected_bone_names(ob)
         else:
             for o in getattr(bpy.context, "selected_objects", None) or []:
                 if o.type == 'ARMATURE':

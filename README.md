@@ -115,7 +115,9 @@ The add-on is free and will stay free. What helps it most:
   [Share an idea](../../issues/new?template=feature_request.yml): what you're trying to do and
   how you imagine it.
 * **Difficult rigs**, if you can share them: unusual constraints, space switches, drivers,
-  heavy characters. Every rig that breaks something makes the add-on better for everyone.
+  heavy characters - [share a rig](../../issues/new?template=rig.yml) (a zipped .blend or a
+  link; it becomes public, like all feedback here). Every rig that breaks something makes the
+  add-on better for everyone.
 
 And if it saves you time and you'd like to say thanks, I'd be very grateful for a donation:
 

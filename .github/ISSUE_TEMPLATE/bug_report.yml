@@ -108,7 +108,10 @@ body:
     id: files
     attributes:
       label: Screenshot, video or .blend
-      description: Drag files here. A short screen recording shows a lot; a small .blend (only what's needed) shows everything.
+      description: |
+        Drag files here. A short screen recording shows a lot; a small .blend (only what's needed) shows everything.
+        GitHub doesn't take .blend files directly: zip it (up to 25 MB), or paste a link (Google Drive, Dropbox, MEGA).
+        **Issues are public: anyone can download what you attach here.** Share only what you're free to share with everyone.
 
   - type: checkboxes
     id: checks

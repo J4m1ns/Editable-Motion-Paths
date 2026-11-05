@@ -530,6 +530,8 @@ the same in every file.
 * **Smooth Display** (the add-on's preferences, on by default) draws the lines and dots
   anti-aliased. It costs about 0.2 ms a redraw on a usual scene (some 7% with 60 paths and all
   their keys selected); turn it off for crisp pixel edges or the last bit of speed.
+* **Highlight Under Mouse** (the add-on's preferences, on by default) lights up what a click
+  would grab - a key, a handle, a frame dot, a gizmo arrow or ring - like Blender's gizmos.
 * Turning off **Show Overlays** hides the paths, and viewport hotkeys then work as in plain
   Blender.
 * A key with a dark center is keyed on only some channels. *Pin Partial Keys* keeps such keys

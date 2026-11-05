@@ -1491,7 +1491,9 @@ class EMP_OT_graph_hover(bpy.types.Operator):
             state.speed_hot = hot
             redraw = True
         path = None
-        if hit is None and not state.modal_running and not event.alt:
+        from .props import prefs
+        pr = prefs()
+        if hit is None and not state.modal_running and not event.alt and (pr is None or pr.hover_highlight):
             from .ops_select import hover_hit
             try:
                 h = hover_hit(context, mx, my)
