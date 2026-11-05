@@ -109,13 +109,13 @@ ideas and the decisions are mine, the development is Claude's.
 
 The add-on is free and will stay free. What helps it most:
 
-* **Bug reports and feedback** - [report a bug](https://github.com/J4m1ns/Editable-Motion-Paths/issues/new?template=bug_report.yml); the form asks for
+* **Bug reports and feedback** - [report a bug](https://github.com/J4m1ns/Editable-Motion-Paths/issues/new/choose) (*Bug report*); the form asks for
   everything needed to track a bug down.
 * **Ideas** - something missing, slow or awkward in your animation work?
-  [Share an idea](https://github.com/J4m1ns/Editable-Motion-Paths/issues/new?template=feature_request.yml): what you're trying to do and
+  [Share an idea](https://github.com/J4m1ns/Editable-Motion-Paths/issues/new/choose) (*Idea or wish*): what you're trying to do and
   how you imagine it.
 * **Difficult rigs**, if you can share them: unusual constraints, space switches, drivers,
-  heavy characters - [share a rig](https://github.com/J4m1ns/Editable-Motion-Paths/issues/new?template=rig.yml) (a zipped .blend or a
+  heavy characters - [share a rig](https://github.com/J4m1ns/Editable-Motion-Paths/issues/new/choose) (*Share a rig to test*; a zipped .blend or a
   link; it becomes public, like all feedback here). Every rig that breaks something makes the
   add-on better for everyone.
 
