@@ -64,13 +64,14 @@ API_GUIDE.md, DEV_GUIDE.md, LICENSE (GPL-3.0-or-later)
 | `ops_tools.py` | path management (add / remove / update), Smooth, Exaggerate, Ease, handle types, Clean Up, center of mass operators, small view operators |
 | `ops_slide.py` | G G: slide keys along the path (Spacing / Timing) |
 | `ops_timing.py` | the spacing engine: `SpaceJob` (a segment's arc length over time) and `refit` (keys and handles that follow a target motion) |
-| `ops_timetools.py` | Timing menu (Breakdown, Scale Time, Add Frames, Moving Hold, Offset Cascade, Snap), frame-dot / timing-chart drags, speed graph drags and smoothing |
+| `ops_timetools.py` | Timing menu (Breakdown, Scale Time, Add Frames, Moving Hold, Offset Cascade, Shift Phase, Snap), frame-dot / timing-chart drags, speed graph drags and smoothing (`SpeedSmoother`: takes the path's shape once per session and writes the motion anew on every dab, so it never drifts) |
 | `ops_easing.py` | easing presets and the gallery (P) drawn in the viewport |
 | `ops_sculpt.py` | Sculpt Motion Path tool: timing and shape brushes, Dissolve brush, brush strip |
 | `ops_fmods.py` | F-Curve modifiers as a modifier stack for the active path |
 | `ops_io.py` | path to Curve object, path follows a curve |
 | `ops_value.py` | Edit Value popup (type exact values) |
-| `snap.py`, `space.py` | Blender's snapping and transform pivot / orientation applied to path keys |
+| `ops_vertex.py` | Track Motion Path of a mesh vertex (Edit Mode: right-click menu), its own list; only to look at |
+| `snap.py`, `space.py` | Blender's snapping and transform pivot / orientation applied to path keys; `space.py` also has the rotation rings and the move gizmo's geometry (`rot_rings`, `move_gizmo`), shared by drawing and picking |
 
 ## 3. The core model (`core.py`)
 
@@ -93,6 +94,11 @@ world(f) = B(f) @ basis(f)
 Location paths trace the bone head (object origin). Rotation paths trace the bone tip (a
 virtual length, *Rotation Length*). Scale and Value paths are drawn as ribbons / tracks on
 the location path.
+
+Read the parent space through `cache.B_at(t)`, never `cache.B` directly: it also gives the
+path's space - *Local* (`cache.local`: the parents held as they are on the current frame) and
+*Camera* (`cache.cam`: the parent spaces as the active camera sees them, from the camera
+matrices `cache.Cam` baked along with B).
 
 What a `PathCache` gives you after `refresh()`:
 
@@ -142,7 +148,9 @@ this.
 `state.py` watches the depsgraph (`_on_depsgraph`): when the animation of a parent / constraint
 / driver changes, it schedules a re-bake (`state.schedule_rebake`) that runs in steps on a timer
 (`BakeJob`, small budgets so the UI keeps up). Undo / redo, file load and the bake are handled
-there too. Rules:
+there too: the last bakes are kept by the animation they were baked from
+(`state.anim_signature` -> `_bake_memo`), so an undo back to one takes its parent spaces at once
+instead of baking anew. Rules:
 
 * **Never keep RNA references** (objects, bones, `scene.emp`, F-Curves) across undo or across
   timer ticks; keep names and look them up again (`core.resolve(obj_name, bone_name)`). A
@@ -207,6 +215,13 @@ is caught and reported once (`_part_failed`) so one bug doesn't blank the whole 
   them at the end.
 * Overlay drawing doesn't show in `GPUOffScreen.draw_view3d` (MCP screenshots); `api.render_view`
   draws the overlay into its own image for scripts.
+* What is under the mouse lights up (preference *Highlight Under Mouse*): the tool keymap's
+  MOUSEMOVE item (`emp.graph_hover`) asks `ops_select.hover_hit` - the same picking as a click -
+  and keeps `(path key, frame, part)` in `state.path_hot`; drawing asks `draw.is_hot(cache, t,
+  part)` and brightens the part (`draw.lit`) or puts a halo behind it. Picking
+  (`pick.hit_test`) projects all keys / handle ends of a path at once (numpy); with
+  `fresh=False` (hovering) it takes the paths as last drawn. Keep it cheap - it runs on every
+  mouse move.
 
 ## 7. The scripting API (`api.py`)
 
@@ -311,8 +326,9 @@ run()
 * Check invariants, not pixels: "inserting a key doesn't change the motion" (world points
   before == after), "the keys keep their frames", "undo restores the curves".
 * Don't keep RNA references across `undo` in a test either; look objects up by name again.
-* The author's own suite (about 60 scripts, a few thousand checks, synthetic scenes plus
-  Blender Studio's rigs) isn't in the repository; write tests for what you change.
+* The author's own suite (about 90 scripts, a few thousand checks, synthetic scenes plus
+  Blender Studio's rigs, run on Blender 4.4 and 5.2) isn't in the repository; write tests for
+  what you change.
 
 **Building and installing:**
 

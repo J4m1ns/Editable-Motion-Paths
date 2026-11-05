@@ -169,13 +169,17 @@ emp.offset_cascade("Character_Rig", ["Tail1", "Tail2", "Tail3"], offset=2, mode=
 emp.shift_phase("Character_Rig", "CTRL_Hip", offset=12)   # a loop: same motion, 12 frames later inside it
 emp.shift_phase("Character_Rig", "CTRL_Hip", offset=3, affect='ROTATION')   # only the rotation curves
 emp.change_speed("Character_Rig", "CTRL_Hand_L", frame=24, amount=-0.02, reach=2.0)  # slower around 24
-emp.smooth_speed("Character_Rig", "CTRL_Hand_L", frames=[10, 40], radius=4)  # even out bumps in the speed
+emp.smooth_speed("Character_Rig", "CTRL_Hand_L", frames=[10, 40], radius=4, strength=0.5)  # even out bumps in the speed
 emp.copy_pose("Character_Rig", "CTRL_Hand_L", frame=12); emp.paste_pose("Character_Rig", "CTRL_Hand_L", frame=40)
 emp.mirror("Character_Rig", "CTRL_Hand_L", frames=[8, 12, 16], axis='Z')  # bend the arc the other way
+emp.select_keys("Character_Rig", "CTRL_Hand_L", frames=[12, 16])   # select them (and the bone) for Blender's own tools
+emp.delete_keys("Character_Rig", "CTRL_Hand_L", frames=[14])       # delete (dissolve_keys keeps the shape instead)
+emp.remove_paths("Character_Rig", ["CTRL_Hand_L"])                 # stop showing paths (no argument: all of them)
 ```
 
 `change_speed` and `smooth_speed` keep the path's shape and the keys' frames (the rest of each
-segment makes up for it); `amount` is in the units of `speed_per_frame`.
+segment makes up for it); `amount` is in the units of `speed_per_frame`; `strength` (0.1 - 1) is
+how far each pass of `smooth_speed` evens the speed out.
 
 The character's balance and the ghosts:
 
