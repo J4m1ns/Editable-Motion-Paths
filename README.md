@@ -69,7 +69,7 @@ read the motion (`analyze`), see it (`render_view`) and edit it in world space -
 
 ## Install
 
-1. Download `editable_motion_paths-2.0.0.zip` from the [Releases](../../releases).
+1. Download `editable_motion_paths-2.0.0.zip` from the [Releases](https://github.com/J4m1ns/Editable-Motion-Paths/releases/latest).
 2. Blender: *Edit > Preferences > Get Extensions > Install from Disk…* and
    choose the zip.
 
@@ -109,13 +109,13 @@ ideas and the decisions are mine, the development is Claude's.
 
 The add-on is free and will stay free. What helps it most:
 
-* **Bug reports and feedback** - [open an issue](../../issues/new/choose); the form asks for
+* **Bug reports and feedback** - [report a bug](https://github.com/J4m1ns/Editable-Motion-Paths/issues/new?template=bug_report.yml); the form asks for
   everything needed to track a bug down.
 * **Ideas** - something missing, slow or awkward in your animation work?
-  [Share an idea](../../issues/new?template=feature_request.yml): what you're trying to do and
+  [Share an idea](https://github.com/J4m1ns/Editable-Motion-Paths/issues/new?template=feature_request.yml): what you're trying to do and
   how you imagine it.
 * **Difficult rigs**, if you can share them: unusual constraints, space switches, drivers,
-  heavy characters - [share a rig](../../issues/new?template=rig.yml) (a zipped .blend or a
+  heavy characters - [share a rig](https://github.com/J4m1ns/Editable-Motion-Paths/issues/new?template=rig.yml) (a zipped .blend or a
   link; it becomes public, like all feedback here). Every rig that breaks something makes the
   add-on better for everyone.
 
