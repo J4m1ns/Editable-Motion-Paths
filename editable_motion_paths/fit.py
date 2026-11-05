@@ -45,20 +45,59 @@ def _thomas(a, b, c, d):
     return x
 
 
+def _modifier_offsets(ch, chans, S):
+    """{channel: [what its F-modifiers add (all but Cycles) at each sample]}: evaluated with them,
+    minus with them muted for a moment. Channels without such modifiers are left out."""
+    out = {}
+    for c in chans:
+        fc = ch.fcurves[c]
+        mods = [m for m in fc.modifiers if not m.mute and m.type != 'CYCLES']
+        if not mods:
+            continue
+        full = [fc.evaluate(t) for t in S]
+        try:
+            for m in mods:
+                m.mute = True
+            raw = [fc.evaluate(t) for t in S]
+        finally:
+            for m in mods:
+                m.mute = False
+        out[c] = [a - b for a, b in zip(full, raw)]
+    return out
+
+
+def _at(S, vals, t):
+    """vals (on the samples S) at t, linear between them; held past the ends."""
+    if t <= S[0]:
+        return vals[0]
+    if t >= S[-1]:
+        return vals[-1]
+    x = (t - S[0]) / (S[-1] - S[0]) * (len(S) - 1)
+    i = min(int(x), len(S) - 2)
+    f = x - i
+    return vals[i] + (vals[i + 1] - vals[i]) * f
+
+
 class Fitter:
-    def __init__(self, cache, tg, r0, r1):
+    def __init__(self, cache, tg, r0, r1, target=None):
+        """Fit the channels over [r0, r1]: to their current curves, or to `target(t)` (channel
+        values of a new motion inside the range; outside it the curves stay as they are)."""
         self.cache = cache
         self.tg = tg
         ch = tg.channels(cache.ptype)
         self.ch = ch
         self.chans = [c for c, fc in enumerate(ch.fcurves) if fc is not None and len(fc.keyframe_points)]
         self.r0, self.r1 = r0, r1
-        n = max(1, int(round((r1 - r0) / STEP)))
-        self.S = [r0 + (r1 - r0) * i / n for i in range(n + 1)]
-        self.Y = [ch.values(t) for t in self.S]
-        self.P = [cache.point(tg, t, v) for t, v in zip(self.S, self.Y)]
+        self.target = target
         self._vals = {}
         self._der = {}
+        # (at least 8 steps: on a range of a frame or two, 2 - 3 samples left the slopes at its ends
+        # to chance - the speed dipped at every key)
+        n = max(8, int(round((r1 - r0) / STEP)))
+        self.S = [r0 + (r1 - r0) * i / n for i in range(n + 1)]
+        self.moff = _modifier_offsets(ch, self.chans, self.S)
+        self.Y = [self.value(t) for t in self.S]
+        self.P = [cache.measure(tg, t, v) for t, v in zip(self.S, self.Y)]
         # slope scale per channel, to tell corners from smooth keys
         self.scale = {}
         for c in self.chans:
@@ -73,16 +112,25 @@ class Fitter:
     def value(self, t):
         v = self._vals.get(t)
         if v is None:
-            v = self._vals[t] = self.ch.values(t)
+            if self.target is not None and self.r0 - 1e-9 <= t <= self.r1 + 1e-9:
+                v = self.target(t)          # (targets are the keys' own motion: see raw_values)
+            else:
+                v = self.ch.values(t)
+                if self.moff:
+                    # the keys make the curve without its modifiers (they add theirs again)
+                    v = list(v)
+                    for c, offs in self.moff.items():
+                        v[c] -= _at(self.S, offs, t)
+            self._vals[t] = v
         return v
 
     def derivs(self, t):
         """(left, right) slope per channel of the original curves at t."""
         d = self._der.get(t)
         if d is None:
-            a = self.ch.values(t - EPS_D)
+            a = self.value(t - EPS_D)
             m = self.value(t)
-            b = self.ch.values(t + EPS_D)
+            b = self.value(t + EPS_D)
             d = self._der[t] = ([(m[c] - a[c]) / EPS_D for c in range(len(m))],
                                 [(b[c] - m[c]) / EPS_D for c in range(len(m))])
         return d
@@ -95,46 +143,89 @@ class Fitter:
         return False
 
     def hold_keys(self, keys):
-        """Keys at both ends of a hold (no motion between two neighbor keys)."""
+        """Keys at both ends of a hold (no motion between neighbor keys). A hold made of many
+        keys (baked) keeps only its first and last key: the ones inside add nothing."""
         out = set()
         limit = self.size * 1e-3
+        run = None
         for a, b in zip(keys, keys[1:]):
-            pa = self.cache.point(self.tg, a, self.value(a))
+            pa = self.cache.measure(self.tg, a, self.value(a))
             still = True
             t = a
             while t < b:
                 t = min(t + STEP, b)
-                if (self.cache.point(self.tg, t, self.ch.values(t)) - pa).length > limit:
+                if (self.cache.measure(self.tg, t, self.ch.values(t)) - pa).length > limit:
                     still = False
                     break
             if still:
-                out |= {a, b}
+                run = (run[0] if run else a, b)
+            elif run:
+                out |= set(run)
+                run = None
+        if run:
+            out |= set(run)
+        return out
+
+    def pose_keys(self, keys):
+        """Keys at the poses of the motion: where it stops for a moment or turns back
+        (contacts, extremes). Animators keep keys there."""
+        if len(keys) < 3:
+            return set()
+        pts = {t: self.cache.measure(self.tg, t, self.value(t)) for t in keys}
+        h = 0.5
+        speed = {}
+        for t in keys:
+            a = self.cache.measure(self.tg, t - h, self.value(t - h)) if t - h >= self.r0 else pts[t]
+            b = self.cache.measure(self.tg, t + h, self.value(t + h)) if t + h <= self.r1 else pts[t]
+            speed[t] = (b - a).length / (2 * h)
+        mean = sum(speed.values()) / len(speed) or 1e-9
+        out = set()
+        for i in range(1, len(keys) - 1):
+            t = keys[i]
+            d0 = pts[t] - pts[keys[i - 1]]
+            d1 = pts[keys[i + 1]] - pts[t]
+            # a stop for a moment: slower than both neighbors (inside a hold every key is still,
+            # and only the hold's ends matter, see hold_keys)
+            slow = speed[t] < 0.15 * mean and speed[t] < speed[keys[i - 1]] and speed[t] < speed[keys[i + 1]]
+            back = d0.length > 1e-9 and d1.length > 1e-9 and d0.angle(d1) > 2.2     # ~125 degrees
+            if slow or back:
+                out.add(t)
         return out
 
     # -- fitting -------------------------------------------------------------------
 
-    def fit(self, knots, fixed, given=None):
+    def fit(self, knots, fixed, given=None, half=None):
         """Slopes {knot: ([left per channel], [right per channel])} for sorted `knots`;
         `fixed` knots keep their original left/right slopes, or the ones in `given`.
+        `half` {knot: 'L' or 'R'}: only that side is kept, the other one is fitted.
         Only the samples between the first and the last knot are used."""
+        half = half or {}
         lo, hi = knots[0], knots[-1]
         pairs = [(t, y) for t, y in zip(self.S, self.Y) if lo - 1e-9 <= t <= hi + 1e-9]
         S = [p[0] for p in pairs]
         Y = [p[1] for p in pairs]
         vals = [self.value(t) for t in knots]
-        free = [t not in fixed for t in knots]
         slopes = {}
         for t in knots:
-            if t in fixed:
-                slopes[t] = given[t] if given and t in given else self.derivs(t)
+            if t in fixed or t in half:
+                d = given[t] if given and t in given else self.derivs(t)
+                slopes[t] = (list(d[0]), list(d[1]))
         nk = len(knots)
         for c in self.chans:
-            # unknown index per free knot
-            idx = {}
+            # unknown per knot; it is the knot's right slope in the segment after it and its
+            # left slope in the segment before it (a half fixed knot uses only one of them)
+            idx_l, idx_r = {}, {}
+            n = 0
             for i in range(nk):
-                if free[i]:
-                    idx[i] = len(idx)
-            n = len(idx)
+                t = knots[i]
+                if t in fixed and t not in half:
+                    continue
+                side = half.get(t)
+                if side != 'L':
+                    idx_l[i] = n
+                if side != 'R':
+                    idx_r[i] = n
+                n += 1
             A = [0.0] * n
             B = [1e-12] * n
             C = [0.0] * n
@@ -150,8 +241,8 @@ class Fitter:
                 const = h00 * vals[seg][c] + h01 * vals[seg + 1][c]
                 ai = h10 * h
                 aj = h11 * h
-                ui = idx.get(seg)
-                uj = idx.get(seg + 1)
+                ui = idx_r.get(seg)
+                uj = idx_l.get(seg + 1)
                 if ui is None:
                     const += ai * slopes[knots[seg]][1][c]
                 if uj is None:
@@ -167,13 +258,15 @@ class Fitter:
                     C[ui] += ai * aj
                     A[uj] += ai * aj
             m = _thomas(A, B, C, D)
-            for i, u_ in idx.items():
+            for i in range(nk):
                 t = knots[i]
                 if t not in slopes:
                     z = [0.0] * len(vals[0])
                     slopes[t] = (list(z), list(z))
-                slopes[t][0][c] = m[u_]
-                slopes[t][1][c] = m[u_]
+                if i in idx_l:
+                    slopes[t][0][c] = m[idx_l[i]]
+                if i in idx_r:
+                    slopes[t][1][c] = m[idx_r[i]]
         return slopes
 
     def evaluate(self, knots, slopes, t):
@@ -198,7 +291,7 @@ class Fitter:
             if (lo is not None and t < lo) or (hi is not None and t > hi):
                 continue
             v = self.evaluate(knots, slopes, t)
-            errs.append(((self.cache.point(self.tg, t, v) - p).length, t))
+            errs.append(((self.cache.measure(self.tg, t, v) - p).length, t))
         return errs
 
     def max_error(self, knots, slopes, lo=None, hi=None):
@@ -247,6 +340,26 @@ class Fitter:
                 keep.add(knots[i])
         return knots, slopes
 
+    def refine(self, knots, fixed, tol, half=None, max_add=60):
+        """Keep `knots` and add more where the error is largest until the path fits."""
+        knots = sorted(knots)
+        slopes = self.fit(knots, fixed, None, half)
+        for _ in range(max_add):
+            e, t = self.max_error(knots, slopes)
+            if e <= tol:
+                break
+            # the whole frame nearest to the worst error that isn't a key yet
+            base = float(round(t))
+            cand = [base + d for d in (0.0, -1.0, 1.0, -2.0, 2.0)]
+            # (not right next to a key on a subframe: Blender would merge the two)
+            cand = [x for x in cand if self.r0 + 0.25 < x < self.r1 - 0.25 and
+                    min(abs(x - k) for k in knots) > 0.25]
+            if not cand:
+                break
+            bisect.insort(knots, cand[0])
+            slopes = self.fit(knots, fixed, None, half)
+        return knots, slopes
+
     def adaptive(self, fixed, tol, max_keys=400):
         """Grow knots where the error is largest until the path fits, then prune."""
         knots = sorted(set([self.r0, self.r1]) | set(fixed))
@@ -285,9 +398,10 @@ def write(fitter, knots, slopes, select=True):
         for kp in kps:
             x = kp.co[0]
             if abs(x - r0) < 1e-3:
-                outer_l = (tuple(kp.handle_left), kp.handle_left_type)
+                # relative to the key: it moves with the key if the key's value changes
+                outer_l = ((kp.handle_left[0] - x, kp.handle_left[1] - kp.co[1]), kp.handle_left_type)
             if abs(x - r1) < 1e-3:
-                outer_r = (tuple(kp.handle_right), kp.handle_right_type)
+                outer_r = ((kp.handle_right[0] - x, kp.handle_right[1] - kp.co[1]), kp.handle_right_type)
                 interp_end = kp.interpolation
             if x < r0 - 1e-3:
                 prev_x = x
@@ -312,7 +426,9 @@ def write(fitter, knots, slopes, select=True):
             kps.insert(t, fitter.value(t)[c], options={'FAST'})
         at = {round(kp.co[0], 3): kp for kp in kps}
         for i, t in enumerate(knots):
-            kp = at[round(t, 3)]
+            kp = at.get(round(t, 3))
+            if kp is None:      # (Blender merged it with a key a hair away: that one)
+                kp = min(kps, key=lambda k, t=t: abs(k.co[0] - t))
             y = fitter.value(t)[c]
             ml = slopes[t][0][c]
             mr = slopes[t][1][c]
@@ -330,17 +446,18 @@ def write(fitter, knots, slopes, select=True):
             if i == 0 and outer_l is not None:
                 kp.handle_left_type = 'FREE'
                 kp.handle_right_type = 'FREE'
-                kp.handle_left = outer_l[0]
+                kp.handle_left = (t + outer_l[0][0], y + outer_l[0][1])
             if i == n - 1:
                 if outer_r is not None:
                     kp.handle_left_type = 'FREE'
                     kp.handle_right_type = 'FREE'
-                    kp.handle_right = outer_r[0]
+                    kp.handle_right = (t + outer_r[0][0], y + outer_r[0][1])
                 if interp_end is not None:
                     kp.interpolation = interp_end
-            kp.select_control_point = select
-            kp.select_left_handle = select
-            kp.select_right_handle = select
+            on = (round(t, 3) in select) if isinstance(select, (set, frozenset)) else select
+            kp.select_control_point = on
+            kp.select_left_handle = on
+            kp.select_right_handle = on
         for x, side, h, htype in outside:
             kp = at.get(round(x, 3))
             if kp is None:

@@ -1,0 +1,69 @@
+name: Share a rig to test
+description: A rig the add-on should handle - unusual constraints, space switches, drivers, a heavy character
+labels: ["rig"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you! Every rig that breaks something makes the add-on better for everyone.
+
+        > [!WARNING]
+        > **Everything you post here is public.** Anyone on the internet can see and download the rig, the
+        > files and the links you share - and it stays public. Share only a rig you are free to share with
+        > everyone (your own, or one with an open license such as CC-BY / CC0). Never post a studio's or a
+        > client's rig, or anything under an NDA.
+
+        Feedback here is open on purpose: the tool is shared, so is what makes it better.
+
+        GitHub doesn't take `.blend` files directly: **zip it** (up to 25 MB here), or put it on Google Drive,
+        Dropbox or MEGA and paste the link below.
+
+  - type: input
+    id: rig
+    attributes:
+      label: Rig
+      description: Its name and where it comes from (a link, if it's published)
+      placeholder: "Rain by Blender Studio - https://studio.blender.org/characters/rain/"
+    validations:
+      required: true
+
+  - type: input
+    id: license
+    attributes:
+      label: License
+      placeholder: "CC-BY 4.0 / my own rig, free to use for testing"
+    validations:
+      required: true
+
+  - type: textarea
+    id: file
+    attributes:
+      label: The .blend
+      description: Drag the zipped .blend here, or paste a download link. A short animation on it helps (a walk, a jump).
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What's special about it, or what goes wrong
+      description: The bones / controls to try, and what the add-on does with them (if you already tried).
+      placeholder: |
+        IK arm with an IK/FK switch and a space switch on the hand (CTRL-Hand.L: Parent = World / Chest).
+        The hand's path jumps on frame 24 where the space changes.
+
+  - type: input
+    id: blender
+    attributes:
+      label: Blender version
+      placeholder: "4.4.3 / 5.2.1"
+
+  - type: checkboxes
+    id: rights
+    attributes:
+      label: Before you post
+      options:
+        - label: I understand that this rig and everything I post here become public - anyone can download them
+          required: true
+        - label: I'm free to share this rig publicly, and it may be used to test the add-on
+          required: true

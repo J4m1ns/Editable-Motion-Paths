@@ -9,3 +9,8 @@ __pycache__/
 *.blend
 *.blend1
 *.png
+!editable_motion_paths/icons/*.png
+
+# Local dev tests and notes
+dev/
+README_DEV.md
