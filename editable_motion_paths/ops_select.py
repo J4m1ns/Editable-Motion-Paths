@@ -26,6 +26,21 @@ def _paths_first():
     return p is None or p.paths_first
 
 
+def hover_hit(context, mx, my):
+    """What a click at (mx, my) would grab - a key, a handle, a frame dot, a gizmo part - or None
+    (the same picking as a click, so what lights up is what gets clicked)."""
+    if context.region_data is None or not state.visible_caches(context.scene):
+        return None
+    if _chart_tick(context, mx, my) is not None:
+        return None
+    hit = pick.hit_test(context, mx, my, fresh=False)
+    if hit is None and _paths_first():
+        hit = pick.hit_test(context, mx, my, radius=pick._radius() * PATHS_FIRST_REACH, fresh=False)
+        if hit is not None and (hit.part == 'DOT' or not hit.cache.owner_selected()):
+            hit = None
+    return hit
+
+
 class EMP_OT_click(bpy.types.Operator):
     """Select a path key or handle; drag to move it. Ctrl+Click on a path inserts a key"""
     bl_idname = "emp.click"

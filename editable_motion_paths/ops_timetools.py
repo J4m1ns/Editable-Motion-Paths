@@ -1474,20 +1474,36 @@ def speed_target(job, tg, v, rest_w=None):
 
 
 class EMP_OT_graph_hover(bpy.types.Operator):
-    """(What the mouse is on in the speed graph is lit up)"""
+    """(What the mouse is on - in the speed graph, or a key / handle / gizmo part of a path - is
+    lit up)"""
     bl_idname = "emp.graph_hover"
     bl_label = "Speed Graph Hover"
     bl_options = {'INTERNAL'}
 
     def invoke(self, context, event):
         from . import draw
-        hit = draw.speed_hit(context.area, event.mouse_region_x, event.mouse_region_y)
+        mx, my = event.mouse_region_x, event.mouse_region_y
+        hit = draw.speed_hit(context.area, mx, my)
         sg = state.speed_graph
         hot = (sg["cache"], hit[0], hit[1]) if hit is not None and hit[0] != 'SCRUB' else None
+        redraw = False
         if hot != state.speed_hot:
             state.speed_hot = hot
-            if context.area is not None:
-                context.area.tag_redraw()
+            redraw = True
+        path = None
+        if hit is None and not state.modal_running and not event.alt:
+            from .ops_select import hover_hit
+            try:
+                h = hover_hit(context, mx, my)
+            except Exception:
+                h = None
+            if h is not None:
+                path = (h.cache.key, round(h.t, 3), h.part)
+        if path != state.path_hot:
+            state.path_hot = path
+            redraw = True
+        if redraw and context.area is not None:
+            context.area.tag_redraw()
         return {'PASS_THROUGH'}
 
 

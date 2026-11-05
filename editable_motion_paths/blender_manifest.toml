@@ -4,7 +4,7 @@ id = "editable_motion_paths"
 version = "2.0.0"
 name = "Editable Motion Paths"
 tagline = "Edit animation like a mesh, right on the motion path"
-maintainer = "J4m1ns"
+maintainer = "Jamin"
 type = "add-on"
 website = "https://github.com/J4m1ns/Editable-Motion-Paths"
 

@@ -336,7 +336,7 @@ class EMP_Settings(bpy.types.PropertyGroup):
     show_all_handles: BoolProperty(name="All Handles", default=False,
                                    description="Show handles of all keys, not only selected ones",
                                    update=_redraw)
-    show_move_gizmo: BoolProperty(name="Move Gizmo", default=True,
+    show_move_gizmo: BoolProperty(name="Move Gizmo", default=False,
                                   description="Location paths: Blender's move gizmo at the selected key - "
                                               "drag an arrow to move along that axis (the header's "
                                               "orientation), a square to move in its plane; the key "

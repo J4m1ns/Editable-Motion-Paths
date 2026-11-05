@@ -800,7 +800,8 @@ def _draw_scale_gizmos(st, cache, keys, us):
         for a, b in (('GXn', 'GX'), ('GZn', 'GZ'), ('GYb', 'GY')):
             if a in g:
                 lines += [g[a], g[b]]       # across the ribbon: its width at this key
-                cols += [GIZMO_COLORS[b]] * 2
+                over = is_hot(cache, k.t, a) or is_hot(cache, k.t, b)
+                cols += [lit(GIZMO_COLORS[b]) if over else GIZMO_COLORS[b]] * 2
         if 'GY' in g and 'GYb' not in g:
             lines += [k.co, g['GY']]
             cols += [GIZMO_COLORS['GY']] * 2
@@ -809,9 +810,11 @@ def _draw_scale_gizmos(st, cache, keys, us):
         for p, pts, _end in scale_whiskers(st, cache, k):
             # a picked handle (V / T work on it) is drawn white
             picked = (cache.key, round(k.t, 3), ch, p[1]) in picked_sel
+            over = is_hot(cache, k.t, p)
             for a, b in zip(pts, pts[1:]):
                 lines += [a, b]
-                cols += [(1.0, 1.0, 1.0, 1.0) if picked else GIZMO_COLORS[part]] * 2
+                cols += [(1.0, 1.0, 1.0, 1.0) if picked else
+                         (lit(GIZMO_COLORS[part]) if over else GIZMO_COLORS[part])] * 2
     _lines(lines, cols, 2.0 * us)
 
 
@@ -892,16 +895,33 @@ def _draw_rot_rings(st, cache, tg, keys, rv3d, us):
         rings, center, r = space.rot_rings(cache, tg, k, 96)      # (smooth: the cut glides)
         if st.show_reach:
             circ = space.reach_circle(center, r, rv3d)
-            _lines(circ, [(1.0, 1.0, 1.0, 0.22)] * len(circ), 1.2 * us, 'LINE_STRIP')
+            over = is_hot(cache, k.t, 'RV')         # (under the mouse: brighter, like Blender's)
+            _lines(circ, [(1.0, 1.0, 1.0, 0.6 if over else 0.22)] * len(circ), (2.2 if over else 1.2) * us,
+                   'LINE_STRIP')
         if st.show_rot_rings:
             # (like Blender's rotate gizmo: only the half of each ring facing the view - its shape
             # reads at once, and what is grabbed is on the near side)
             for part, pts in rings.items():
+                over = is_hot(cache, k.t, part)
+                col = lit(RING_COLORS[part]) + (1.0,) if over else RING_COLORS[part] + (0.9,)
                 for run in front_runs(pts, center, rv3d):
-                    _lines(run, [RING_COLORS[part] + (0.9,)] * len(run), 2.0 * us, 'LINE_STRIP')
+                    _lines(run, [col] * len(run), (3.4 if over else 2.0) * us, 'LINE_STRIP')
 
 
 MOVE_COLORS = {'MX': GIZMO_COLORS['GX'][:3], 'MY': GIZMO_COLORS['GY'][:3], 'MZ': GIZMO_COLORS['GZ'][:3]}
+
+
+def is_hot(cache, t, part):
+    """Is this part (of the key at frame t) under the mouse - what a click would grab? Lit up,
+    like Blender's gizmos (not while something is being moved)."""
+    h = state.path_hot
+    return h is not None and not state.modal_running and h[2] == part and tuple(h[0]) == tuple(cache.key) \
+        and abs(h[1] - t) < 1e-3
+
+
+def lit(col, f=0.5):
+    """A color brightened toward white (a part under the mouse)."""
+    return tuple(c + (1.0 - c) * f for c in col[:3]) + tuple(col[3:])
 
 
 def _draw_move_gizmo(ctx, st, cache, keys, rv3d, us):
@@ -921,21 +941,27 @@ def _draw_move_gizmo(ctx, st, cache, keys, rv3d, us):
         view = (gk.co - rv3d.view_matrix.inverted().translation).normalized()
     else:
         view = (rv3d.view_rotation @ Vector((0.0, 0.0, -1.0))).normalized()
-    tris, tcols, lines, lcols, edges, ecols = [], [], [], [], [], []
+    tris, tcols, lines, lcols, edges, ecols, hot, hcols = [], [], [], [], [], [], [], []
     for part in ('MPX', 'MPY', 'MPZ'):
         if part in g:
             c, a = g[part]
             col = MOVE_COLORS['M' + part[2]]
+            over = is_hot(cache, gk.t, part)       # (under the mouse: brighter, like Blender's)
+            if over:
+                col = lit(col)
             tris += [c[0], c[1], c[2], c[0], c[2], c[3]]
-            tcols += [col + (0.35 * a,)] * 6
+            tcols += [col + ((0.6 if over else 0.35) * a,)] * 6
             for i in range(4):
-                lines += [c[i], c[(i + 1) % 4]]
-            lcols += [col + (0.9 * a,)] * 8
+                (hot if over else lines).extend([c[i], c[(i + 1) % 4]])
+            (hcols if over else lcols).extend([col + (0.9 * a,)] * 8)
     for part in ('MX', 'MY', 'MZ'):
         if part not in g:
             continue
         a, b, alpha = g[part]
         col = MOVE_COLORS[part]
+        over = is_hot(cache, gk.t, part)
+        if over:
+            col = lit(col)
         ax = b - a
         L = ax.length / 0.78           # (the arrow starts at 0.22 of the gizmo's size)
         ax.normalize()
@@ -944,8 +970,8 @@ def _draw_move_gizmo(ctx, st, cache, keys, rv3d, us):
             continue
         side.normalize()
         head = b - ax * (L * 0.2)
-        lines += [a, head]
-        lcols += [col + (alpha,)] * 2
+        (hot if over else lines).extend([a, head])
+        (hcols if over else lcols).extend([col + (alpha,)] * 2)
         # (the arrowhead faces the view, so it reads from any side)
         tri = [b, head + side * (L * 0.07), head - side * (L * 0.07)]
         tris += tri
@@ -957,6 +983,7 @@ def _draw_move_gizmo(ctx, st, cache, keys, rv3d, us):
     # (the filled triangles have no anti-aliasing: a thin smooth outline gives them soft edges)
     _lines(edges, ecols, 1.0 * us)
     _lines(lines, lcols, 2.0 * us)
+    _lines(hot, hcols, 3.2 * us)
 
 
 def _lead_view(ctx):
@@ -1157,6 +1184,10 @@ def draw_pixel():
         state.draw_pass = None
 
 
+HOT_PX = 3.0                    # the halo around a key / handle / dot under the mouse (pixels)
+COL_HOT = (1.0, 1.0, 1.0, 0.45)
+
+
 def _draw_points(ctx, st, us):
     from . import pick
     scene = ctx.scene
@@ -1196,6 +1227,14 @@ def _draw_points(ctx, st, us):
                 m = 4.0 * us
                 ok &= (xy[:, 0] > -m) & (xy[:, 0] < region.width + m) & (xy[:, 1] > -m) & (xy[:, 1] < region.height + m)
                 discs.add_many(xy[ok], r, col)
+            h = state.path_hot
+            if h is not None and h[2] == 'DOT' and is_hot(cache, h[1], 'DOT'):
+                # a frame dot under the mouse (drag it: the spacing)
+                tg = cache.target()
+                g = proj(cache.point(tg, h[1])) if tg is not None else None
+                if g is not None:
+                    discs.add(g, r + HOT_PX * us, COL_HOT)
+                    discs.add(g, r * 1.4, col)
 
         if cache.fs <= cur <= cache.fe and _in(cur, lo, hi):
             tg = cache.target()
@@ -1229,9 +1268,13 @@ def _draw_points(ctx, st, us):
                         g = proj(p)
                         if g is not None:
                             big = part == 'GU' or part[:2] == {'X': 'GX', 'Y': 'GY', 'Z': 'GZ'}.get(st.scale_channel)
+                            if is_hot(cache, k.t, part):
+                                discs.add(g, ks * (0.75 if big else 0.6) + HOT_PX * us, COL_HOT)
                             discs.add_outlined(g, ks * (0.75 if big else 0.6), GIZMO_COLORS[part])
                     wcol = GIZMO_COLORS.get({'X': 'GX', 'Y': 'GY', 'Z': 'GZ'}.get(st.scale_channel), COL_HANDLE_SEL)
-                    for _part, _pts, end in scale_whiskers(st, cache, k):
+                    for wpart, _pts, end in scale_whiskers(st, cache, k):
+                        if is_hot(cache, k.t, wpart):
+                            discs.add(proj(end), ks * 0.55 + HOT_PX * us, COL_HOT)
                         discs.add_outlined(proj(end), ks * 0.55, wcol)
                 if handles_shown(st, cache, editable, k):
                     m = pick.handle_min_world(region, rv3d, k.co)
@@ -1240,12 +1283,16 @@ def _draw_points(ctx, st, us):
                         if h is None:
                             continue
                         col = COL_HANDLE_SEL if hsel else HANDLE_COLORS.get(htype, HANDLE_COLORS['FREE'])
+                        if is_hot(cache, k.t, side):
+                            discs.add(proj(h), ks * 0.7 + HOT_PX * us, COL_HOT)
                         discs.add_outlined(proj(h), ks * 0.7, col)
                 col = COL_KEY_SEL if k.sel else COL_KEY
                 w = state.prop_weights.get((cache.key, round(k.t, 3)))
                 if w and not k.sel:
                     # proportional editing influence: white -> orange
                     col = tuple(a + (b - a) * min(1.0, w) * 0.85 for a, b in zip(COL_KEY, COL_KEY_SEL))
+                if is_hot(cache, k.t, 'KEY'):
+                    discs.add(s, kr + (3.5 + HOT_PX) * us, COL_HOT)       # under the mouse: a soft halo
                 if k.sel and active is not None and active[0] == cache.key and abs(active[1] - k.t) < 1e-3:
                     discs.add(s, kr + 3.5 * us, (1.0, 1.0, 1.0, 1.0))     # active key: white ring
                 if k.partial:
@@ -1255,6 +1302,8 @@ def _draw_points(ctx, st, us):
                 else:
                     discs.add_outlined(s, kr, col)
             else:
+                if is_hot(cache, k.t, 'KEY'):
+                    discs.add(s, kr * 0.7 + HOT_PX * us, COL_HOT)
                 discs.add_outlined(s, kr * 0.7, COL_KEY_LOCKED, 1.0)
             show_val = editable and (cache.ptype == core.VALUE or (cache.ptype == core.SCALE and st.show_key_values))
             if (st.show_frame_numbers or state.force_numbers or show_val) and s is not None and \

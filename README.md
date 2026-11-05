@@ -48,8 +48,7 @@ shows whether a pose is balanced and whether a jump's arc is a parabola.
 
 ![Onion-skin ghosts of a hand updating while its path is edited; bending forward, the center of mass leaves the feet (red) and comes back over them (green)](docs/media/see-the-motion.gif)
 
-**Animator tools built in.** Easing presets with a live preview (P), Breakdown (blend a key
-between the poses around it), Moving Hold, Scale Time, Clean Up for baked keys, F-Curve
+**Animator tools built in.** Easing presets with a live preview (P), Breakdown, Moving Hold, Scale Time, Clean Up for baked keys, F-Curve
 modifiers as a stack, paths to curves and back.
 
 ![The easing gallery: hovering a preset previews it on the path, Apply writes it](docs/media/easing-presets.gif)
@@ -120,7 +119,7 @@ The add-on is free and will stay free. What helps it most:
 
 And if it saves you time and you'd like to say thanks, I'd be very grateful for a donation:
 
-> **BNB or USDT (BEP20)** - BNB Smart Chain, low fees
+> **BNB, POL, USDT or USDC** - BNB Smart Chain or Polygon (the same address on both), low fees
 >
 > ```
 > 0x73CF1632f6EBe87D22C8Aa60d57d7e3720e4aBcD
@@ -132,7 +131,7 @@ And if it saves you time and you'd like to say thanks, I'd be very grateful for 
 > TUX1J4TEwDJNWNfjZUw6TocroKFPFz5B8F
 > ```
 >
-> <img src="docs/media/bnb-bep20-qr.svg" alt="QR code of the BNB Smart Chain (BEP20) address" width="180">
+> <img src="docs/media/bnb-polygon-qr.svg" alt="QR code of the BNB Smart Chain / Polygon address" width="180">
 > &nbsp;&nbsp;
 > <img src="docs/media/usdt-trc20-qr.svg" alt="QR code of the USDT TRC20 address" width="180">
 
