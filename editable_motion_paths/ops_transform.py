@@ -31,15 +31,101 @@ _KEYS = {'ZERO': '0', 'ONE': '1', 'TWO': '2', 'THREE': '3', 'FOUR': '4', 'FIVE':
          'SEVEN': '7', 'EIGHT': '8', 'NINE': '9', 'PERIOD': '.', 'MINUS': '-'}
 
 
-def _safe_eval(s):
+def _tokens(s):
+    """'2*(1.5-.5)' -> [2.0, '*', '(', 1.5, '-', 0.5, ')'], or None for a malformed number."""
+    out, i = [], 0
+    while i < len(s):
+        c = s[i]
+        if c.isdigit() or c == '.':
+            j = i
+            while j < len(s) and (s[j].isdigit() or s[j] == '.'):
+                j += 1
+            try:
+                out.append(float(s[i:j]))
+            except ValueError:                  # '.', '1.2.3'
+                return None
+            i = j
+        elif s.startswith(("**", "//"), i):
+            out.append(s[i:i + 2])
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    return out
+
+
+def _calc(s):
+    """The value of a typed number: digits, + - * / // ** and brackets, like Blender's own numeric
+    input ('2*3', '-(1+2)/4'). None while it can't be read yet ('2*', '(1'). A small parser of its
+    own: nothing typed is run as Python code."""
+    t = _tokens(s)
+    if not t:
+        return None
+    pos = [0]
+
+    def peek():
+        return t[pos[0]] if pos[0] < len(t) else None
+
+    def take():
+        pos[0] += 1
+        return t[pos[0] - 1]
+
+    def expr():                                 # term (+|- term)*
+        v = term()
+        while peek() in ('+', '-'):
+            v = v + term() if take() == '+' else v - term()
+        return v
+
+    def term():                                 # unary (*|/|// unary)*
+        v = unary()
+        while peek() in ('*', '/', '//'):
+            op = take()
+            w = unary()
+            v = v * w if op == '*' else v / w if op == '/' else v // w
+        return v
+
+    def unary():                                # (+|-) unary | power
+        if peek() in ('+', '-'):
+            return unary() if take() == '+' else -unary()
+        return power()
+
+    def power():                                # atom (** unary)?, right to left: 2**3**2 = 2**9
+        v = atom()
+        if peek() == "**":
+            take()
+            v = v ** unary()
+        return v
+
+    def atom():                                 # number | ( expr )
+        if peek() is None:
+            raise ValueError
+        x = take()
+        if isinstance(x, float):
+            return x
+        if x == '(':
+            v = expr()
+            if peek() != ')':
+                raise ValueError
+            take()
+            return v
+        raise ValueError
+
+    try:
+        v = expr()
+        if pos[0] != len(t):                    # something left over: '2 3', '1)'
+            return None
+        v = float(v)
+    except (ValueError, ZeroDivisionError, OverflowError, TypeError, RecursionError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def _typed_value(s):
     if not s or any(c not in _CHARS for c in s):
         return None
-    try:
-        return float(eval(s, {"__builtins__": {}}, {}))
-    except Exception:
-        if s in ("-", "+"):
-            return 0.0
-        return None
+    if s in ("-", "+"):
+        return 0.0
+    return _calc(s)
 
 
 class NumInput:
@@ -76,7 +162,7 @@ class NumInput:
         return True
 
     def value(self, i):
-        return _safe_eval(self.fields[i])
+        return _typed_value(self.fields[i])
 
     def text(self, i, current, fmt):
         if self.fields[i] or self.idx == i and self.active:

@@ -1222,7 +1222,6 @@ def _draw_points(ctx, st, us):
             idx = [i for i, (t, v, r_) in enumerate(zip(cache.times, vis, rep))
                    if v and not r_ and _in(t, lo, hi) and abs(t - round(t)) < 1e-4]
             if idx:
-                import numpy as np
                 xy, ok = many([cache.points[i] for i in idx])
                 m = 4.0 * us
                 ok &= (xy[:, 0] > -m) & (xy[:, 0] < region.width + m) & (xy[:, 1] > -m) & (xy[:, 1] < region.height + m)

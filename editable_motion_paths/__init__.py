@@ -3,7 +3,7 @@ bl_info = {
     "description": "Edit bone and object motion paths directly in the viewport: drag keys and "
                    "handles, smooth and exaggerate paths, edit location and rotation",
     "author": "Editable Motion Paths",
-    "version": (2, 0, 0),
+    "version": (2, 0, 1),
     "blender": (4, 4, 0),
     "location": "3D Viewport > Sidebar > Motion Paths, Toolbar > Edit Motion Path",
     "category": "Animation",
@@ -11,7 +11,8 @@ bl_info = {
 
 import bpy
 
-from . import (api, draw, ops_easing, ops_fmods, ops_io, ops_keys, ops_sculpt, ops_select, ops_shape,
+from . import api  # noqa: F401  (loaded for scripts: sys.modules["...editable_motion_paths.api"])
+from . import (draw, ops_easing, ops_fmods, ops_io, ops_keys, ops_sculpt, ops_select, ops_shape,
                ops_slide, ops_timetools, ops_timing, ops_tools, ops_transform, ops_value, ops_vertex, props,
                state, ui)
 

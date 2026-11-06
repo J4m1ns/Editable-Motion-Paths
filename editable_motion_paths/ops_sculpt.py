@@ -63,7 +63,8 @@ def _png_rgba(path):
     """(width, height, [floats]) of one of the add-on's PNGs (8 bit RGBA, no filters)."""
     import struct
     import zlib
-    data = open(path, "rb").read()
+    with open(path, "rb") as f:
+        data = f.read()
     pos, w, h, idat = 8, 0, 0, b""
     while pos < len(data):
         n = struct.unpack(">I", data[pos:pos + 4])[0]

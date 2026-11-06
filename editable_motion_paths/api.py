@@ -606,7 +606,7 @@ def set_value_channel(obj, bone=None, data_path='', index=0):
             pass
     if not ok:
         names = [p for p, _i, _label in core.value_candidates(o, bone or "")]
-        prefix = 'pose.bones["%s"]' % bone if bone else ""
+        prefix = 'pose.bones["%s"]' % bpy.utils.escape_identifier(bone) if bone else ""
         short = [p[len(prefix):] if prefix and p.startswith(prefix) else p for p in names]
         raise ValueError("%r is no value of %s %s; its animated values: %s.%s" % (
             data_path, o.name, bone or "", ", ".join(short[:12]) or "none", _suggest(data_path, short)))
