@@ -11,7 +11,8 @@ bl_info = {
 
 import bpy
 
-from . import (api, draw, ops_easing, ops_fmods, ops_io, ops_keys, ops_sculpt, ops_select, ops_shape,
+from . import api  # noqa: F401  (loaded for scripts: sys.modules["...editable_motion_paths.api"])
+from . import (draw, ops_easing, ops_fmods, ops_io, ops_keys, ops_sculpt, ops_select, ops_shape,
                ops_slide, ops_timetools, ops_timing, ops_tools, ops_transform, ops_value, ops_vertex, props,
                state, ui)
 

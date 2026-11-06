@@ -8,7 +8,7 @@ between paths, and the Modifier Tools functions work on the whole stack."""
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 
-from . import compat, core, pick, state
+from . import core, pick, state
 
 TYPES = [
     ('GENERATOR', "Generator", "Add a polynomial (e.g. a constant drift)", 'IPO_LINEAR'),

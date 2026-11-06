@@ -5,7 +5,7 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, StringProperty
 from mathutils import Vector
 
-from . import core, edit, fit, geom, keys, pick, state
+from . import edit, fit, geom, keys, pick, state
 
 
 # ----------------------------------------------------------------------------

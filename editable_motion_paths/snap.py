@@ -5,7 +5,6 @@ surface under the mouse (a foot onto the floor).  Geometry is gathered once per 
 and projected with numpy, so even dense meshes stay interactive.
 """
 
-import bpy
 from mathutils import Vector
 from bpy_extras import view3d_utils
 

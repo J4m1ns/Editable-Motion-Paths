@@ -839,7 +839,7 @@ class EMP_OT_circle(_LoopTool, bpy.types.Operator):
             dirs[k.t] = q.normalized()
         if self.regular and len(ks) > 2:
             # the same arc from the first to the last key, the keys at equal angles
-            d0, d1 = dirs[ks[0].t], dirs[ks[-1].t]
+            d0 = dirs[ks[0].t]
             total = 0.0
             for a, b in zip(ks, ks[1:]):
                 da, db = dirs[a.t], dirs[b.t]
@@ -894,7 +894,6 @@ class EMP_OT_arc(_LoopTool, bpy.types.Operator):
                                           "direction (off: it keeps its own directions at the ends)")
 
     def shape(self, context, cache, tg, ks):
-        from mathutils import Vector
         first, last = ks[0], ks[-1]
         a, b = first.co.copy(), last.co.copy()
         chord = b - a

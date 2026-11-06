@@ -404,7 +404,6 @@ def _circle(r, n=24, axis=2, z=0.0):
 
 def _empty_shape(kind, s, seg):
     """The lines of an empty of this display type, size s."""
-    import math
     if kind == 'ARROWS':
         for i in range(3):
             b = [0.0, 0.0, 0.0]
