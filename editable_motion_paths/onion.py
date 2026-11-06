@@ -111,7 +111,8 @@ def _key_frames(scene):
         for name, bones in arms.items():
             ob = bpy.data.objects.get(name)
             for fc in (compat.get_fcurves(ob) or []) if ob is not None else []:
-                if only_selected and bones and not any(('pose.bones["%s"]' % b) in fc.data_path for b in bones):
+                if only_selected and bones and not any(
+                        ('pose.bones["%s"]' % bpy.utils.escape_identifier(b)) in fc.data_path for b in bones):
                     continue
                 frames.update(round(kp.co[0]) for kp in fc.keyframe_points)
         for ob in objs:
