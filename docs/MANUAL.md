@@ -14,7 +14,7 @@ Requires Blender 4.4 or newer (tested on 5.2).
 ## Install
 
 Edit > Preferences > Get Extensions > **Install from Disk…** → choose
-`editable_motion_paths-2.0.1.zip`.
+`editable_motion_paths-2.0.2.zip`.
 
 To remove it: Edit > Preferences > **Get Extensions**, find *Editable Motion Paths* among the
 installed ones, and in the dropdown menu at the right of its row choose **Uninstall** (Blender shows no

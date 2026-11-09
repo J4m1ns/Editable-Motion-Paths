@@ -69,7 +69,7 @@ read the motion (`analyze`), see it (`render_view`) and edit it in world space -
 
 ## Install
 
-1. Download `editable_motion_paths-2.0.1.zip` from the [Releases](https://github.com/J4m1ns/Editable-Motion-Paths/releases/latest).
+1. Download `editable_motion_paths-2.0.2.zip` from the [Releases](https://github.com/J4m1ns/Editable-Motion-Paths/releases/latest).
 2. Blender: *Edit > Preferences > Get Extensions > Install from Disk…* and
    choose the zip.
 
