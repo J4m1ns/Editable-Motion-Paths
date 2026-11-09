@@ -950,10 +950,50 @@ SCULPT_KEYMAP = (
 )
 
 
+def _draw_panel(context, layout, st, bs):
+    """Sculpt Motion Path's settings in a panel (the Tool tab): the brush with its picture, names beside
+    the values."""
+    from .ops_easing import icon_id
+    from .ui import draw_panel_buttons
+    name = {i: n for i, n, _d in BRUSHES}.get(bs.brush, "")
+    ic = icon_id("brush_" + bs.brush)
+    if ic:
+        layout.popover("EMP_PT_sculpt_brushes", text=name, icon_value=ic)
+    else:
+        layout.popover("EMP_PT_sculpt_brushes", text=name)
+    layout.use_property_split = True
+    layout.use_property_decorate = False
+    col = layout.column()
+    col.prop(bs, "radius")
+    if bs.brush == 'DISSOLVE':
+        col.prop(bs, "dissolve_tolerance")
+        col.prop(bs, "dissolve_smooth")
+        col.prop(bs, "dissolve_keep_timing")
+    else:
+        col.prop(bs, "strength", slider=True)
+        col.prop(bs, "falloff")
+    if bs.brush in {'GRAB', 'SMOOTH', 'PINCH'}:
+        col.prop(bs, "insert_keys")
+    if bs.brush in {'SMOOTH', 'DISSOLVE'}:
+        sub = col.column(heading="Parents")
+        sub.active = bs.brush == 'SMOOTH' or bs.dissolve_smooth > 0.0
+        sub.prop(bs, "dissolve_smooth_parents", text="Smooth")
+        sub2 = sub.column()
+        sub2.active = bs.dissolve_smooth_parents
+        sub2.prop(bs, "dissolve_parent_chain")
+    layout.separator()
+    layout.prop(st, "edit_mode")
+    draw_panel_buttons(layout, st)
+
+
 def _draw_settings(context, layout, tool):
     st = state.settings(context.scene)
     bs = _bs()
     if st is None:
+        return
+    from .ui import in_header
+    if not in_header(context):
+        _draw_panel(context, layout, st, bs)
         return
     name = {i: n for i, n, _d in BRUSHES}.get(bs.brush, "")
     layout.label(text=name)
