@@ -866,7 +866,11 @@ def _on_depsgraph(scene, depsgraph):
                 # frames around it)
                 if not any(isinstance(u.id, bpy.types.Action) for u in depsgraph.updates):
                     onion.changed(pose=True)
-                    com.changed()
+                    # (the center of mass: a pose changed without keys changes only this frame - its point is
+                    # live; the whole track is worked out again only when a character itself moved - every
+                    # frame of its own track with it; a pose dragged on a heavy rig re-ran every frame)
+                    if _rigs_moved(scene):
+                        com.changed()
         _dg_frame = f
     global _dg_frame_all
     same_frame = scene.frame_current == _dg_frame_all
@@ -945,6 +949,21 @@ def _keep_view():
             except (AttributeError, TypeError, ValueError):
                 pass
     _view_before.clear()
+
+
+_rig_mats = {}      # armature -> its world matrix last seen (see _rigs_moved)
+
+
+def _rigs_moved(scene):
+    """Has any character's armature object moved (its own transform, not its pose) since last asked?"""
+    from . import com
+    moved = False
+    for arm in com.armatures(scene):
+        m = tuple(round(v, 7) for row in arm.matrix_world for v in row)
+        if _rig_mats.get(arm.name) != m:
+            moved = moved or arm.name in _rig_mats
+            _rig_mats[arm.name] = m
+    return moved
 
 
 @persistent
