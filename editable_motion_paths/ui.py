@@ -166,9 +166,19 @@ def side_applies(scene, st, mode=None):
     return not cs or any(c.circle is None for c in cs)
 
 
+def in_header(context):
+    """The tool's settings drawn in a header (a row of buttons), not in a panel (the Tool tab of the sidebar
+    or of the Properties editor: a column with names)."""
+    r = context.region
+    return r is not None and r.type in {'HEADER', 'TOOL_HEADER'}
+
+
 def _draw_tool_settings(context, layout, tool):
     st = state.settings(context.scene)
     if st is None:
+        return
+    if not in_header(context):
+        _draw_tool_panel(context, layout, st)
         return
     row = layout.row(align=True)
     row.prop(st, "edit_mode", expand=True, icon_only=True)
@@ -183,6 +193,58 @@ def _draw_tool_settings(context, layout, tool):
     layout.operator("emp.path_add", text="Add Path", icon='ADD')
     layout.prop(st, "show_all_handles")
     draw_header_buttons(layout, st)
+
+
+def _draw_tool_panel(context, layout, st):
+    """Edit Motion Path's settings in a panel (the Tool tab): names beside the values, as Blender's own."""
+    layout.use_property_split = True
+    layout.use_property_decorate = False
+    col = layout.column()
+    col.prop(st, "edit_mode")
+    if st.edit_mode == 'VALUE':
+        e = _active_entry(context)
+        if e is not None:
+            # (the menu has no property of its own: its name by hand, split as Blender splits a property's)
+            split = col.split(factor=0.4, align=True)
+            lab = split.row()
+            lab.alignment = 'RIGHT'
+            lab.label(text="Channel")
+            _draw_value_picker(split, context)
+        col.prop(st, "value_track", text="Track")
+    if side_applies(context.scene, st):
+        col.prop(st, "value_side")
+    ts = context.scene.tool_settings
+    layout.separator()
+    col = layout.column()
+    col.prop(ts, "use_proportional_edit", text="Proportional Editing", toggle=0)
+    sub = col.column()
+    sub.active = ts.use_proportional_edit
+    sub.prop(ts, "proportional_edit_falloff", text="Falloff")
+    sub.prop(st, "proportional_size", text="Size")
+    sub.prop(ts, "use_proportional_connected", text="Connected Only")
+    layout.separator()
+    col = layout.column(heading="Show")
+    col.prop(st, "show_all_handles")
+    layout.operator("emp.path_add", text="Add Path", icon='ADD')
+    draw_panel_buttons(layout, st)
+
+
+def draw_panel_buttons(layout, st):
+    """Onion skin, center of mass, display, modifiers in a panel (the Tool tab): each with its name, the
+    settings in the popover beside it."""
+    layout.separator()
+    col = layout.column(align=True)
+    col.use_property_split = False
+    row = col.row(align=True)
+    row.prop(st, "show_onion", icon='ONIONSKIN_ON')
+    row.popover("EMP_PT_onion_popover", text="", icon='PREFERENCES')
+    row = col.row(align=True)
+    row.prop(st, "show_com", icon_value=ops_easing.icon_id("com"))
+    row.popover("EMP_PT_com_popover", text="", icon='PREFERENCES')
+    col = layout.column(align=True)
+    col.use_property_split = False
+    col.popover("EMP_PT_display_popover", text="Path Display", icon='COLOR')
+    col.popover("EMP_PT_modifiers_popover", text="Path Modifiers", icon='MODIFIER')
 
 
 def draw_header_buttons(layout, st):
