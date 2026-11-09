@@ -600,6 +600,8 @@ def trail_frames(scene, st):
 
 
 _back = [0.04]      # (seconds a slice of the track costs to come back from: see _tick)
+_shown = [None]     # (seconds a frame costs with the meshes shown - known after the first slice)
+HIDE_FROM = 0.025   # (a frame dearer than this with the meshes shown: they are left out while stepping)
 
 
 def _wanted(st, tr, redo, f0, f1, cur):
@@ -669,6 +671,9 @@ def _tick():
                 continue
             cur, sub = scene.frame_current, scene.frame_subframe
             meshes = _meshes(scene, arm)
+            # (the meshes left out only when a frame with them shown is dear - a heavy subdivided body: showing
+            # them again rebuilds them; a light rig's frame is cheaper shown than coming back from hidden)
+            hide = _shown[0] is not None and _shown[0] > HIDE_FROM
             t0 = time.time()
             _busy = True
             hidden = []
@@ -681,20 +686,26 @@ def _tick():
                     # only the bones are evaluated (other characters' bent meshes are left out too);
                     # a tick does ~40 ms of frames (not all of them), so a mesh is left out only if
                     # showing it again costs about a frame or less (seen the first time it is hidden)
-                    if not o.hide_viewport and state.can_hide(o, 5):
+                    if hide and not o.hide_viewport and state.can_hide(o, 5):
                         o.hide_viewport = True
                         hidden.append(o)
                 # (as many frames as coming back costs - showing the meshes again, the frame shown: paid once a
                 # slice, not once a frame - at least 40 ms of them)
                 budget = max(0.04, min(_back[0], 0.25))
+                t0 = time.time()      # (the frames' own time: the setting up above isn't theirs)
+                done = 0
                 for f in want:
                     scene.frame_set(f)
                     g = center(arm)
                     low, _p = _lowest(scene, arm)
                     tr[f] = (g, low) if g is not None else None
                     redo.discard(f)
+                    done += 1
                     if time.time() - t0 > budget:
                         break
+                if not hidden and done:
+                    per = (time.time() - t0) / done
+                    _shown[0] = per if _shown[0] is None else 0.7 * _shown[0] + 0.3 * per
             finally:
                 for o in hidden:
                     o.hide_viewport = False
