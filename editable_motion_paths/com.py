@@ -599,6 +599,33 @@ def trail_frames(scene, st):
     return f0, f1
 
 
+_back = [0.04]      # (seconds a slice of the track costs to come back from: see _tick)
+
+
+def _wanted(st, tr, redo, f0, f1, cur):
+    """The frames of the track to work out now, nearest the current one first: with the trajectory shown,
+    every frame not known or changed; hidden, only the two beside the current one (the velocity) - and,
+    for the Auto floor the support stands on, every frame once (the lowest point of the animation): after an
+    edit the old ones stay (a floor hardly moves for a key changed; shown again, the trajectory renews them)."""
+    if st.com_trail:
+        want = [f for f in range(f0 - 1, f1 + 2) if f not in tr or f in redo]
+    else:
+        floor = st.com_support and st.com_floor == 'AUTO'
+        want = [f for f in range(f0 - 1, f1 + 2)
+                if (abs(f - cur) <= 1 and (f not in tr or f in redo)) or (floor and f not in tr)]
+    return sorted(want, key=lambda f: abs(f - cur))
+
+
+def pending(scene, st):
+    """Is there track work for the timer (see _wanted)? - the frame changed, the trajectory turned on."""
+    if not _track:
+        return False
+    f0, f1 = _range(scene)
+    cur = scene.frame_current
+    return any(_wanted(st, _track.get(arm.name, {}), _redo.get(arm.name, set()), f0, f1, cur)
+               for arm in armatures(scene))
+
+
 def _schedule(delay=0.05):
     global _timer_on
     if not _timer_on:
@@ -637,9 +664,7 @@ def _tick():
             tr = _track.setdefault(arm.name, {})
             redo = _redo.setdefault(arm.name, set())
             cur_f = scene.frame_current
-            # the frames around the current one first (the arrow), then the rest
-            want = sorted((f for f in range(f0 - 1, f1 + 2) if f not in tr or f in redo),
-                          key=lambda f: abs(f - cur_f))
+            want = _wanted(st, tr, redo, f0, f1, cur_f)
             if not want:
                 continue
             cur, sub = scene.frame_current, scene.frame_subframe
@@ -659,13 +684,16 @@ def _tick():
                     if not o.hide_viewport and state.can_hide(o, 5):
                         o.hide_viewport = True
                         hidden.append(o)
+                # (as many frames as coming back costs - showing the meshes again, the frame shown: paid once a
+                # slice, not once a frame - at least 40 ms of them)
+                budget = max(0.04, min(_back[0], 0.25))
                 for f in want:
                     scene.frame_set(f)
                     g = center(arm)
                     low, _p = _lowest(scene, arm)
                     tr[f] = (g, low) if g is not None else None
                     redo.discard(f)
-                    if time.time() - t0 > 0.04:
+                    if time.time() - t0 > budget:
                         break
             finally:
                 for o in hidden:
@@ -673,6 +701,7 @@ def _tick():
                 t_back = time.time()
                 scene.frame_set(cur, subframe=sub)
                 state.unhide_cost(hidden, time.time() - t_back)
+                _back[0] = 0.7 * _back[0] + 0.3 * (time.time() - t_back)
                 if state.put_pose_back(held):     # (what isn't keyed stays as it was)
                     bpy.context.view_layer.update()
                 _busy = False
@@ -809,7 +838,7 @@ def draw(scene, st, us):
     if not arms:
         return
     if any(a.name not in _mass for a in arms) or status or \
-            any(a.name not in _track or _redo.get(a.name) for a in arms):
+            any(a.name not in _track for a in arms) or pending(scene, st):
         _schedule()
     sh = gpu.shader.from_builtin('UNIFORM_COLOR')
     try:
