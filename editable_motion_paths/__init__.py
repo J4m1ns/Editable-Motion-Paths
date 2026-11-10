@@ -3,7 +3,7 @@ bl_info = {
     "description": "Edit bone and object motion paths directly in the viewport: drag keys and "
                    "handles, smooth and exaggerate paths, edit location and rotation",
     "author": "Editable Motion Paths",
-    "version": (2, 0, 3),
+    "version": (2, 0, 4),
     "blender": (4, 4, 0),
     "location": "3D Viewport > Sidebar > Motion Paths, Toolbar > Edit Motion Path",
     "category": "Animation",
