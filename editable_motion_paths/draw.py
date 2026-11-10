@@ -1203,7 +1203,7 @@ def _draw_points(ctx, st, us):
         return location_3d_to_region_2d(region, rv3d, p if shift[0] is None else shift[0] @ p)
 
     def many(pts):
-        return project_many(region, rv3d, pts if shift[0] is None else [shift[0] @ p for p in pts])
+        return project_many(region, rv3d, pts if shift[0] is None else [shift[0] @ Vector(p) for p in pts])
 
     for cache in state.visible_caches(scene):
         if not cache.valid or state.seen_from_itself(cache, ctx):
@@ -1218,11 +1218,20 @@ def _draw_points(ctx, st, us):
         if st.show_frames and cache.key not in state.sculpt_hide:
             col = COL_FRAME if editable else (0.7, 0.7, 0.7, 0.5)
             r = 1.8 * us
-            vis, rep = _sample_flags(cache)
-            idx = [i for i, (t, v, r_) in enumerate(zip(cache.times, vis, rep))
-                   if v and not r_ and _in(t, lo, hi) and abs(t - round(t)) < 1e-4]
-            if idx:
-                xy, ok = many([cache.points[i] for i in idx])
+            # (the dots' points are kept on the cache while the path is the same: a long path
+            # isn't gone through frame by frame on every redraw)
+            # (the lists themselves are kept and compared: a freed list's id can come back)
+            kept = getattr(cache, "_dot_points", None)
+            if kept is None or kept[0] != (lo, hi) or kept[1] is not cache.points or kept[2] is not cache.vis \
+                    or kept[3] is not cache.rep:
+                vis, rep = _sample_flags(cache)
+                idx = [i for i, (t, v, r_) in enumerate(zip(cache.times, vis, rep))
+                       if v and not r_ and _in(t, lo, hi) and abs(t - round(t)) < 1e-4]
+                import numpy as np
+                kept = cache._dot_points = ((lo, hi), cache.points, cache.vis, cache.rep,
+                                            np.array([cache.points[i] for i in idx], dtype=np.float64).reshape(-1, 3))
+            if len(kept[4]):
+                xy, ok = many(kept[4])
                 m = 4.0 * us
                 ok &= (xy[:, 0] > -m) & (xy[:, 0] < region.width + m) & (xy[:, 1] > -m) & (xy[:, 1] < region.height + m)
                 discs.add_many(xy[ok], r, col)

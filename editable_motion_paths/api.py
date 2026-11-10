@@ -361,7 +361,8 @@ def _only(c):
         for pb, _s in bones:
             if pb is not owner and _s:
                 compat.bone_select_set(pb, False)
-    objs = [(o, o.select_get()) for o in bpy.context.view_layer.objects]
+    # (None: an object removed a moment ago, the view layer's list not brought up to date yet)
+    objs = [(o, o.select_get()) for o in bpy.context.view_layer.objects if o is not None]
     for o, sel in objs:
         if sel and o is not obj:
             o.select_set(False)

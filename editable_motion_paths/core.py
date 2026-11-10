@@ -1724,13 +1724,106 @@ def scene_by_name(name):
     return bpy.data.scenes.get(name)
 
 
+# ----------------------------------------------------------------------------
+# The bake scene: the paths' objects stepped through their frames in a scene of their own
+# ----------------------------------------------------------------------------
+
+AUX_NAME = ".Motion Paths Bake"     # (a dot: Blender's scene menus leave it out)
+AUX_TAG = "emp_bake_scene"
+AUX = True              # bake in the bake scene when it can be (False: in the user's scene)
+NEAR = 60               # a first bake: the frames this far around the current one first
+
+
+def _aux_fits(objs):
+    """Can these be baked in a scene of their own? Not an object in Edit Mode, not one a Python
+    driver moves (it may read the scene of the interface - its frame would be the wrong one)."""
+    for o in objs:
+        if o.mode == 'EDIT':
+            return False
+        for idb in (o, getattr(o, "data", None)):
+            ad = getattr(idb, "animation_data", None)
+            for d in (ad.drivers if ad is not None else ()):
+                if d.driver.type == 'SCRIPTED' and "bpy" in d.driver.expression:
+                    return False
+    return True
+
+
+def aux_scene(scene, objs):
+    """The scene the paths are baked in: only their objects (and the camera) linked - what those
+    hang on, follow or read comes in by itself - so stepping its frames evaluates the rig alone
+    (no skinned mesh), and the user's scene, its frame, its poses and its viewport are left as they
+    are. Blender's own motion paths are calculated the same way. None if it can't be made."""
+    aux = bpy.data.scenes.get(AUX_NAME)
+    try:
+        if aux is not None and (aux.library is not None or not aux.get(AUX_TAG)):
+            return None         # (a scene of the user's with this name: left alone)
+        if aux is None:
+            aux = bpy.data.scenes.new(AUX_NAME)
+            if aux.name != AUX_NAME:
+                bpy.data.scenes.remove(aux)
+                return None
+            aux[AUX_TAG] = True
+            aux.use_fake_user = False
+        want = []
+        cams = [scene.camera] + [m.camera for m in scene.timeline_markers if m.camera is not None]
+        for o in list(objs) + cams:
+            # (== : Python makes a new wrapper of a Blender object on every access; not by name:
+            # a linked object can have the name of a local one)
+            if o is not None and not any(o == w for w in want):
+                want.append(o)
+        coll = aux.collection
+        have = list(coll.objects)
+        for o in have:
+            if not any(o == w for w in want):
+                coll.objects.unlink(o)
+        for o in want:
+            if not any(o == h for h in have):
+                coll.objects.link(o)
+        r, ar = scene.render, aux.render
+        for prop in ("fps", "fps_base", "frame_map_old", "frame_map_new"):
+            if getattr(ar, prop) != getattr(r, prop):
+                setattr(ar, prop, getattr(r, prop))
+    except (RuntimeError, TypeError, ValueError, ReferenceError, AttributeError):
+        return None
+    return aux
+
+
+def camera_at(scene, f):
+    """The scene's camera on frame f: the one of the last marker with a camera before it (like
+    Blender switches them; none before: the first one), else the scene's camera."""
+    cam, at, first, first_at = None, None, None, None
+    for m in scene.timeline_markers:
+        if m.camera is None:
+            continue
+        if m.frame <= f and (at is None or m.frame > at):
+            cam, at = m.camera, m.frame
+        if first_at is None or m.frame < first_at:
+            first, first_at = m.camera, m.frame
+    return cam or first or scene.camera
+
+
+def drop_aux():
+    """The bake scene removed (nothing is baking: it isn't kept in the file or in undo steps)."""
+    aux = bpy.data.scenes.get(AUX_NAME)
+    if aux is None or aux.library is not None or not aux.get(AUX_TAG):
+        return
+    try:
+        bpy.data.scenes.remove(aux)
+        # (the view layer's object list brought up to date: Blender 4.4 leaves it stale after
+        # objects were linked / removed until something asks - stepping the user's scene did)
+        _ = bpy.context.view_layer.objects.active
+    except (RuntimeError, ReferenceError, AttributeError):
+        pass
+
+
 class BakeJob:
     """The bake (parent spaces of the caches, frame by frame) done in steps, so a heavy scene
-    can be baked in the background without freezing Blender: each step steps through as many
-    frames as fit in its time and puts the frame and the poses back. The old parent spaces stay
-    drawn until finish() puts the new ones in."""
+    can be baked in the background without freezing Blender. The frames are stepped through in the
+    bake scene (see aux_scene) - else in the user's scene, putting the frame and the poses back
+    after each step. The frames around the current one (near) come first and are shown as soon as
+    they are done; the rest of the old parent spaces stays drawn until finish() puts the new ones in."""
 
-    def __init__(self, scene, caches):
+    def __init__(self, scene, caches, near=None, aux=None):
         # (by name: undo frees the scene, a job outlives it)
         self.scene_name = scene.name
         self.ok_start = False
@@ -1738,9 +1831,9 @@ class BakeJob:
         if not caches or settings is None:
             return
         self.fs, self.fe = bake_range(scene, settings, caches)
-        self.f = self.fs
-        self.items = []         # [cache, its matrices, frames ok]
-        self.cams = []          # the active camera's matrix on every frame (None: no camera)
+        n = self.fe - self.fs + 1
+        self.items = []         # [cache, its matrices, frames ok] (by frame - fs)
+        self.cams = [None] * n  # the active camera's matrix on every frame (None: no camera)
         for c in caches:
             obj, owner = resolve(c.obj_name, c.bone_name)
             if owner is None:
@@ -1748,7 +1841,21 @@ class BakeJob:
                 c.valid = False
                 c.failed = True
                 continue
-            self.items.append([c, [], []])
+            self.items.append([c, [None] * n, [True] * n])
+        self.first = any(not item[0].B for item in self.items)     # (a path not drawn yet)
+        self.order = list(range(self.fs, self.fe + 1))
+        self.window = None
+        if near is not None and n > 2 * NEAR + 1:
+            # (where the animator is first - a new path shows there, a changed one changes there -
+            # the rest of a long range follows)
+            a, b = max(self.fs, int(near) - NEAR), min(self.fe, int(near) + NEAR)
+            if a <= b:
+                self.order = list(range(a, b + 1)) + list(range(self.fs, a)) + list(range(b + 1, self.fe + 1))
+                self.window = (a, b)
+        self.i = 0
+        self._stop = None
+        self.aux = AUX if aux is None else aux
+        self.aux_name = None
         self.ok_start = bool(self.items)
         self.t_spent = 0.0
         # the hashes of now: what changes while this runs is seen as a change afterwards
@@ -1757,7 +1864,21 @@ class BakeJob:
 
     @property
     def done(self):
-        return not self.ok_start or self.f > self.fe
+        return not self.ok_start or self.i >= len(self.order)
+
+    @property
+    def progress(self):
+        return 1.0 if self.done else self.i / max(len(self.order), 1)
+
+    def _live(self):
+        """[(item, object, owner)] now (None: one is gone)."""
+        live = []
+        for item in self.items:
+            obj, owner = resolve(item[0].obj_name, item[0].bone_name)
+            if owner is None:
+                return None
+            live.append((item, obj, owner))
+        return live
 
     def step(self, budget=None):
         """Bake frames for up to `budget` seconds (None: all of them). Returns True when done."""
@@ -1766,23 +1887,94 @@ class BakeJob:
         scene = scene_by_name(self.scene_name)
         if scene is None:
             return self._abort()
+        live = self._live()
+        if live is None:
+            return self._abort()
+        aux = None
+        if self.aux:
+            objs = {id(obj): obj for _, obj, _ in live}
+            aux = aux_scene(scene, objs.values()) if _aux_fits(objs.values()) else None
+            if aux is None:
+                self.aux = False        # (from here on in the user's scene)
+        i0 = self.i
+        t0 = time.time()
+        # (a step in steps ends where the frames around the current one are done: shown right away)
+        wlen = self.window[1] - self.window[0] + 1 if self.window is not None else None
+        self._stop = wlen if wlen is not None and i0 < wlen else None
+        if aux is not None:
+            self._step_aux(scene, aux, live, budget, t0)
+        else:
+            self._step_scene(scene, live, budget, t0)
+        self.pace = (time.time() - t0) / max(self.i - i0, 1)
+        if self.done:
+            # how long a whole bake takes here (steps: their frames; once: all of it, showing
+            # meshes again too)
+            state.bake_seconds = self.pace * len(self.order) if budget is not None else time.time() - t0
+        if self.window is not None and i0 < self.window[1] - self.window[0] + 1 <= self.i and not self.done:
+            self._show_window()
+        return self.done
+
+    def _read(self, live, k, dg=None):
+        """Frame fs + k: every cache's parent space (from the depsgraph dg's evaluated objects,
+        or None: the objects as the scene has them)."""
+        for (c, mats, ok), obj, owner in live:
+            if dg is not None:
+                ob = obj.evaluated_get(dg)
+                owner = ob.pose.bones.get(c.bone_name) if c.bone_name else ob
+                if owner is None:
+                    mats[k], ok[k] = Matrix.Identity(4), False     # (taken from the frames around it)
+                    continue
+                obj = ob
+            if c.bone_name:
+                W = obj.matrix_world @ owner.matrix
+            else:
+                W = owner.matrix_world.copy()
+            basis = owner.matrix_basis
+            mats[k] = W @ basis.inverted_safe()
+            # a zero scale (its own, or a parent's) on this frame: W / basis can't be
+            # inverted, so the parent space here is taken from the frames around it
+            ok[k] = abs(basis.to_3x3().determinant()) > SINGULAR and abs(W.to_3x3().determinant()) > SINGULAR
+
+    def _step_aux(self, scene, aux, live, budget, t0):
+        state.baking = True
+        vl = aux.view_layers[0]
+        try:
+            while self.i < len(self.order):
+                f = self.order[self.i]
+                dg = vl.depsgraph
+                if dg is None:
+                    aux.frame_set(f)        # (its depsgraph made: once)
+                    dg = vl.depsgraph
+                else:
+                    # (not frame_set: that has every window redrawn and every frame handler called;
+                    # not the view layer's update(): that makes this depsgraph the active one, which
+                    # writes the animation of its frame into the rig - unkeyed changes would be lost)
+                    aux.frame_current = f
+                    dg.update()
+                k = f - self.fs
+                cam = camera_at(scene, f)
+                self.cams[k] = cam.evaluated_get(dg).matrix_world.copy() if cam is not None else None
+                self._read(live, k, dg)
+                self.i += 1
+                if budget is not None and (time.time() - t0 > budget or self.i == self._stop):
+                    break
+        finally:
+            state.baking = False
+
+    def _step_scene(self, scene, live, budget, t0):
         state.flush_changes()       # (what changed a moment ago is seen as a change, not baked in quietly)
-        live = []
         objs = {}
-        for item in self.items:
-            obj, owner = resolve(item[0].obj_name, item[0].bone_name)
-            if owner is None:
-                return self._abort()
-            live.append((item, obj, owner))
+        for _, obj, _ in live:
             o = obj
             while o is not None:
                 objs[o.name] = o
                 o = o.parent
+        left = len(self.order) - self.i
         if budget is None:
-            frames = self.fe - self.f + 1
+            frames = left
         else:
             # frames this step will get through (from the last step's pace)
-            frames = max(1, min(self.fe - self.f + 1, int(budget / max(getattr(self, "pace", 0.01), 1e-4))))
+            frames = max(1, min(left, int(budget / max(getattr(self, "pace", 0.01), 1e-4))))
         hide = [o for o in _meshes_not_needed(scene, objs) if state.can_hide(o, frames, budget is not None)]
         for o in scene.objects:
             if state.is_animated(o):
@@ -1792,37 +1984,21 @@ class BakeJob:
         sub = scene.frame_subframe
         state.baking = True
         hidden = []
-        t0 = time.time()
-        f_start = self.f
         try:
             for o in hide:
                 # bent meshes nothing here depends on: left out of the evaluation (like the
                 # onion ghosts do), so a heavy character steps through its frames fast
                 o.hide_viewport = True
                 hidden.append(o)
-            while self.f <= self.fe:
-                scene.frame_set(self.f)
+            while self.i < len(self.order):
+                f = self.order[self.i]
+                scene.frame_set(f)
                 cam = scene.camera
-                self.cams.append(cam.matrix_world.copy() if cam is not None else None)
-                for (c, mats, ok), obj, owner in live:
-                    if c.bone_name:
-                        W = obj.matrix_world @ owner.matrix
-                    else:
-                        W = owner.matrix_world.copy()
-                    basis = owner.matrix_basis
-                    mats.append(W @ basis.inverted_safe())
-                    # a zero scale (its own, or a parent's) on this frame: W / basis can't be
-                    # inverted, so the parent space here is taken from the frames around it
-                    ok.append(abs(basis.to_3x3().determinant()) > SINGULAR and
-                              abs(W.to_3x3().determinant()) > SINGULAR)
-                self.f += 1
-                if budget is not None and time.time() - t0 > budget:
+                self.cams[f - self.fs] = cam.matrix_world.copy() if cam is not None else None
+                self._read(live, f - self.fs)
+                self.i += 1
+                if budget is not None and (time.time() - t0 > budget or self.i == self._stop):
                     break
-            self.pace = (time.time() - t0) / max(self.f - f_start, 1)
-            if self.f > self.fe:
-                # how long a whole bake takes here (steps: their frames; once: all of it)
-                if budget is not None:
-                    state.bake_seconds = self.pace * (self.fe - self.fs + 1)
         finally:
             for o in hidden:
                 o.hide_viewport = False
@@ -1834,36 +2010,64 @@ class BakeJob:
                 # ghosts, the center of mass and the auto update would start again - a loop)
                 bpy.context.view_layer.update()
             state.baking = False
-            if budget is None and self.f > self.fe:
-                state.bake_seconds = time.time() - t0      # (all of it, showing meshes again too)
-        return self.done
 
     def _abort(self):
         self.ok_start = False
         self.items = []
         return True
 
-    def finish(self):
-        """The new parent spaces into the caches (those still in use)."""
-        if not self.ok_start or self.f <= self.fe:
-            return
-        alive = set(id(c) for c in state.caches.values())
-        cams = self.cams if self.cams and all(m is not None for m in self.cams) else []
-        baked = {}
+    def _put(self, c, fs, mats, ok, cams, cam_obj):
+        mats = list(mats)
+        _fill_singular(mats, list(ok))
+        c.fs = fs
+        c.B = mats
+        c.Cam, c.cam_fs, c.cam_obj = cams, fs, cam_obj
+        c.failed = False
+        c.bake_id += 1
+        c.dirty = True
+        c.refresh(force=True)
+
+    def _cam(self, cams):
+        cams = cams if cams and all(m is not None for m in cams) else []
         scene = scene_by_name(self.scene_name)
-        cam_obj = scene.camera.name if scene is not None and scene.camera is not None and cams else ""
+        return cams, (scene.camera.name if scene is not None and scene.camera is not None and cams else "")
+
+    def _show_window(self):
+        """The frames around the current one are done: shown now - on a path with nothing drawn
+        yet, or in place of those frames of the path drawn before."""
+        a, b = self.window
+        i, j = a - self.fs, b - self.fs + 1
+        alive = set(id(c) for c in state.caches.values())
+        cams, cam_obj = self._cam(self.cams[i:j])
         for c, mats, ok in self.items:
             if id(c) not in alive:
                 continue
-            _fill_singular(mats, ok)
-            c.fs = self.fs
-            c.B = mats
-            c.Cam, c.cam_fs, c.cam_obj = cams, self.fs, cam_obj
+            if not c.B:
+                self._put(c, a, mats[i:j], ok[i:j], cams, cam_obj)
+            elif c.fs <= a and c.fe >= b:
+                win = list(mats[i:j])
+                _fill_singular(win, list(ok[i:j]))
+                x, y = a - c.fs, b - c.fs + 1
+                if c.Cam and cams and c.cam_fs == c.fs and len(c.Cam) == len(c.B):
+                    c.Cam = c.Cam[:x] + cams + c.Cam[y:]
+                c.B = c.B[:x] + win + c.B[y:]
+                c.bake_id += 1
+                c.dirty = True
+                c.refresh(force=True)
+        state.tag_redraw()
+
+    def finish(self):
+        """The new parent spaces into the caches (those still in use)."""
+        if not self.ok_start or not self.done:
+            return
+        alive = set(id(c) for c in state.caches.values())
+        cams, cam_obj = self._cam(self.cams)
+        baked = {}
+        for c, mats, ok in self.items:
+            if id(c) not in alive:
+                continue
+            self._put(c, self.fs, mats, ok, cams, cam_obj)
             baked[c.key] = (c.fs, c.B, c.Cam, c.cam_fs, c.cam_obj)
-            c.failed = False
-            c.bake_id += 1
-            c.dirty = True
-            c.refresh(force=True)
         if baked:
             state.remember_bake(getattr(self, "memo_sig", None), baked)
 

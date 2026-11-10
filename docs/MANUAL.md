@@ -14,7 +14,7 @@ Requires Blender 4.4 or newer (tested on 5.2).
 ## Install
 
 Edit > Preferences > Get Extensions > **Install from Disk…** → choose
-`editable_motion_paths-2.0.3.zip`.
+`editable_motion_paths-2.0.4.zip`.
 
 To remove it: Edit > Preferences > **Get Extensions**, find *Editable Motion Paths* among the
 installed ones, and in the dropdown menu at the right of its row choose **Uninstall** (Blender shows no
@@ -567,6 +567,13 @@ only its own settings (stored with the scene) are then unused.
 Paths are calculated over the Scene, Action or a Manual frame range (always including every
 key of the path) and update in real time. When other animation such as a parent changes, they
 recalculate on their own (*Auto Update*).
+
+On a heavy rig or a long range (thousands of frames) the calculation runs in the background:
+Blender stays responsive, the frames around the current one come first (a new path shows there at
+once, a changed one changes there first) and the rest follows. It pauses while you orbit the view,
+transform or play back, and goes on when you stop. Only the rig is evaluated for it (in a hidden
+scene of its own, removed when it is done and never saved), so the character's meshes don't slow
+it down and your scene, frame and pose are left as they are.
 
 ## Scripting and AI assistants
 

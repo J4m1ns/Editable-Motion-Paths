@@ -87,7 +87,12 @@ world(f) = B(f) @ basis(f)
 
 * `B(f)`: the **parent space** at frame f - everything the target inherits (parents,
   constraints, drivers). It is baked once by stepping through the frames (`core.bake_range`,
-  in the background in steps: `core.BakeJob`) and kept in `cache.B`.
+  in the background in steps: `core.BakeJob`) and kept in `cache.B`. The frames are stepped
+  in a hidden scene of their own (`core.aux_scene`: only the path objects and cameras linked,
+  what they depend on comes in by itself; `aux.frame_current` + `view_layers[0].update()`, the
+  evaluated objects read) - the user's scene, frame, poses and viewport are never touched, no
+  skinned mesh is evaluated. It is removed after each bake, before saving and after undo
+  (`core.drop_aux`). A Python driver or Edit Mode falls back to stepping the user's scene.
 * `basis(f)`: the target's own loc / rot / scale, evaluated **from its F-Curves** on every
   `cache.refresh()`. So when a key moves, the path follows at once, without stepping frames.
 
@@ -147,7 +152,12 @@ this.
 
 `state.py` watches the depsgraph (`_on_depsgraph`): when the animation of a parent / constraint
 / driver changes, it schedules a re-bake (`state.schedule_rebake`) that runs in steps on a timer
-(`BakeJob`, small budgets so the UI keeps up). Undo / redo, file load and the bake are handled
+(`BakeJob`, small budgets so the UI keeps up; after each step Blender gets as long again; the
+frames around the current one first, shown as soon as they are done). Adding a path uses
+`state.bake_soon`: the first step at once (a light scene is done before the operator returns),
+the rest in the background; the API's calls bake at once (`state.bake_all`). Constraint
+settings a driver or a key sets are no change of the rig (left out of the hashes: they can
+differ from one evaluation to the next). Undo / redo, file load and the bake are handled
 there too: the last bakes are kept by the animation they were baked from
 (`state.anim_signature` -> `_bake_memo`), so an undo back to one takes its parent spaces at once
 instead of baking anew. Rules:

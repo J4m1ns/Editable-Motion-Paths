@@ -240,13 +240,18 @@ def editable_caches(scene=None):
 
 
 def bake_all(scene=None, only=None):
+    global _job
     from . import core
     scene = scene or bpy.context.scene
     need = sync_caches(scene)
     targets = list(caches.values()) if only is None else only
     if only == 'MISSING':
         targets = need
+    if only is None:
+        _job = None     # (a bake going on in the background: this one is newer)
     core.bake(scene, targets)
+    if _job is None:
+        _aux_drop()
     tag_redraw()
 
 
@@ -302,7 +307,15 @@ def _fcurve_hashes(obj, curves=True):
             v = getattr(ow, prop)
             free.append(tuple(v) if not skip else tuple(x for i, x in enumerate(v) if (prop, i) not in skip))
     out[("#pose", 0)] = hash(tuple(free))
-    cons = tuple((ow.name, tuple(_constraint_sig(c) for c in ow.constraints)) for ow in owners if len(ow.constraints))
+    # (a constraint setting a driver or a key sets is the rig's output, not a setting: its driver /
+    # curve is above already - its value can differ from one evaluation of the scene to the next)
+    driven = set()
+    for dp, i in paths:
+        m = _CON_PATH.match(dp)
+        if m:
+            driven.add((_unescape(m.group(1) or ""), _unescape(m.group(2)), m.group(3)))
+    cons = tuple((ow.name, tuple(_constraint_sig(c, driven, ow.name if ow is not obj else "") for c in ow.constraints))
+                 for ow in owners if len(ow.constraints))
     if cons:
         out[("#constraints", 0)] = hash(cons)
     return out
@@ -380,10 +393,20 @@ def _constraint_props(con):
     return props
 
 
-def _constraint_sig(con):
-    """A constraint's settings (its limits, targets, influence...)."""
+_CON_PATH = re.compile(r'^(?:pose\.bones\["((?:[^"\\]|\\.)*)"\]\.)?constraints\["((?:[^"\\]|\\.)*)"\]\.(\w+)$')
+
+
+def _unescape(name):
+    return name.replace('\\"', '"').replace('\\\\', '\\')
+
+
+def _constraint_sig(con, driven=(), owner=""):
+    """A constraint's settings (its limits, targets, influence...) - but those driven or keyed
+    (driven: {(owner name, constraint name, setting)}; owner '' is the object)."""
     out = [con.type]
     for ident, kind in _constraint_props(con):
+        if driven and (owner, con.name, ident) in driven:
+            continue
         try:
             v = getattr(con, ident)
         except AttributeError:
@@ -739,19 +762,78 @@ _BLOCKING_MODALS = {"TRANSFORM", "EMP", "ANIM", "GRAPH", "ACTION", "VIEW3D", "PO
 
 _job = None        # the automatic re-bake running in steps (core.BakeJob), or None
 STEP = 0.08        # how long a step of the background re-bake goes on (seconds)
+STEP_AUX = 0.04    # the same in the bake scene (nothing to put back after it: shorter steps)
 QUICK_BAKE = 0.15  # a whole re-bake quicker than this is done at once (else in steps: no hitch)
 bake_seconds = 0.0  # how long the last whole bake took (a quick one is done at once)
+_job_started = 0.0  # when the job began (a long one shows how far it got)
+SHOW_PROGRESS = 1.0  # a first bake going on longer than this says how far it got
+_progress_shown = 0.0
 
 
 def bake_running():
     return _job is not None
 
 
+def _job_step(job):
+    """One step of a background bake; returns how long Blender gets before the next one (as long
+    as the step took: the interface keeps up while a long range is baked), or None when done."""
+    t = time.time()
+    budget = STEP_AUX if job.aux else max(0.02, STEP - 2.0 * getattr(job, "pace", 0.0))
+    if job.window is not None and job.i <= job.window[1] - job.window[0]:
+        budget = max(budget, QUICK_BAKE)    # (the frames around the current one in one go: shown at once)
+    if job.step(budget):
+        return None
+    global _progress_shown
+    spent = time.time() - t
+    now = time.time()
+    if job.first and now - _job_started > SHOW_PROGRESS and now - _progress_shown > 0.3:
+        # (only while a path isn't drawn yet - a path being updated is there already)
+        _progress_shown = now
+        flash_message("Calculating motion paths... %d%%" % int(100 * job.progress), 1.0)
+    return max(0.02, spent)
+
+
+def _job_done(job):
+    global flash
+    job.finish()
+    _aux_drop()
+    if flash is not None and flash[0].startswith("Calculating motion paths"):
+        flash = None
+    tag_redraw()
+
+
+def _aux_drop():
+    from . import core
+    try:
+        core.drop_aux()
+    except Exception:
+        pass
+
+
+def bake_soon(scene=None, budget=0.15):
+    """Bake every path, the first part now: on a light scene they are done before this returns
+    (as with bake_all); a heavy rig or a long range goes on in steps in the background (Blender
+    stays responsive), the frames around the current one first - a new path shows there at once."""
+    global _job, _job_started
+    from . import core
+    scene = scene or bpy.context.scene
+    sync_caches(scene)
+    _job = core.BakeJob(scene, list(caches.values()), near=scene.frame_current)
+    _job_started = time.time()
+    if _job.step(budget):
+        job, _job = _job, None
+        _job_done(job)
+        return True
+    tag_redraw()
+    schedule_rebake(0.02)       # (the rest in the background)
+    return False
+
+
 def _bake_timer():
     """The automatic re-bake: when something else than a path's own channels changed, the paths
     are baked again - in steps of ~40 ms (a heavy scene doesn't freeze Blender meanwhile; the old
     paths stay drawn until the new ones are ready)."""
-    global _bake_timer_on, _force_bake, _job, _check_curves
+    global _bake_timer_on, _force_bake, _job, _check_curves, _job_started
     remaining = _bake_due - time.time()
     if remaining > 0.01 and _job is None:
         return remaining
@@ -764,12 +846,11 @@ def _bake_timer():
     from . import core
     try:
         if _job is not None:
-            # (a step: ~0.08 s with putting the frame back, which costs about one frame)
-            if not _job.step(max(0.02, STEP - 2.0 * getattr(_job, "pace", 0.0))):
-                return 0.01
-            _job.finish()
-            _job = None
-            tag_redraw()
+            wait = _job_step(_job)
+            if wait is not None:
+                return wait
+            job, _job = _job, None
+            _job_done(job)
             # (what changed meanwhile is seen right away below: the job kept the hashes of its start)
         force = _force_bake
         _force_bake = False
@@ -780,20 +861,21 @@ def _bake_timer():
             if force or any(not c.B for c in caches.values()) or sync_caches() or _range_changed() \
                     or _needs_rebake(curves):
                 sync_caches()
-                _job = core.BakeJob(bpy.context.scene, list(caches.values()))
-                # quick scenes at once (as before); heavy ones in steps, without a freeze - the
-                # first of them on the next tick (this one checked what changed: on a big rig that
-                # takes a moment already)
-                if bake_seconds >= QUICK_BAKE:
-                    return 0.01
-                if not _job.step(None):
-                    return 0.01
-                _job.finish()
-                _job = None
+                scene = bpy.context.scene
+                _job = core.BakeJob(scene, list(caches.values()), near=scene.frame_current)
+                _job_started = time.time()
+                # quick scenes at once (as before); heavy ones and long ranges in steps, without a
+                # freeze - the first of them on the next tick (this one checked what changed: on a
+                # big rig that takes a moment already)
+                if bake_seconds >= QUICK_BAKE or not _job.step(QUICK_BAKE):
+                    return 0.02
+                job, _job = _job, None
+                _job_done(job)
             tag_redraw()
     except Exception as ex:  # never let a timer die silently with a traceback storm
         print("Editable Motion Paths: auto update failed:", ex)
         _job = None
+        _aux_drop()
     _bake_timer_on = False
     return None
 
@@ -997,6 +1079,8 @@ def _on_undo(*_args):
         restart = _job is not None
         _job = None
         schedule_rebake(0.2, force=restart)
+    if _job is None:
+        _aux_drop()         # (the bake scene an undo step brought back: nothing bakes in it)
 
 
 @persistent
@@ -1017,9 +1101,16 @@ def _on_load(*_args):
     ghosts.clear()
     _action_hashes.clear()
     _bake_memo.clear()
+    _aux_drop()     # (one saved by an auto save, or by the add-on of before)
     st = settings()
     if st is not None and st.paths:
         bpy.app.timers.register(_load_bake, first_interval=0.2)
+
+
+@persistent
+def _before_save(*_args):
+    # the bake scene isn't saved (a bake going on makes it again)
+    _aux_drop()
 
 
 def _load_bake():
@@ -1283,6 +1374,7 @@ def register():
     bpy.app.handlers.undo_post.append(_on_undo)
     bpy.app.handlers.redo_post.append(_on_undo)
     bpy.app.handlers.load_post.append(_on_load)
+    bpy.app.handlers.save_pre.append(_before_save)
     bpy.app.timers.register(_load_bake, first_interval=0.5)
     bpy.app.timers.register(_watch_active, first_interval=1.0, persistent=True)
 
@@ -1294,7 +1386,8 @@ def unregister():
                     (bpy.app.handlers.undo_pre, _before_undo),
                     (bpy.app.handlers.redo_pre, _before_undo),
                     (bpy.app.handlers.redo_post, _on_undo),
-                    (bpy.app.handlers.load_post, _on_load)):
+                    (bpy.app.handlers.load_post, _on_load),
+                    (bpy.app.handlers.save_pre, _before_save)):
         if fn in lst:
             lst.remove(fn)
     if bpy.app.timers.is_registered(_bake_timer):
@@ -1307,6 +1400,7 @@ def unregister():
     for fn in (onion._tick, com._tick):
         if bpy.app.timers.is_registered(fn):
             bpy.app.timers.unregister(fn)
+    _aux_drop()
     caches.clear()
 
 
