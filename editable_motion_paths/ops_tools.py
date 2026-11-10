@@ -77,8 +77,8 @@ class EMP_OT_path_add(bpy.types.Operator):
         elif st.edit_mode == 'ROTATION' and all(not tg.rot.any() and tg.loc.any() for tg in added):
             st.edit_mode = 'LOCATION'
             self.report({'INFO'}, "Switched to Location paths (1 / 2 switches Location / Rotation)")
-        state.sync_caches(context.scene)
-        state.bake_all(context.scene)
+        # (a heavy rig or a long range: the rest in the background, the frames around this one first)
+        state.bake_soon(context.scene)
         return {'FINISHED'}
 
 
@@ -711,7 +711,7 @@ class EMP_OT_path_update(bpy.types.Operator):
         state.sync_caches(context.scene)
         for c in state.caches.values():
             c.B = []
-        state.bake_all(context.scene)
+        state.bake_soon(context.scene)
         return {'FINISHED'}
 
 

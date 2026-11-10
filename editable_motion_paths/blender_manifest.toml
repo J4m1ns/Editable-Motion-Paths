@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "editable_motion_paths"
-version = "2.0.3"
+version = "2.0.4"
 name = "Editable Motion Paths"
 tagline = "Edit animation like a mesh, right on the motion path"
 maintainer = "Jamin"
