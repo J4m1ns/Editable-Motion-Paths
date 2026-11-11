@@ -473,8 +473,9 @@ Collapse*. A collapsed snapshot has a check mark next to its arrow: Apply.
 **Apply...** puts the snapshot's pose back on the bones and keys it - every bone it keeps (*Whole
 Pose*) or only the selected ones, on the **Current Frame** or (off) on the snapshot's own frame
 (the pose on the current frame then stays the animation's) - by its **Influence**: 0 the pose as
-it is, 1 the snapshot's, in between a blend. It is applied at once and its window stays: every
-change applies it again (so does the Adjust Last Operation panel afterwards). The snapshot stays:
+it is, 1 the snapshot's, in between a blend - then its **Apply** button. Afterwards the Adjust Last
+Operation panel (bottom left) has the same settings: drag Influence there and it is applied again
+as you drag. The snapshot stays:
 a list of snapshots is a small pose library inside the file. Static snapshots are saved with the
 file.
 

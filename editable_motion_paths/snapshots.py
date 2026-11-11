@@ -910,9 +910,10 @@ class EMP_OT_snapshot_apply(_SnapOp, bpy.types.Operator):
                           description="How far toward the snapshot's pose: 0 the pose as it is, 1 the snapshot's")
 
     def invoke(self, context, event):
-        # (applied at once; the window stays: every change applies it again - interactive, like the
-        # Adjust Last Operation panel, which has the same settings afterwards)
-        return context.window_manager.invoke_props_popup(self, event)
+        # (a window with an Apply button - Blender's popup that applies on every change doesn't apply
+        # at all until something is changed; afterwards the Adjust Last Operation panel has the same
+        # settings and applies them again as they change)
+        return context.window_manager.invoke_props_dialog(self, confirm_text="Apply")
 
     def draw(self, context):
         layout = self.layout
@@ -1000,14 +1001,14 @@ class EMP_MT_snapshot_entry(bpy.types.Menu):
             op.uid, op.direction = uid, d
 
 
-def draw_list(layout, context):
+def draw_list(layout, context, toggle=True):
     st = state.settings(context.scene)
     row = layout.row(align=True)
     row.operator("emp.snapshot_add", text="Whole Pose", icon='ADD').kind = 'POSE'
     row.operator("emp.snapshot_add", text="Selected Bones", icon='ADD').kind = 'BONES'
     row.menu("EMP_MT_snapshot_tools", text="", icon='DOWNARROW_HLT')
-    row = layout.row()
-    row.prop(st, "show_snapshots", text="Show Snapshots")
+    if toggle:      # (the sidebar's panel has it in its header)
+        layout.row().prop(st, "show_snapshots", text="Show Snapshots")
     if not len(st.snapshots):
         layout.label(text="No snapshots: take one of the pose (Pose Mode)", icon='INFO')
         return
@@ -1072,7 +1073,7 @@ class EMP_PT_snapshots(bpy.types.Panel):
             self.layout.prop(st, "show_snapshots", text="")
 
     def draw(self, context):
-        draw_list(self.layout, context)
+        draw_list(self.layout, context, toggle=False)
 
 
 class EMP_PT_snapshots_popover(bpy.types.Panel):
