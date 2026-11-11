@@ -39,6 +39,22 @@ _counter = [0]
 # what a snapshot is of
 # ----------------------------------------------------------------------------
 
+def previewing(snap):
+    """A Static snapshot whose Frame was changed but not taken yet (the check mark): it shows the pose
+    of that frame, its own pose is kept."""
+    return snap.mode == 'STATIC' and snap.frame != snap.taken
+
+
+def worked(snap):
+    """Its shape comes from the animation now (Live, or a Static one previewing another frame)."""
+    return snap.mode == 'LIVE' or previewing(snap)
+
+
+def _ready(snap):
+    g = _geo.get(snap.uid, False)
+    return g is None or (g is not False and g["key"][0] == "live")
+
+
 def find(st, uid):
     for i, s in enumerate(st.snapshots):
         if s.uid == uid:
@@ -263,7 +279,7 @@ def take(context, kind, name=None):
     snap.kind = kind
     snap.bones = "\n".join(bones)
     snap.mode = 'STATIC'
-    snap.frame = scene.frame_current
+    snap.taken = snap.frame = scene.frame_current
     snap.color = PALETTE[(snap.uid - 1) % len(PALETTE)]
     snap.data = me
     st.snapshot_index = len(st.snapshots) - 1
@@ -289,7 +305,7 @@ def retake(context, snap):
     snap.data = _capture(context, arm)
     if old is not None and old.users == 0:
         bpy.data.meshes.remove(old)
-    snap.frame = context.scene.frame_current
+    snap.taken = snap.frame = context.scene.frame_current
     _geo.pop(snap.uid, None)
     _batches.pop(snap.uid, None)
     state.tag_redraw()
@@ -297,8 +313,9 @@ def retake(context, snap):
 
 
 def freeze(context, snap):
-    """A Live snapshot made Static: its shape and values on its frame now are kept."""
-    if snap.uid in _dirty or snap.uid not in _geo:
+    """A Live snapshot made Static (or a Static one's preview taken): its shape and values on its
+    frame now are kept."""
+    if snap.uid in _dirty or not _ready(snap) or _geo.get(snap.uid) is None:
         _work_out(context.scene, snap)
     g = _geo.get(snap.uid)
     pose = _poses.get(snap.uid)
@@ -307,6 +324,7 @@ def freeze(context, snap):
     if snap.data is not None:
         _drop_mesh(snap)
     snap.data = _store(g["co"], g["tri"], g["dom"], g["names"], pose)
+    snap.taken = snap.frame
     return True
 
 
@@ -412,7 +430,7 @@ def anim_changed():
         return
     any_live = False
     for s in st.snapshots:
-        if s.show and s.mode == 'LIVE':
+        if s.show and worked(s):
             _dirty.add(s.uid)
             any_live = True
     if any_live:
@@ -433,7 +451,7 @@ def _tick():
     screen = getattr(bpy.context, "screen", None)
     if state.baking or (screen is not None and screen.is_animation_playing) or state.render_running():
         return 0.3
-    todo = [s for s in st.snapshots if s.show and s.mode == 'LIVE' and (s.uid in _dirty or s.uid not in _geo)]
+    todo = [s for s in st.snapshots if s.show and worked(s) and (s.uid in _dirty or not _ready(s))]
     if not todo:
         _timer[0] = False
         return None
@@ -455,10 +473,21 @@ def _tick():
 def changed(snap):
     """A snapshot's settings changed (its frame, part, mode...): drawn anew, a Live one worked out."""
     _batches.pop(snap.uid, None)
-    if snap.mode == 'LIVE':
+    if worked(snap):
         _dirty.add(snap.uid)
         _schedule()
     state.tag_redraw()
+
+
+def frame_changed(scene):
+    """The scene went to another frame (scrubbed, played): a Static snapshot previewing a frame
+    without its check mark goes back to its own - its pose isn't lost by accident."""
+    st = state.settings(scene)
+    if st is None or not len(st.snapshots):
+        return
+    for snap in st.snapshots:
+        if previewing(snap):
+            snap.frame = snap.taken
 
 
 def clear_runtime():
@@ -475,7 +504,7 @@ def clear_runtime():
 # ----------------------------------------------------------------------------
 
 def _shape_of(snap):
-    if snap.mode == 'LIVE':
+    if worked(snap):
         g = _geo.get(snap.uid)
         return (g["key"], g["co"], g["tri"], g["ed"], g["dom"], g["names"]) if g else None
     me = snap.data
@@ -565,7 +594,7 @@ def draw(scene, st, us):
     for snap in st.snapshots:
         if not snap.show:
             continue
-        if snap.mode == 'LIVE' and (snap.uid in _dirty or snap.uid not in _geo):
+        if worked(snap) and (snap.uid in _dirty or not _ready(snap)):
             _schedule()             # (the last shape stays drawn until the new one is ready)
         try:
             got = _batch(snap, sh)
@@ -610,10 +639,10 @@ def draw(scene, st, us):
 # ----------------------------------------------------------------------------
 
 def pose_of(context, snap):
-    """(names, values, rotation modes) a snapshot keeps: a Static one's from when it was taken, a
-    Live one's on its frame now."""
+    """(names, values, rotation modes) a snapshot keeps: a Static one's from when it was taken (also
+    while it previews another frame: a preview is only to look at), a Live one's on its frame now."""
     if snap.mode == 'LIVE':
-        if snap.uid in _dirty or snap.uid not in _poses:
+        if snap.uid in _dirty or snap.uid not in _poses or not _ready(snap):
             _work_out(context.scene, snap)
         return _poses.get(snap.uid)
     return stored_pose(snap.data) if snap.data is not None else None
@@ -656,7 +685,8 @@ def apply(context, snap, part, current_frame, factor=1.0):
         return 0
     names, vals, _modes = got
     scene = context.scene
-    f = scene.frame_current if current_frame else snap.frame
+    # (a Static one: the frame its kept pose is of, whatever frame it previews)
+    f = scene.frame_current if current_frame else (snap.frame if snap.mode == 'LIVE' else snap.taken)
     sel = set(selected_bones(arm)) if part == 'SELECTED' else None
     shown = {pb.name for pb in controls(arm)}
     pbs = arm.pose.bones
@@ -831,6 +861,22 @@ class EMP_OT_snapshot_update(_SnapOp, bpy.types.Operator):
         return {'FINISHED'}
 
 
+class EMP_OT_snapshot_take_frame(_SnapOp, bpy.types.Operator):
+    """Keep this frame's pose in the snapshot (its pose of before is replaced)"""
+    bl_idname = "emp.snapshot_take_frame"
+    bl_label = "Take This Frame's Pose"
+
+    def execute(self, context):
+        st, i, snap = self._snap(context)
+        if snap is None or not previewing(snap):
+            return {'CANCELLED'}
+        if not freeze(context, snap):
+            self.report({'WARNING'}, "This frame's pose couldn't be worked out")
+            return {'CANCELLED'}
+        changed(snap)
+        return {'FINISHED'}
+
+
 class EMP_OT_snapshot_move(_SnapOp, bpy.types.Operator):
     """Move this snapshot up / down the list"""
     bl_idname = "emp.snapshot_move"
@@ -989,7 +1035,13 @@ def draw_list(layout, context):
             n = len([b for b in snap.bones.split(chr(10)) if b])
             r.label(text="%d Bone%s" % (n, "" if n == 1 else "s"), icon='BONE_DATA')
             r.prop(snap, "scope", expand=True)
-        col.prop(snap, "frame", text="%s Frame" % ("Live" if snap.mode == 'LIVE' else "Static"))
+        r = col.row(align=True)
+        if previewing(snap):
+            r.alert = True          # (another frame shown - not kept until the check mark)
+        r.prop(snap, "frame", text="%s Frame" % ("Live" if snap.mode == 'LIVE' else "Static"))
+        if previewing(snap):
+            r.alert = False
+            r.operator("emp.snapshot_take_frame", text="", icon='CHECKMARK').uid = snap.uid
         sub = col.column(align=True)
         for i, a in enumerate("XYZ"):
             sub.prop(snap, "offset", index=i, text="Offset " + a)
@@ -1035,5 +1087,5 @@ class EMP_PT_snapshots_popover(bpy.types.Panel):
 
 
 classes = (EMP_OT_snapshot_add, EMP_OT_snapshot_remove, EMP_OT_snapshot_duplicate, EMP_OT_snapshot_convert,
-           EMP_OT_snapshot_mode, EMP_OT_snapshot_update, EMP_OT_snapshot_move, EMP_OT_snapshot_apply, EMP_OT_snapshot_tools,
+           EMP_OT_snapshot_mode, EMP_OT_snapshot_update, EMP_OT_snapshot_take_frame, EMP_OT_snapshot_move, EMP_OT_snapshot_apply, EMP_OT_snapshot_tools,
            EMP_MT_snapshot_tools, EMP_MT_snapshot_entry, EMP_PT_snapshots_popover)

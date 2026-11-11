@@ -303,8 +303,10 @@ class EMP_Snapshot(bpy.types.PropertyGroup):
                               ('LIVE', "Live", "The pose on its frame as the animation has it now - it follows "
                                                "every edit")])
     frame: IntProperty(name="Frame", update=_snap_changed,
-                       description="Live: the frame whose pose it shows. Static: the frame it was taken on - "
-                                   "where Apply keys it with Current Frame off")
+                       description="Live: the frame whose pose it shows. Static: the frame it was taken on; "
+                                   "changed, it shows that frame's pose - the check mark next to it keeps it, "
+                                   "another frame on the timeline goes back to the one it was taken on")
+    taken: IntProperty(options={'HIDDEN'})     # Static: the frame its kept pose is of
     offset: FloatVectorProperty(name="Offset", subtype='TRANSLATION', size=3, update=_redraw,
                                 description="Moved aside by this much (world space): side by side with the "
                                             "character")

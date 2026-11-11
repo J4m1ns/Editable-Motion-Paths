@@ -1026,6 +1026,10 @@ def _on_frame(scene, *_args):
     from . import onion
     if baking or onion.busy():
         return
+    from . import com
+    if not com.busy():
+        from . import snapshots
+        snapshots.frame_changed(scene)      # (a Static one previewing a frame goes back to its own)
     _dg_frame_all = scene.frame_current
     if settings(scene) is not None and (settings(scene).show_onion or settings(scene).show_com):
         global _dg_frame

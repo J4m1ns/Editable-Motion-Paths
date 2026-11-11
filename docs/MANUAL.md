@@ -456,7 +456,11 @@ to the character to compare side by side).
 * **Static** (a picture icon): the pose as it was when taken - unkeyed changes too, a photo of it.
   It stays as it is whatever happens to the animation; **Update** (in its arrow menu) takes it
   again: the pose as it is now, on this frame - its name, color, offset and part stay. Its
-  **Frame** is where Apply keys it with Current Frame off.
+  **Frame** is the one it was taken on (where Apply keys it with Current Frame off); scrub it and
+  the snapshot shows the pose of that frame as the animation has it, the field turns red - only to
+  look at: the **check mark** next to it keeps that frame's pose, and if you go to another frame on
+  the timeline instead, it goes back to the frame it was taken on (its pose isn't lost by
+  accident). Apply always puts the pose it keeps, never the one it previews.
 * **Live** (a red dot): the pose on its **Frame** as the animation has it now - it follows every
   edit as you make it, also while keys are dragged, like an onion ghost of that one frame. Change
   the frame to see another one, no need to take it again.
