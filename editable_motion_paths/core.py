@@ -1659,6 +1659,46 @@ def bake_range(scene, settings, caches):
 SINGULAR = 1e-12       # |determinant| below this: a zero scale, the matrix can't be inverted
 
 
+def own_loc_space(bone):
+    """A bone whose location moves it along other axes than its rotation and scale turn it: Local
+    Location off (IK controls of Rigify and others: along the parent's axes), no inherited rotation,
+    or a scale inherited other than in full. Blender moves its head by its own matrix then."""
+    return not bone.use_local_location or not bone.use_inherit_rotation or bone.inherit_scale != 'FULL'
+
+
+def parent_space(obj, owner, bone_name, location=False):
+    """(B, ok) on the current frame: the parent space of a bone / object as its path uses it -
+    world = B @ basis. ok: it can be inverted (no zero scale; else it is taken from the frames
+    around).
+
+    A location path of a bone whose location has its own axes (own_loc_space) takes the map from
+    the location to where the head goes instead - the matrix Blender moves the head by: the
+    parent's pose axes with Local Location off, else the parent's pose with the bone's rest offset
+    (the bone's own rotation / scale inheritance left out)."""
+    if bone_name:
+        bone = owner.bone
+        if location and own_loc_space(bone):
+            par = owner.parent
+            if not bone.use_local_location:
+                L3 = par.matrix.to_3x3() if par is not None else Matrix.Identity(3)
+            elif par is not None:
+                L3 = par.matrix.to_3x3() @ (par.bone.matrix_local.to_3x3().inverted_safe() @
+                                            bone.matrix_local.to_3x3())
+            else:
+                L3 = bone.matrix_local.to_3x3()
+            L = L3.to_4x4()
+            L.translation = owner.matrix.translation - L3 @ Vector(owner.location)
+            B = obj.matrix_world @ L
+            return B, abs(B.to_3x3().determinant()) > SINGULAR
+        W = obj.matrix_world @ owner.matrix
+    else:
+        W = owner.matrix_world.copy()
+    basis = owner.matrix_basis
+    # (a zero scale - its own, or a parent's - on this frame: W / basis can't be inverted)
+    return W @ basis.inverted_safe(), \
+        abs(basis.to_3x3().determinant()) > SINGULAR and abs(W.to_3x3().determinant()) > SINGULAR
+
+
 def _fill_singular(mats, ok):
     """Parent spaces of frames with a zero scale: blended from the nearest good frames before and
     after (the parent space doesn't depend on the bone's / object's own scale; a parent that is
@@ -1925,15 +1965,7 @@ class BakeJob:
                     mats[k], ok[k] = Matrix.Identity(4), False     # (taken from the frames around it)
                     continue
                 obj = ob
-            if c.bone_name:
-                W = obj.matrix_world @ owner.matrix
-            else:
-                W = owner.matrix_world.copy()
-            basis = owner.matrix_basis
-            mats[k] = W @ basis.inverted_safe()
-            # a zero scale (its own, or a parent's) on this frame: W / basis can't be
-            # inverted, so the parent space here is taken from the frames around it
-            ok[k] = abs(basis.to_3x3().determinant()) > SINGULAR and abs(W.to_3x3().determinant()) > SINGULAR
+            mats[k], ok[k] = parent_space(obj, owner, c.bone_name, c.ptype == LOCATION)
 
     def _step_aux(self, scene, aux, live, budget, t0):
         state.baking = True

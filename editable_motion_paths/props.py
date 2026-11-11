@@ -314,6 +314,11 @@ class EMP_Settings(bpy.types.PropertyGroup):
         default=False, update=_redraw)
     window_before: IntProperty(name="Before", default=15, min=0, update=_redraw)
     window_after: IntProperty(name="After", default=15, min=0, update=_redraw)
+    only_selected: BoolProperty(
+        name="Only Selected",
+        description="Show only the paths of the selected bones / objects (with none selected, nothing "
+                    "is drawn or kept up to date - no cost)",
+        default=False, update=_redraw)
     color_mode: EnumProperty(
         name="Color",
         items=[

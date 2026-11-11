@@ -659,6 +659,8 @@ class EMP_PT_main(_Panel, bpy.types.Panel):
         col.separator()
         col.operator("emp.path_update", text="", icon='FILE_REFRESH')
         col.operator("emp.path_remove", text="", icon='TRASH').scope = 'ALL'
+        col.separator()
+        col.prop(st, "only_selected", text="", icon='RESTRICT_SELECT_OFF')
         if len(st.vertex_paths) or context.mode == 'EDIT_MESH':
             # tracked vertices (Edit Mode, right-click: Track Motion Path): only to look at
             row = layout.row()

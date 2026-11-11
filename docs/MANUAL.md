@@ -61,6 +61,11 @@ The arrow button next to a path isolates its curves of the current mode in
 the **Graph Editor** (the bone's other curves are hidden); it stays pressed while they are
 isolated, and a second click shows them all again.
 
+**Only Selected** (the arrow-cursor button under the list's buttons) shows only the paths of the
+selected bones / objects; with nothing selected nothing is drawn, and the paths aren't kept up to
+date either until one shows again - the add-on then costs Blender nothing. Off (the default), the
+paths of the bones that aren't selected are drawn gray.
+
 The mode follows the bone you pick: a bone with only rotation keys (FK) switches to Rotation,
 one with only location keys to Location. Paths that can't be edited in the current mode (a
 connected bone in Location, locked channels) are gray, and the hint at the bottom says why;
