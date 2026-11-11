@@ -2,7 +2,7 @@
 
 import bpy
 
-from . import core, ops_easing, ops_fmods, ops_tools, state
+from . import core, ops_easing, ops_fmods, ops_tools, snapshots, state
 
 
 def _k(op, key, props=None, **mods):
@@ -1089,7 +1089,7 @@ class EMP_PT_help(_Panel, bpy.types.Panel):
 classes = (EMP_MT_handle_type, EMP_MT_interpolation, EMP_MT_value_channel, EMP_OT_set_value_channel,
            EMP_MT_space, EMP_MT_looptools, EMP_MT_snap, EMP_MT_curves, EMP_MT_context, EMP_UL_paths,
            EMP_PT_main, EMP_PT_shape, EMP_PT_timing, ops_easing.EMP_PT_easing_sidebar, EMP_PT_keys,
-           ops_fmods.EMP_PT_modifiers,
+           ops_fmods.EMP_PT_modifiers, snapshots.EMP_PT_snapshots,
            EMP_PT_range, EMP_PT_display, EMP_PT_display_popover, EMP_PT_onion_popover, EMP_PT_com_popover, ops_fmods.EMP_PT_modifiers_popover,
            ops_easing.EMP_PT_easing_presets,
            EMP_PT_help, EMP_PT_smoothing)

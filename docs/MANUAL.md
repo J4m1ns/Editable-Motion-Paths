@@ -443,31 +443,40 @@ changes (a pose that isn't keyed is gone then, and so is its preview).
 
 ## Snapshots
 
-A snapshot keeps a pose to compare with: **Y** (in Pose Mode, with any tool) or *Snapshots* in the
-sidebar under Path Modifiers opens them. **+ Whole Pose** keeps the whole character as it is now,
-**+ Selected Bones** only the part the selected bones move (by the meshes' weights, like the onion
-skin). Each one is drawn as a see-through **Silhouette** or a **Wire**, in its own color and
-opacity, **In Front** of everything or not, and moved aside by an **Offset** (in world space: put it
-next to the character to compare side by side).
+A snapshot keeps a pose to compare with: **Y** (in Pose Mode, with any tool), *Snapshots* in the
+sidebar's Tool tab under Path Modifiers, or the *Snapshots* panel of the Motion Paths tab (under
+Modifiers) opens them. **+ Whole Pose** keeps the whole character as it is now, **+ Selected
+Bones** only the part of the selected bones: **Limb** - what they move too (children, IK chains,
+by the meshes' weights like the onion skin) - or **Bone** - only their own part (a hand with its
+palm, not the fingers; every deforming bone goes with the control nearest to it). Each one is
+drawn as a see-through **Silhouette** or a **Wire** (its **Width**), in its own color and opacity,
+**In Front** of everything or not, and moved aside by an **Offset** (in world space: put it next
+to the character to compare side by side).
 
-* **Static**: the pose as it was when taken - unkeyed changes too, a photo of it. It stays as it
-  is whatever happens to the animation; **Update** (in its arrow menu) takes it again: the pose as
-  it is now, on this frame - its name, color, offset and part stay.
-* **Live**: the pose on its **Frame** as the animation has it now - it follows every edit, like an
-  onion ghost of that one frame. Change the frame to see another one, no need to take it again.
+* **Static** (a picture icon): the pose as it was when taken - unkeyed changes too, a photo of it.
+  It stays as it is whatever happens to the animation; **Update** (in its arrow menu) takes it
+  again: the pose as it is now, on this frame - its name, color, offset and part stay. Its
+  **Frame** is where Apply keys it with Current Frame off.
+* **Live** (a red dot): the pose on its **Frame** as the animation has it now - it follows every
+  edit as you make it, also while keys are dragged, like an onion ghost of that one frame. Change
+  the frame to see another one, no need to take it again.
 
-The arrow next to a snapshot: *Apply...*, *Update*, *Duplicate*, *Convert to Whole Pose / Selected Bones*
+The arrow next to a snapshot: *Update*, *Duplicate*, *Convert to Whole Pose / Selected Bones*
 (Selected Bones: the bones selected now), *Make Static / Live* (Live made Static keeps its pose of
-now), *Move Up / Down*; the arrow at the top: *Remove All*, *Toggle Visibility*, *Expand / Collapse*.
+now), *Move Up / Down*; the arrow at the top: *Remove All*, *Toggle Visibility*, *Expand /
+Collapse*. A collapsed snapshot has a check mark next to its arrow: Apply.
 
-**Apply** puts the snapshot's pose back on the bones and keys it - every bone it keeps (*Whole
+**Apply...** puts the snapshot's pose back on the bones and keys it - every bone it keeps (*Whole
 Pose*) or only the selected ones, on the **Current Frame** or (off) on the snapshot's own frame
-(the pose on the current frame then stays the animation's). The snapshot stays: a list of
-snapshots is a small pose library inside the file. Static snapshots are saved with the file.
+(the pose on the current frame then stays the animation's) - by its **Influence**: 0 the pose as
+it is, 1 the snapshot's, in between a blend. It is applied at once and its window stays: every
+change applies it again (so does the Adjust Last Operation panel afterwards). The snapshot stays:
+a list of snapshots is a small pose library inside the file. Static snapshots are saved with the
+file.
 
 A snapshot that is hidden - or all of them, with the eye next to *Snapshots* off - costs nothing:
-nothing is drawn, nothing is worked out. A Live one is worked out (in a hidden scene of its own,
-the rig and its meshes only) when its frame or the animation changes, not while you drag.
+nothing is drawn, nothing is worked out. A Live one is worked out in a hidden scene of its own
+(the rig and its meshes only), never in yours - your frame and pose stay as they are.
 
 ## Center of mass
 

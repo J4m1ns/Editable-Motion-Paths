@@ -294,12 +294,17 @@ class EMP_Snapshot(bpy.types.PropertyGroup):
                        items=[('POSE', "Whole Pose", "The whole character"),
                               ('BONES', "Selected Bones", "Only the part the bones move")])
     bones: StringProperty(options={'HIDDEN'})
+    scope: EnumProperty(name="Bones", update=_snap_changed, default='LIMB',
+                        items=[('BONE', "Bone", "Only the part of the selected bones themselves"),
+                               ('LIMB', "Limb", "The part the selected bones move: what follows them too "
+                                                "(children, IK chains)")])
     mode: EnumProperty(name="Mode", update=_snap_changed,
                        items=[('STATIC', "Static", "The pose as it was taken (a photo of it)"),
                               ('LIVE', "Live", "The pose on its frame as the animation has it now - it follows "
                                                "every edit")])
     frame: IntProperty(name="Frame", update=_snap_changed,
-                       description="Live: the frame whose pose it shows (Static: the frame it was taken on)")
+                       description="Live: the frame whose pose it shows. Static: the frame it was taken on - "
+                                   "where Apply keys it with Current Frame off")
     offset: FloatVectorProperty(name="Offset", subtype='TRANSLATION', size=3, update=_redraw,
                                 description="Moved aside by this much (world space): side by side with the "
                                             "character")
@@ -311,6 +316,8 @@ class EMP_Snapshot(bpy.types.PropertyGroup):
                                  ('WIRE', "Wire", "The edges")])
     in_front: BoolProperty(name="In Front", default=True, update=_redraw,
                            description="Seen through the character and everything else")
+    line_width: FloatProperty(name="Wire Width", default=1.5, min=1.0, soft_max=6.0, update=_redraw,
+                              description="Wire: how thick the lines are")
     armature: PointerProperty(type=bpy.types.Object)
     data: PointerProperty(type=bpy.types.Mesh)     # Static: its shape and values (a mesh no object uses)
 

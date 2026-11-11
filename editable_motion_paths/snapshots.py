@@ -9,9 +9,11 @@ or kept up to date. A Static one keeps its shape and its values in a mesh of its
 uses (saved with the file, never evaluated); a Live one is worked out in a scene of its own (only
 the character in it), when its frame or the animation changes."""
 
+import time
+
 import bpy
 import gpu
-from bpy.props import BoolProperty, EnumProperty, IntProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty
 from gpu_extras.batch import batch_for_shader
 
 from . import compat, state
@@ -330,6 +332,8 @@ def _work_out(scene, snap):
         _geo[uid] = None
         return
     objs = parts(arm, scene)
+    # (the scene is kept while Live ones are updated - linking objects has Blender rebuild its own
+    # scene's depsgraph: not on every update of a drag)
     aux = core.aux_scene(scene, [arm] + objs, name=AUX_NAME)
     if aux is None:
         _geo[uid] = None
@@ -337,8 +341,17 @@ def _work_out(scene, snap):
     was = state.baking
     state.baking = True         # (our own handlers sit this out)
     try:
-        aux.frame_set(snap.frame)       # (an inactive depsgraph: the rig's own values aren't touched)
-        dg = aux.view_layers[0].depsgraph
+        vl = aux.view_layers[0]
+        dg = vl.depsgraph
+        if dg is None:
+            aux.frame_set(snap.frame)       # (its depsgraph made; inactive: the rig's own values aren't touched)
+            dg = vl.depsgraph
+        else:
+            # (not frame_set: every window redrawn, every frame handler called; not the view layer's
+            # update(): it makes this depsgraph the active one - the animation would go into the rig)
+            if aux.frame_current != snap.frame:
+                aux.frame_current = snap.frame
+            dg.update()
         sig = tuple((o.name, len(o.data.vertices)) for o in objs)
         kept = _live.get(uid)
         old = _geo.get(uid)
@@ -368,11 +381,32 @@ def _work_out(scene, snap):
         _poses[uid] = _pose_values(ae.pose.bones, [pb.name for pb in controls(arm)])
     finally:
         state.baking = was
+        _last_work[0] = time.time()
+        if not bpy.app.timers.is_registered(_drop_idle):
+            bpy.app.timers.register(_drop_idle, first_interval=IDLE_DROP)
+
+
+IDLE_DROP = 2.0         # the Live snapshots' scene goes this long after their last update
+_last_work = [0.0]
+_spent = [0.02]         # how long the last update took (the next one waits as long: Blender keeps up)
+
+
+def _drop_idle():
+    """The Live snapshots' scene removed once they haven't been updated for a while (not kept in the
+    file or in undo steps for nothing)."""
+    from . import core
+    if _dirty or time.time() - _last_work[0] < IDLE_DROP:
+        return 0.5
+    try:
         core.drop_aux(AUX_NAME)
+    except Exception:
+        pass
+    return None
 
 
 def anim_changed():
-    """The animation changed: the Live snapshots on show are worked out again (soon)."""
+    """The animation changed: the Live snapshots on show are worked out again - at once, also while
+    keys are dragged (like the onion's ghosts)."""
     st = state.settings()
     if st is None or not st.show_snapshots:
         return
@@ -382,10 +416,10 @@ def anim_changed():
             _dirty.add(s.uid)
             any_live = True
     if any_live:
-        _schedule(0.3)
+        _schedule(max(0.02, _spent[0]))
 
 
-def _schedule(delay=0.05):
+def _schedule(delay=0.02):
     if not _timer[0]:
         _timer[0] = True
         bpy.app.timers.register(_tick, first_interval=delay)
@@ -397,22 +431,23 @@ def _tick():
         _timer[0] = False
         return None
     screen = getattr(bpy.context, "screen", None)
-    if state.modal_running or state.baking or (screen is not None and screen.is_animation_playing) or \
-            state._any_modal() or state.render_running():
+    if state.baking or (screen is not None and screen.is_animation_playing) or state.render_running():
         return 0.3
     todo = [s for s in st.snapshots if s.show and s.mode == 'LIVE' and (s.uid in _dirty or s.uid not in _geo)]
     if not todo:
         _timer[0] = False
         return None
+    t = time.time()
     try:
         _work_out(bpy.context.scene, todo[0])
     except Exception as ex:      # (never a timer dying with a traceback storm)
         print("Editable Motion Paths: snapshot failed:", ex)
         _geo[todo[0].uid] = None
         _dirty.discard(todo[0].uid)
+    _spent[0] = time.time() - t
     state.tag_redraw()
-    if len(todo) > 1:
-        return 0.05
+    if len(todo) > 1 or _dirty:
+        return max(0.02, _spent[0])     # (as long again for Blender: a drag stays smooth)
     _timer[0] = False
     return None
 
@@ -454,6 +489,47 @@ def _shape_of(snap):
     return g["key"], g["co"], g["tri"], g["ed"], g["dom"], g["names"]
 
 
+def _on_segment(p, a, b):
+    """(how far point p is from the segment a-b, where along it: 0 at a, 1 at b)."""
+    ab = b - a
+    t = 0.0 if ab.length_squared < 1e-12 else max(0.0, min(1.0, (p - a).dot(ab) / ab.length_squared))
+    return (p - (a + ab * t)).length, t
+
+
+def part_bones(arm, bones, scope):
+    """The bones whose part of the mesh a Selected Bones snapshot shows. Limb: what the selected bones
+    move (their children, IK chains - like the onion's By Weight). Bone: only their own part - every
+    deforming bone of the limb goes with the control nearest to it in the rest pose (the controls
+    the limb has: the selected ones, and the ones the animator poses further down it); a selected
+    one's are its part: a hand with its palm, not the fingers; an upper arm, not the forearm. Found
+    by where the bones are, not by their names; nothing there: the limb."""
+    sel = set(bones)
+    if arm is None or arm.type != 'ARMATURE':
+        return sel
+    from .onion import affected_bones
+    limb = affected_bones(arm, sel)
+    if scope != 'BONE':
+        return limb
+    data = arm.data.bones
+    shown = {pb.name for pb in controls(arm)}
+    ctl = [data[n] for n in (sel | (limb & shown)) if data.get(n) is not None]
+    out = set()
+    for d in data:
+        if not d.use_deform or d.name not in limb:
+            continue
+        if d.name in sel:
+            out.add(d.name)
+            continue
+        mid = (d.head_local + d.tail_local) * 0.5
+        dist = [(_on_segment(mid, c.head_local, c.tail_local)[0], c.name) for c in ctl]
+        if not dist:
+            continue
+        best = min(x for x, _n in dist)
+        if any(n in sel for x, n in dist if x <= best + 1e-5):
+            out.add(d.name)
+    return out or limb
+
+
 def _batch(snap, sh):
     import numpy as np
     got = _shape_of(snap)
@@ -461,16 +537,14 @@ def _batch(snap, sh):
         return None
     key, co, tri, ed, dom, names = got
     bones = snap.bones.split("\n") if snap.kind == 'BONES' and snap.bones else []
-    bkey = (key, snap.kind, snap.bones)
+    bkey = (key, snap.kind, snap.bones, snap.scope)
     kept = _batches.get(snap.uid)
     if kept is not None and kept[0] == bkey:
         return kept
     if not len(co):
         return None
     if snap.kind == 'BONES':
-        arm = snap.armature
-        from .onion import affected_bones
-        aff = affected_bones(arm, set(bones)) if arm is not None and arm.type == 'ARMATURE' else set(bones)
+        aff = part_bones(snap.armature, bones, snap.scope)
         ids = np.array([i for i, n in enumerate(names) if n in aff], dtype=np.int32)
         keep = np.isin(dom, ids) if len(ids) else np.zeros(len(co), dtype=bool)
         tri = tri[keep[tri].all(axis=1)] if len(tri) else tri
@@ -522,7 +596,7 @@ def draw(scene, st, us):
             gpu.state.depth_mask_set(False)
         elif bl is not None:
             gpu.state.depth_test_set(test if not snap.in_front else 'NONE')
-            gpu.state.line_width_set(max(1.0, us))
+            gpu.state.line_width_set(max(1.0, snap.line_width * us))
             sh.uniform_float("color", col + (min(1.0, a * 1.6),))
             bl.draw(sh)
             gpu.state.line_width_set(1.0)
@@ -545,9 +619,35 @@ def pose_of(context, snap):
     return stored_pose(snap.data) if snap.data is not None else None
 
 
-def apply(context, snap, part, current_frame):
+def _blend(prop, now, want, factor):
+    """now -> want by factor (0: now, 1: want); a quaternion turns the short way."""
+    if factor >= 1.0:
+        return tuple(want)
+    if prop == "rotation_quaternion":
+        from mathutils import Quaternion
+        a, b = Quaternion(now).normalized(), Quaternion(want).normalized()
+        return tuple(a.slerp(b, factor))
+    return tuple(x + (y - x) * factor for x, y in zip(now, want))
+
+
+def _values_on(pb, f, curves):
+    """The bone's transform values on frame f as its curves have them (no curve: as it is now)."""
+    out = []
+    for prop, k in _TF:
+        v = list(getattr(pb, prop))
+        path = pb.path_from_id(prop)
+        for i in range(k):
+            fc = curves.get((path, i))
+            if fc is not None:
+                v[i] = fc.evaluate(f)
+        out.append(tuple(v))
+    return out
+
+
+def apply(context, snap, part, current_frame, factor=1.0):
     """Put the snapshot's values on the bones (all it keeps / the selected ones) and key them - on
-    the current frame, or on the snapshot's own. Returns how many bones."""
+    the current frame, or on the snapshot's own; factor: how far from the pose there toward the
+    snapshot's (0: as it is, 1: the snapshot's). Returns how many bones."""
     arm = snap.armature
     if arm is None or arm.type != 'ARMATURE':
         return 0
@@ -560,15 +660,18 @@ def apply(context, snap, part, current_frame):
     sel = set(selected_bones(arm)) if part == 'SELECTED' else None
     shown = {pb.name for pb in controls(arm)}
     pbs = arm.pose.bones
+    curves = {(fc.data_path, fc.array_index): fc for fc in (compat.get_fcurves(arm) or ())}         if f != scene.frame_current else {}
     done = 0
     for name, row in zip(names, vals):
         pb = pbs.get(name)
         if pb is None or name not in shown or (sel is not None and name not in sel):
             continue
         before = [tuple(getattr(pb, prop)) for prop, _k in _TF]
+        # (the pose there: as it is on this frame - unkeyed changes too -, else as the curves have it)
+        there = before if f == scene.frame_current else _values_on(pb, f, curves)
         i = 0
-        for prop, k in _TF:
-            setattr(pb, prop, tuple(row[i:i + k]))
+        for (prop, k), now in zip(_TF, there):
+            setattr(pb, prop, _blend(prop, now, row[i:i + k], factor))
             i += k
         rot = {'QUATERNION': "rotation_quaternion", 'AXIS_ANGLE': "rotation_axis_angle"}.get(
             pb.rotation_mode, "rotation_euler")
@@ -733,7 +836,7 @@ class EMP_OT_snapshot_move(_SnapOp, bpy.types.Operator):
     bl_idname = "emp.snapshot_move"
     bl_label = "Move Snapshot"
 
-    direction: EnumProperty(items=[('UP', "Up", ""), ('DOWN', "Down", "")])
+    direction: EnumProperty(name="Direction", items=[('UP', "Up", ""), ('DOWN', "Down", "")])
 
     def execute(self, context):
         st, i, snap = self._snap(context)
@@ -752,25 +855,30 @@ class EMP_OT_snapshot_apply(_SnapOp, bpy.types.Operator):
     bl_idname = "emp.snapshot_apply"
     bl_label = "Apply Snapshot"
 
-    part: EnumProperty(name="Bones", items=[('ALL', "Whole Pose", "Every bone the snapshot keeps"),
-                                            ('SELECTED', "Selected Bones", "Only the selected bones")])
+    part: EnumProperty(name="Part", items=[('ALL', "Whole Pose", "Every bone the snapshot keeps"),
+                                           ('SELECTED', "Selected Bones", "Only the selected bones")])
     current_frame: BoolProperty(name="Current Frame", default=True,
                                 description="Key the pose on the current frame (off: on the snapshot's own "
                                             "frame)")
+    factor: FloatProperty(name="Influence", default=1.0, min=0.0, max=1.0, subtype='FACTOR',
+                          description="How far toward the snapshot's pose: 0 the pose as it is, 1 the snapshot's")
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
+        # (applied at once; the window stays: every change applies it again - interactive, like the
+        # Adjust Last Operation panel, which has the same settings afterwards)
+        return context.window_manager.invoke_props_popup(self, event)
 
     def draw(self, context):
         layout = self.layout
         layout.row().prop(self, "part", expand=True)
+        layout.prop(self, "factor", slider=True)
         layout.prop(self, "current_frame")
 
     def execute(self, context):
         st, i, snap = self._snap(context)
         if snap is None:
             return {'CANCELLED'}
-        n = apply(context, snap, self.part, self.current_frame)
+        n = apply(context, snap, self.part, self.current_frame, self.factor)
         if not n:
             self.report({'WARNING'}, "No bone to apply it to (select some, or Whole Pose)")
             return {'CANCELLED'}
@@ -785,7 +893,7 @@ class EMP_OT_snapshot_tools(bpy.types.Operator):
     bl_label = "Snapshot Tools"
     bl_options = {'REGISTER', 'UNDO'}
 
-    action: EnumProperty(items=[('REMOVE_ALL', "Remove All", "Remove every snapshot", 'X', 0),
+    action: EnumProperty(name="Action", items=[('REMOVE_ALL', "Remove All", "Remove every snapshot", 'X', 0),
                                 ('TOGGLE_SHOW', "Toggle Visibility", "Show / hide them all", 'HIDE_OFF', 1),
                                 ('TOGGLE_EXPAND', "Expand / Collapse", "Open / close them all", 'DOWNARROW_HLT', 2)])
 
@@ -829,7 +937,6 @@ class EMP_MT_snapshot_entry(bpy.types.Menu):
         if snap is None:
             return
         uid = snap.uid
-        layout.operator("emp.snapshot_apply", text="Apply...", icon='CHECKMARK').uid = uid
         layout.operator("emp.snapshot_update", text="Update", icon='FILE_REFRESH').uid = uid
         layout.operator("emp.snapshot_duplicate", text="Duplicate", icon='DUPLICATE').uid = uid
         layout.separator()
@@ -863,34 +970,57 @@ def draw_list(layout, context):
         row = box.row(align=True)
         row.prop(snap, "expanded", text="", emboss=False, icon='DOWNARROW_HLT' if snap.expanded else 'RIGHTARROW')
         row.prop(snap, "show", text="", emboss=False, icon='HIDE_OFF' if snap.show else 'HIDE_ON')
+        # (Static / Live: told by the icon - switched in the menu, not by a stray click)
+        row.label(text="", icon='RECORD_ON' if snap.mode == 'LIVE' else 'IMAGE_DATA')
         row.prop(snap, "name", text="")
-        sub = row.row(align=True)
-        for m in ('STATIC', 'LIVE'):
-            op = sub.operator("emp.snapshot_mode", text=m.title(), depress=snap.mode == m)
-            op.uid, op.mode = snap.uid, m
+        if not snap.expanded:
+            row.operator("emp.snapshot_apply", text="", icon='CHECKMARK', emboss=False).uid = snap.uid
         row.context_pointer_set("emp_snapshot", snap)
         row.menu("EMP_MT_snapshot_entry", text="", icon='DOWNARROW_HLT')
         row.operator("emp.snapshot_remove", text="", icon='X', emboss=False).uid = snap.uid
         if not snap.expanded:
             continue
+        # (every field named in itself: an undo step is called by it - "Offset X: 1.2 m", not "1.2 m")
         col = box.column()
-        col.use_property_split = True
-        col.use_property_decorate = False
         r = col.row(align=True)
-        r.label(text="Whole Pose" if snap.kind == 'POSE' else "Selected Bones: %d" % len(
-            [b for b in snap.bones.split("\n") if b]), icon='ARMATURE_DATA' if snap.kind == 'POSE' else 'BONE_DATA')
-        if snap.mode == 'LIVE':
-            col.prop(snap, "frame")
+        if snap.kind == 'POSE':
+            r.label(text="Whole Pose", icon='ARMATURE_DATA')
         else:
-            col.label(text="Taken on frame %d" % snap.frame)
-        col.prop(snap, "offset")
+            n = len([b for b in snap.bones.split(chr(10)) if b])
+            r.label(text="%d Bone%s" % (n, "" if n == 1 else "s"), icon='BONE_DATA')
+            r.prop(snap, "scope", expand=True)
+        col.prop(snap, "frame", text="%s Frame" % ("Live" if snap.mode == 'LIVE' else "Static"))
+        sub = col.column(align=True)
+        for i, a in enumerate("XYZ"):
+            sub.prop(snap, "offset", index=i, text="Offset " + a)
         r = col.row(align=True)
-        r.prop(snap, "color", text="Color")
-        r.prop(snap, "opacity", text="")
+        r.prop(snap, "color", text="")
+        r.prop(snap, "opacity", text="Opacity", slider=True)
         r = col.row(align=True)
         r.prop(snap, "display", expand=True)
-        col.prop(snap, "in_front")
+        r = col.row(align=True)
+        r.prop(snap, "in_front")
+        if snap.display == 'WIRE':
+            r.prop(snap, "line_width", text="Width")
         box.operator("emp.snapshot_apply", text="Apply...", icon='CHECKMARK').uid = snap.uid
+
+
+class EMP_PT_snapshots(bpy.types.Panel):
+    """The sidebar's Motion Paths tab: Snapshots, under Modifiers."""
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Motion Paths"
+    bl_label = "Snapshots"
+    bl_parent_id = "EMP_PT_main"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw_header(self, context):
+        st = state.settings(context.scene)
+        if st is not None:
+            self.layout.prop(st, "show_snapshots", text="")
+
+    def draw(self, context):
+        draw_list(self.layout, context)
 
 
 class EMP_PT_snapshots_popover(bpy.types.Panel):
