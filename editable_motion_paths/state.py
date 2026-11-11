@@ -292,7 +292,7 @@ def bake_all(scene=None, only=None):
         _job = None     # (a bake going on in the background: this one is newer)
     core.bake(scene, targets)
     if _job is None:
-        _aux_drop()
+        _aux_drop(_BAKE_SCENE)
     tag_redraw()
 
 
@@ -906,16 +906,19 @@ def _job_step(job):
 def _job_done(job):
     global flash
     job.finish()
-    _aux_drop()
+    _aux_drop(_BAKE_SCENE)
     if flash is not None and flash[0].startswith("Calculating motion paths"):
         flash = None
     tag_redraw()
 
 
-def _aux_drop():
+_BAKE_SCENE = ".Motion Paths Bake"     # (core.AUX_NAME: the paths' bake scene - the snapshots have one of their own)
+
+
+def _aux_drop(name=None):
     from . import core
     try:
-        core.drop_aux()
+        core.drop_aux(name)
     except Exception:
         pass
 
@@ -985,7 +988,7 @@ def _bake_timer():
     except Exception as ex:  # never let a timer die silently with a traceback storm
         print("Editable Motion Paths: auto update failed:", ex)
         _job = None
-        _aux_drop()
+        _aux_drop(_BAKE_SCENE)
     _bake_timer_on = False
     return None
 
@@ -1069,6 +1072,9 @@ def _on_depsgraph(scene, depsgraph):
     _dg_frame_all = scene.frame_current
     if not same_frame:
         return      # (a frame change reports the actions as updated too: no curve changed)
+    if st.show_snapshots and len(st.snapshots) and             any(isinstance(u.id, bpy.types.Action) for u in depsgraph.updates):
+        from . import snapshots
+        snapshots.anim_changed()        # (the Live ones follow the animation)
     if not caches or not st.auto_update:
         # no path: the ghosts and the center of mass still follow the animation
         if st.show_onion or st.show_com:
@@ -1113,7 +1119,7 @@ def _rebake_if_shown(scene, curves=True):
 # doesn't change them (the ghosts don't go off, the edit mode doesn't jump back), it goes to the
 # edits. What is data stays with undo: the path list (and its active row), the selection, the
 # ranges, the masses.
-_UNDONE_SETTINGS = {"rna_type", "name", "paths", "active_index", "picked_handles", "select_history", "select_order", "com_limb_share",
+_UNDONE_SETTINGS = {"rna_type", "name", "paths", "snapshots", "snapshot_index", "active_index", "picked_handles", "select_history", "select_order", "com_limb_share",
                     "com_limb_mass", "com_own_share", "com_own_mass", "com_body_mass", "range_mode", "frame_start", "frame_end"}
 VIEW_SETTINGS = set()       # filled in register(): every other setting of scene.emp
 _view_before = {}
@@ -1178,6 +1184,8 @@ def _on_undo(*_args):
         pass
     onion.changed(pose=True)
     com.changed()
+    from . import snapshots
+    snapshots.clear_runtime()       # (made again from the snapshots the undo step has)
     # (no need to mark the paths dirty: a path rebuilds when its curves differ from what it was
     # built from; hidden keys and value channels are taken over below)
     try:
@@ -1221,6 +1229,8 @@ def _on_load(*_args):
     ghosts.clear()
     _action_hashes.clear()
     _bake_memo.clear()
+    from . import snapshots
+    snapshots.clear_runtime()
     _aux_drop()     # (one saved by an auto save, or by the add-on of before)
     st = settings()
     if st is not None and st.paths:
@@ -1535,9 +1545,11 @@ def unregister():
     if bpy.app.timers.is_registered(_watch_active):
         bpy.app.timers.unregister(_watch_active)
     from . import com, onion
-    for fn in (onion._tick, com._tick):
+    from . import snapshots
+    for fn in (onion._tick, com._tick, snapshots._tick):
         if bpy.app.timers.is_registered(fn):
             bpy.app.timers.unregister(fn)
+    snapshots._timer[0] = False
     _aux_drop()
     caches.clear()
 

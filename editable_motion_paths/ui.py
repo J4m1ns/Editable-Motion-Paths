@@ -68,6 +68,7 @@ TOOL_KEYMAP = (
     _k("wm.call_menu", 'T', {"name": "EMP_MT_timing"}, shift=True),
     _k("wm.call_panel", 'U', {"name": "EMP_PT_display_popover", "keep_open": True}),
     _k("wm.call_panel", 'J', {"name": "EMP_PT_modifiers_popover", "keep_open": True}),
+    _k("wm.call_panel", 'Y', {"name": "EMP_PT_snapshots_popover", "keep_open": True}),
     _k("emp.easing_preset", 'P', {"gallery": True}),
     _k("emp.set_view", 'H', {"name": "show_handles"}, ctrl=True),
     _k("emp.set_view", 'H', {"name": "show_frames"}, ctrl=True, shift=True),
@@ -131,6 +132,7 @@ HELP = (
         ("Right-click", "path menu (Edit Value, Space, LoopTools...)"),
         ("U", "display settings under the mouse"),
         ("J", "modifiers of the active path under the mouse"),
+        ("Y", "snapshots of the pose under the mouse (also in Pose Mode)"),
         ("P", "easing presets under the mouse"),
         ("Ctrl+H / Ctrl+Shift+H", "show / hide the handles / the frame dots"),
     )),
@@ -245,6 +247,9 @@ def draw_panel_buttons(layout, st):
     col.use_property_split = False
     col.popover("EMP_PT_display_popover", text="Path Display", icon='COLOR')
     col.popover("EMP_PT_modifiers_popover", text="Path Modifiers", icon='MODIFIER')
+    row = col.row(align=True)
+    row.popover("EMP_PT_snapshots_popover", text="Snapshots", icon='POSE_HLT')
+    row.prop(st, "show_snapshots", text="", icon='HIDE_OFF' if st.show_snapshots else 'HIDE_ON')
 
 
 def draw_header_buttons(layout, st):
@@ -257,6 +262,7 @@ def draw_header_buttons(layout, st):
     row.popover("EMP_PT_com_popover", text="")
     layout.popover("EMP_PT_display_popover", text="", icon='COLOR')
     layout.popover("EMP_PT_modifiers_popover", text="", icon='MODIFIER')
+    layout.popover("EMP_PT_snapshots_popover", text="", icon='POSE_HLT')
 
 
 def _draw_proportional(layout, st, compact=False):
@@ -1123,6 +1129,11 @@ def register():
         km = kc.keymaps.new("Pose", space_type='EMPTY')
         kmi = km.keymap_items.new("wm.tool_set_by_id", 'T', 'PRESS', ctrl=True)
         kmi.properties.name = EMP_PoseTool.bl_idname
+        _addon_keymaps.append((km, kmi))
+        # Y: the snapshots, with any tool in Pose Mode
+        kmi = km.keymap_items.new("wm.call_panel", 'Y', 'PRESS')
+        kmi.properties.name = "EMP_PT_snapshots_popover"
+        kmi.properties.keep_open = True
         _addon_keymaps.append((km, kmi))
 
 

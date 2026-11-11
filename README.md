@@ -44,7 +44,9 @@ removes every key the path doesn't need, keeping it within the tolerance you set
 
 **See what the motion does.** Onion-skin ghosts of the whole character update while you edit;
 the path can be colored by speed or by a jitter heat map that finds hitches; the center of mass
-shows whether a pose is balanced and whether a jump's arc is a parabola.
+shows whether a pose is balanced and whether a jump's arc is a parabola. Snapshots keep poses to
+compare with - a photo of a pose, or a frame that follows the animation - side by side, and put
+them back with Apply.
 
 ![Onion-skin ghosts of a hand updating while its path is edited; bending forward, the center of mass leaves the feet (red) and comes back over them (green)](docs/media/see-the-motion.gif)
 
@@ -69,7 +71,7 @@ read the motion (`analyze`), see it (`render_view`) and edit it in world space -
 
 ## Install
 
-1. Download `editable_motion_paths-2.0.4.zip` from the [Releases](https://github.com/J4m1ns/Editable-Motion-Paths/releases/latest).
+1. Download `editable_motion_paths-2.0.5.zip` from the [Releases](https://github.com/J4m1ns/Editable-Motion-Paths/releases/latest).
 2. Blender: *Edit > Preferences > Get Extensions > Install from Disk…* and
    choose the zip.
 

@@ -1058,6 +1058,17 @@ def _draw_view():
                 gpu.state.depth_mask_set(False)
                 gpu.state.line_width_set(1.0)
                 gpu.state.point_size_set(1.0)
+    if st.show_snapshots and len(st.snapshots):
+        from . import snapshots
+        try:
+            snapshots.draw(scene, st, us)
+        except Exception as ex:
+            _part_failed("Snapshots", ex)
+        finally:
+            gpu.state.face_culling_set('NONE')
+            gpu.state.color_mask_set(True, True, True, True)
+            gpu.state.depth_mask_set(False)
+            gpu.state.line_width_set(1.0)
     if len(st.vertex_paths):
         try:
             _draw_vertex_paths(scene, st)

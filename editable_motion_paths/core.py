@@ -1788,18 +1788,19 @@ def _aux_fits(objs):
     return True
 
 
-def aux_scene(scene, objs):
+def aux_scene(scene, objs, name=None):
     """The scene the paths are baked in: only their objects (and the camera) linked - what those
     hang on, follow or read comes in by itself - so stepping its frames evaluates the rig alone
     (no skinned mesh), and the user's scene, its frame, its poses and its viewport are left as they
     are. Blender's own motion paths are calculated the same way. None if it can't be made."""
-    aux = bpy.data.scenes.get(AUX_NAME)
+    name = name or AUX_NAME
+    aux = bpy.data.scenes.get(name)
     try:
         if aux is not None and (aux.library is not None or not aux.get(AUX_TAG)):
             return None         # (a scene of the user's with this name: left alone)
         if aux is None:
-            aux = bpy.data.scenes.new(AUX_NAME)
-            if aux.name != AUX_NAME:
+            aux = bpy.data.scenes.new(name)
+            if aux.name != name:
                 bpy.data.scenes.remove(aux)
                 return None
             aux[AUX_TAG] = True
@@ -1842,13 +1843,15 @@ def camera_at(scene, f):
     return cam or first or scene.camera
 
 
-def drop_aux():
-    """The bake scene removed (nothing is baking: it isn't kept in the file or in undo steps)."""
-    aux = bpy.data.scenes.get(AUX_NAME)
-    if aux is None or aux.library is not None or not aux.get(AUX_TAG):
+def drop_aux(name=None):
+    """The bake scene removed (nothing is baking: it isn't kept in the file or in undo steps).
+    name: that one (the paths' bake scene, the snapshots'), None: all of them."""
+    gone = [s for s in bpy.data.scenes if s.library is None and s.get(AUX_TAG) and (name is None or s.name == name)]
+    if not gone:
         return
     try:
-        bpy.data.scenes.remove(aux)
+        for aux in gone:
+            bpy.data.scenes.remove(aux)
         # (the view layer's object list brought up to date: Blender 4.4 leaves it stale after
         # objects were linked / removed until something asks - stepping the user's scene did)
         _ = bpy.context.view_layer.objects.active

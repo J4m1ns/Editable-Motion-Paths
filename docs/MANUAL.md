@@ -14,7 +14,7 @@ Requires Blender 4.4 or newer (tested on 5.2).
 ## Install
 
 Edit > Preferences > Get Extensions > **Install from Disk…** → choose
-`editable_motion_paths-2.0.4.zip`.
+`editable_motion_paths-2.0.5.zip`.
 
 To remove it: Edit > Preferences > **Get Extensions**, find *Editable Motion Paths* among the
 installed ones, and in the dropdown menu at the right of its row choose **Uninstall** (Blender shows no
@@ -440,6 +440,34 @@ changes on the other frames until you key, so the ghosts stay as they are - unle
 **Preview Unkeyed Pose** is on (onion settings): then the ghosts show the neighbors as if the pose
 you are changing were keyed on this frame, during G / R / S and after it, until the frame
 changes (a pose that isn't keyed is gone then, and so is its preview).
+
+## Snapshots
+
+A snapshot keeps a pose to compare with: **Y** (in Pose Mode, with any tool) or *Snapshots* in the
+sidebar under Path Modifiers opens them. **+ Whole Pose** keeps the whole character as it is now,
+**+ Selected Bones** only the part the selected bones move (by the meshes' weights, like the onion
+skin). Each one is drawn as a see-through **Silhouette** or a **Wire**, in its own color and
+opacity, **In Front** of everything or not, and moved aside by an **Offset** (in world space: put it
+next to the character to compare side by side).
+
+* **Static**: the pose as it was when taken - unkeyed changes too, a photo of it. It stays as it
+  is whatever happens to the animation; **Update** (in its arrow menu) takes it again: the pose as
+  it is now, on this frame - its name, color, offset and part stay.
+* **Live**: the pose on its **Frame** as the animation has it now - it follows every edit, like an
+  onion ghost of that one frame. Change the frame to see another one, no need to take it again.
+
+The arrow next to a snapshot: *Apply...*, *Update*, *Duplicate*, *Convert to Whole Pose / Selected Bones*
+(Selected Bones: the bones selected now), *Make Static / Live* (Live made Static keeps its pose of
+now), *Move Up / Down*; the arrow at the top: *Remove All*, *Toggle Visibility*, *Expand / Collapse*.
+
+**Apply** puts the snapshot's pose back on the bones and keys it - every bone it keeps (*Whole
+Pose*) or only the selected ones, on the **Current Frame** or (off) on the snapshot's own frame
+(the pose on the current frame then stays the animation's). The snapshot stays: a list of
+snapshots is a small pose library inside the file. Static snapshots are saved with the file.
+
+A snapshot that is hidden - or all of them, with the eye next to *Snapshots* off - costs nothing:
+nothing is drawn, nothing is worked out. A Live one is worked out (in a hidden scene of its own,
+the rig and its meshes only) when its frame or the animation changes, not while you drag.
 
 ## Center of mass
 
