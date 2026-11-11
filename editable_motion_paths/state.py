@@ -1189,7 +1189,7 @@ def _on_undo(*_args):
     onion.changed(pose=True)
     com.changed()
     from . import snapshots
-    snapshots.clear_runtime()       # (made again from the snapshots the undo step has)
+    snapshots.after_undo()      # (what is drawn stays until it is made again: no blinking)
     # (no need to mark the paths dirty: a path rebuilds when its curves differ from what it was
     # built from; hidden keys and value channels are taken over below)
     try:

@@ -413,7 +413,7 @@ def _drop_idle():
     """The Live snapshots' scene removed once they haven't been updated for a while (not kept in the
     file or in undo steps for nothing)."""
     from . import core
-    if _dirty or time.time() - _last_work[0] < IDLE_DROP:
+    if _pending() or time.time() - _last_work[0] < IDLE_DROP:
         return 0.5
     try:
         core.drop_aux(AUX_NAME)
@@ -464,10 +464,17 @@ def _tick():
         _dirty.discard(todo[0].uid)
     _spent[0] = time.time() - t
     state.tag_redraw()
-    if len(todo) > 1 or _dirty:
+    if _pending(st):
         return max(0.02, _spent[0])     # (as long again for Blender: a drag stays smooth)
     _timer[0] = False
     return None
+
+
+def _pending(st=None):
+    """The snapshots on show still to be worked out."""
+    st = st or state.settings()
+    return [s for s in st.snapshots if s.show and worked(s) and (s.uid in _dirty or not _ready(s))] \
+        if st is not None and st.show_snapshots else []
 
 
 def changed(snap):
@@ -476,6 +483,8 @@ def changed(snap):
     if worked(snap):
         _dirty.add(snap.uid)
         _schedule()
+    else:
+        _dirty.discard(snap.uid)
     state.tag_redraw()
 
 
@@ -488,6 +497,21 @@ def frame_changed(scene):
     for snap in st.snapshots:
         if previewing(snap):
             snap.frame = snap.taken
+
+
+def after_undo():
+    """After an undo / redo: what is drawn stays until its new shape is ready - a setting dragged in
+    the Adjust Last Operation panel undoes and redoes on every change: dropping the shapes made the
+    snapshots blink. The Live ones and the previews are worked out again (the animation may be
+    another one now); a Static one's shape is taken again only if its mesh is another one."""
+    st = state.settings()
+    if st is None:
+        return
+    for snap in st.snapshots:
+        if worked(snap):
+            _dirty.add(snap.uid)
+    if _pending(st):
+        _schedule()
 
 
 def clear_runtime():
