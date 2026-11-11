@@ -14,7 +14,7 @@ Requires Blender 4.4 or newer (tested on 5.2).
 ## Install
 
 Edit > Preferences > Get Extensions > **Install from Disk…** → choose
-`editable_motion_paths-2.0.4.zip`.
+`editable_motion_paths-2.0.5.zip`.
 
 To remove it: Edit > Preferences > **Get Extensions**, find *Editable Motion Paths* among the
 installed ones, and in the dropdown menu at the right of its row choose **Uninstall** (Blender shows no
@@ -29,6 +29,10 @@ Remove button for extensions in the Add-ons tab).
    again: back to the tool you had).
 4. Click a key on the path to show its handles, then drag the key or a handle, or use
    G / R / S like on a mesh.
+5. To remove a path, click it in the path list and press **−** next to the list; the trash
+   button under it removes all paths. **Only Selected** (the arrow-cursor button below them)
+   shows only the paths of the selected bones / objects - with nothing selected, nothing is
+   drawn or kept up to date.
 
 Only the paths of *selected* bones/objects can be edited; other paths are drawn gray, and
 clicking a gray path selects its bone. If nothing on a path is selected, the hotkeys fall back
@@ -60,6 +64,11 @@ highlighted row); **−** takes all the highlighted paths out of the list (with 
 The arrow button next to a path isolates its curves of the current mode in
 the **Graph Editor** (the bone's other curves are hidden); it stays pressed while they are
 isolated, and a second click shows them all again.
+
+**Only Selected** (the arrow-cursor button under the list's buttons) shows only the paths of the
+selected bones / objects; with nothing selected nothing is drawn, and the paths aren't kept up to
+date either until one shows again - the add-on then costs Blender nothing. Off (the default), the
+paths of the bones that aren't selected are drawn gray.
 
 The mode follows the bone you pick: a bone with only rotation keys (FK) switches to Rotation,
 one with only location keys to Location. Paths that can't be edited in the current mode (a
@@ -435,6 +444,48 @@ changes on the other frames until you key, so the ghosts stay as they are - unle
 **Preview Unkeyed Pose** is on (onion settings): then the ghosts show the neighbors as if the pose
 you are changing were keyed on this frame, during G / R / S and after it, until the frame
 changes (a pose that isn't keyed is gone then, and so is its preview).
+
+## Snapshots
+
+A snapshot keeps a pose to compare with: **Y** (in Pose Mode, with any tool), *Snapshots* in the
+sidebar's Tool tab under Path Modifiers, or the *Snapshots* panel of the Motion Paths tab (under
+Modifiers) opens them. **+ Whole Pose** keeps the whole character as it is now, **+ Selected
+Bones** only the part of the selected bones: **Limb** - what they move too (children, IK chains,
+by the meshes' weights like the onion skin) - or **Bone** - only their own part (a hand with its
+palm, not the fingers; every deforming bone goes with the control nearest to it). Each one is
+drawn as a see-through **Silhouette** or a **Wire** (its **Width**), in its own color and opacity,
+**In Front** of everything or not, and moved aside by an **Offset** (in world space: put it next
+to the character to compare side by side).
+
+* **Static** (a picture icon): the pose as it was when taken - unkeyed changes too, a photo of it.
+  It stays as it is whatever happens to the animation; **Update** (in its arrow menu) takes it
+  again: the pose as it is now, on this frame - its name, color, offset and part stay. Its
+  **Frame** is the one it was taken on (where Apply keys it with Current Frame off); scrub it and
+  the snapshot shows the pose of that frame as the animation has it, the field turns red - only to
+  look at: the **check mark** next to it keeps that frame's pose, and if you go to another frame on
+  the timeline instead, it goes back to the frame it was taken on (its pose isn't lost by
+  accident). Apply always puts the pose it keeps, never the one it previews.
+* **Live** (a red dot): the pose on its **Frame** as the animation has it now - it follows every
+  edit as you make it, also while keys are dragged, like an onion ghost of that one frame. Change
+  the frame to see another one, no need to take it again.
+
+The arrow next to a snapshot: *Update*, *Duplicate*, *Convert to Whole Pose / Selected Bones*
+(Selected Bones: the bones selected now), *Make Static / Live* (Live made Static keeps its pose of
+now), *Move Up / Down*; the arrow at the top: *Remove All*, *Toggle Visibility*, *Expand /
+Collapse*. A collapsed snapshot has a check mark next to its arrow: Apply.
+
+**Apply...** puts the snapshot's pose back on the bones and keys it - every bone it keeps (*Whole
+Pose*) or only the selected ones, on the **Current Frame** or (off) on the snapshot's own frame
+(the pose on the current frame then stays the animation's) - by its **Influence**: 0 the pose as
+it is, 1 the snapshot's, in between a blend - then its **Apply** button. Afterwards the Adjust Last
+Operation panel (bottom left) has the same settings: drag Influence there and it is applied again
+as you drag. The snapshot stays:
+a list of snapshots is a small pose library inside the file. Static snapshots are saved with the
+file.
+
+A snapshot that is hidden - or all of them, with the eye next to *Snapshots* off - costs nothing:
+nothing is drawn, nothing is worked out. A Live one is worked out in a hidden scene of its own
+(the rig and its meshes only), never in yours - your frame and pose stay as they are.
 
 ## Center of mass
 

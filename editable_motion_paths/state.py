@@ -148,7 +148,10 @@ def sync_caches(scene=None):
         c = caches.get(k)
         if c is None:
             c = caches[k] = core.PathCache(*k)
-            other = next((o for o in caches.values() if o is not c and o.key[:2] == k[:2] and o.B), None)
+            # (a bone whose location has its own axes: its location path's parent space is another)
+            own = _own_loc_space(k[0], k[1])
+            other = next((o for o in caches.values() if o is not c and o.key[:2] == k[:2] and o.B
+                          and (not own or (o.ptype == core.LOCATION) == (k[2] == core.LOCATION))), None)
             if other is not None:
                 c.fs, c.B, c.bake_id = other.fs, other.B, other.bake_id
                 c.Cam, c.cam_fs, c.cam_obj = other.Cam, other.cam_fs, other.cam_obj
@@ -201,14 +204,15 @@ def visible_caches(scene=None):
     st = settings(scene)
     if st is None:
         return []
+    global _hidden_changes
     out = []
     seen = set()
     for e in st.paths:
-        if not e.show:
+        if not e.show or (st.only_selected and not _entry_selected(e)):
             continue
         k = entry_key(e, st.edit_mode)
-        if k in seen:
-            continue
+        if k is None or k in seen:
+            continue        # (no object: its object was deleted - nothing to calculate)
         seen.add(k)
         c = caches.get(k)
         if c is not None and c.B:
@@ -216,7 +220,44 @@ def visible_caches(scene=None):
         elif c is None or not c.failed:
             # new / renamed entry: calculate it soon (never from inside drawing)
             schedule_rebake(0.1, keep=True)
+    if out and _hidden_changes:
+        # (something changed while no path was shown: what was left out is caught up with now)
+        _hidden_changes = False
+        schedule_rebake(0.1, keep=True)
     return out
+
+
+_hidden_changes = False     # the scene changed while no path was shown (not tracked then)
+
+
+def _entry_selected(e):
+    """Is the path's bone / object selected (Only Selected)?"""
+    obj = e.object
+    if obj is None:
+        return False
+    try:
+        if e.bone_name:
+            pb = obj.pose.bones.get(e.bone_name) if obj.pose is not None else None
+            return pb is not None and compat.bone_selected(pb)
+        return obj.select_get()
+    except (RuntimeError, ReferenceError, AttributeError):
+        return False
+
+
+def paths_shown(scene=None):
+    """Is any path drawn now? (None shown: changes aren't tracked - Blender isn't slowed down by
+    paths nobody sees; they are brought up to date when one shows again.)"""
+    st = settings(scene)
+    if st is None or overlays_hidden():
+        return False
+    for e in st.paths:
+        if e.show and e.object is not None and (not st.only_selected or _entry_selected(e)):
+            try:
+                if e.object.visible_get():
+                    return True
+            except (RuntimeError, ReferenceError):
+                pass
+    return False
 
 
 draw_pass = None     # set while drawing (see draw.draw_view): results can be kept for that pass
@@ -251,7 +292,7 @@ def bake_all(scene=None, only=None):
         _job = None     # (a bake going on in the background: this one is newer)
     core.bake(scene, targets)
     if _job is None:
-        _aux_drop()
+        _aux_drop(_BAKE_SCENE)
     tag_redraw()
 
 
@@ -264,9 +305,21 @@ def _fcurve_hashes(obj, curves=True):
     left out, they are what costs), and under special keys ('#...') its NLA, drivers (with the
     values they read now) and constraints."""
     out = {}
+    # an armature's bones the paths don't depend on are left out: on a big rig with a dense animation
+    # going through all of them took a tenth of a second after every click
+    near = _pose_owners(obj)
+    names = {pb.name for pb in near} if near else (set() if near is not None else None)
+
+    def relevant(dp):
+        if names is None:
+            return True
+        b = _bone_of(dp)
+        return b is None or b in names
     coll = compat.get_fcurves(obj) if curves else None
     from .core import _fmod_signature, fc_shape
     for fc in coll if coll is not None else ():
+        if not relevant(fc.data_path):
+            continue
         # (the interpolation and the modifiers' settings too: they change the curve as much)
         out[(fc.data_path, fc.array_index)] = hash((fc_shape(fc), fc.mute,
                                                     tuple(_fmod_signature(m) for m in fc.modifiers)))
@@ -279,6 +332,8 @@ def _fcurve_hashes(obj, curves=True):
     for idb in (obj, getattr(obj, "data", None)):
         dad = getattr(idb, "animation_data", None)
         for d in dad.drivers if dad is not None else ():
+            if idb is obj and not relevant(d.data_path):
+                continue
             drv.append((d.data_path, d.array_index, d.mute, d.driver.type, d.driver.expression, fc_shape(d),
                         tuple(_fmod_signature(m) for m in d.modifiers),
                         tuple((v.type, tuple((t.id.name if t.id else None, t.data_path, t.bone_target,
@@ -291,17 +346,18 @@ def _fcurve_hashes(obj, curves=True):
     # whose keys were removed) moves the paths hanging on it for the whole animation
     # (keyed / driven ones are left out: {owner name ('' = the object): {(prop, index)}})
     fixed = {}
-    paths = [(fc.data_path, fc.array_index) for fc in (compat.get_fcurves(obj) or ())]
+    paths = [(fc.data_path, fc.array_index) for fc in (compat.get_fcurves(obj) or ()) if relevant(fc.data_path)]
     if obj.animation_data is not None:
-        paths += [(d.data_path, d.array_index) for d in obj.animation_data.drivers]
+        paths += [(d.data_path, d.array_index) for d in obj.animation_data.drivers if relevant(d.data_path)]
     for dp, i in paths:
         m = _BONE_PATH.match(dp)
         name, prop = (m.group(1).replace('\\"', '"').replace('\\\\', '\\'), m.group(2)) if m else ("", dp)
         if prop in _TRANSFORM_PROPS:
             fixed.setdefault(name, set()).add((prop, i))
     free = []
-    near = _pose_owners(obj)
-    for ow in (owners if near is None else [obj] + near):
+    if near is not None:
+        owners = [obj] + near
+    for ow in owners:
         skip = fixed.get(ow.name if ow is not obj else "", ())
         for prop in _TRANSFORM_PROPS:
             v = getattr(ow, prop)
@@ -321,17 +377,45 @@ def _fcurve_hashes(obj, curves=True):
     return out
 
 
+def _bone_of(dp):
+    """The bone a data path is on ('pose.bones["X"]...' -> 'X'), or None (no regular expression:
+    it runs for every curve of a rig)."""
+    if not dp.startswith('pose.bones["'):
+        return None
+    j = dp.find('"]', 12)
+    while j > 12 and dp[j - 1] == '\\' and dp[j - 2] != '\\':     # (an escaped quote in the name)
+        j = dp.find('"]', j + 1)
+    return _unescape(dp[12:j]) if j >= 12 else None
+
+
 def _pose_owners(obj):
-    """The bones of an armature whose transforms move its paths: the paths' bones, what they hang
-    from, and what their constraints follow (with what that hangs from) - a control moved by hand
-    elsewhere on the rig moves no path. None: all of them (no path is on one of its bones, but
-    something else hangs on it)."""
+    """The bones of an armature whose animation can move its paths: the paths' bones, what they
+    hang from, what their constraints follow (an Armature constraint's every target too) and what
+    the drivers of their transforms / constraints read (a bone's transform, a property on a bone) -
+    with all of that's own. A control moved by hand elsewhere on the rig moves no path. None: all
+    of them (no path is on one of its bones, but something else hangs on it)."""
     if obj.type != 'ARMATURE' or obj.pose is None:
         return []
     names = {c.bone_name for c in caches.values() if c.obj_name == obj.name and c.bone_name}
     if not names:
         return None
     bones = obj.pose.bones
+    reads = {}      # bone -> the bones its drivers read
+    ad = obj.animation_data
+    for d in (ad.drivers if ad is not None else ()):
+        b = _bone_of(d.data_path)
+        if b is None:
+            continue
+        got = reads.setdefault(b, set())
+        for v in d.driver.variables:
+            for t in v.targets:
+                if t.id != obj:
+                    continue        # (another object: tracked as an object of its own)
+                if t.bone_target:
+                    got.add(t.bone_target)
+                bt = _bone_of(t.data_path or "")
+                if bt is not None:
+                    got.add(bt)
     out = {}
     todo = [bones.get(n) for n in names]
     while todo:
@@ -341,9 +425,13 @@ def _pose_owners(obj):
         out[pb.name] = pb
         todo += list(pb.parent_recursive)
         for con in pb.constraints:
-            for name in (getattr(con, "subtarget", ""), getattr(con, "pole_subtarget", "")):
-                if name and getattr(con, "target", None) == obj:
+            subs = [(getattr(con, "target", None), getattr(con, "subtarget", "")),
+                    (getattr(con, "pole_target", None), getattr(con, "pole_subtarget", ""))]
+            subs += [(t.target, t.subtarget) for t in getattr(con, "targets", ())]     # (Armature)
+            for target, name in subs:
+                if name and target == obj:
                     todo.append(bones.get(name))
+        todo += [bones.get(n) for n in reads.get(pb.name, ())]
     return list(out.values())
 
 
@@ -441,7 +529,10 @@ def _depends_on(obj):
             continue
         out[o.name] = o
         refs = [o.parent]
-        owners = [o] + (list(o.pose.bones) if o.type == 'ARMATURE' and o.pose is not None else [])
+        # (an armature with paths: only the bones they depend on - see _pose_owners)
+        near = _pose_owners(o) if o.type == 'ARMATURE' else []
+        names = None if near is None else {pb.name for pb in near}
+        owners = [o] + (list(o.pose.bones) if near is None and o.pose is not None else near)
         for ow in owners:
             for con in ow.constraints:
                 refs.append(getattr(con, "target", None))
@@ -451,6 +542,10 @@ def _depends_on(obj):
         for idb in (o, getattr(o, "data", None)):
             ad = getattr(idb, "animation_data", None)
             for d in ad.drivers if ad is not None else ():
+                if idb is o and names is not None:
+                    b = _bone_of(d.data_path)
+                    if b is not None and b not in names:
+                        continue
                 for v in d.driver.variables:
                     refs += [t.id for t in v.targets]
         todo += [r for r in refs if isinstance(r, bpy.types.Object)]
@@ -526,6 +621,15 @@ _BONE_PATH = re.compile(r'^pose\.bones\["(.*)"\]\.(\w+)$')
 _LINEAR_CONSTRAINTS = {'CHILD_OF', 'ARMATURE'}   # (they only put a parent space in front)
 
 
+def _own_loc_space(obj_name, bone_name):
+    """The bone moves by its location along other axes than its rotation turns it (see
+    core.own_loc_space)."""
+    from . import core
+    obj = bpy.data.objects.get(obj_name) if bone_name else None
+    bone = obj.data.bones.get(bone_name) if obj is not None and obj.type == 'ARMATURE' else None
+    return bone is not None and core.own_loc_space(bone)
+
+
 def _constrained(owner):
     """The bone / object has a constraint that works on its own transform (Limit Rotation, Copy
     Location...): its parent space as baked depends on its own channels."""
@@ -563,6 +667,12 @@ def _harmless(obj, data_path, memo=None):
             return False
         pb = obj.pose.bones.get(bname)
         if pb is None or _constrained(pb):
+            return False
+        from . import core
+        if m.group(2) == "location" and core.own_loc_space(pb.bone) and \
+                any(c.bone_name == bname and c.ptype != core.LOCATION for c in targets):
+            # (its location moves it by other axes than the rotation / scale paths' parent space
+            # holds: those are baked again - its location path takes it at once)
             return False
         from .onion import affected_bones
         memo = {} if memo is None else memo
@@ -613,10 +723,12 @@ def _needs_rebake(curves=True):
         new = _fcurve_hashes(obj, curves)
         old = _action_hashes.get(name)
         if old is None:
+            _why[0] = (name, None)
             return True
         keys = set(new) | set(old) if curves else {k for k in set(new) | set(old) if k[0].startswith("#")}
         for k in keys:
-            if new.get(k) != old.get(k) and not _harmless(obj, k[0], memo):
+            if new.get(k) != old.get(k) and (name, k) not in _ignored and not _harmless(obj, k[0], memo):
+                _why[0] = (name, k)
                 return True
         # only own channels changed: keep hashes current so later comparisons stay precise
         if curves:
@@ -627,6 +739,49 @@ def _needs_rebake(curves=True):
 
 
 _check_curves = True     # the next check compares the curves too (an action changed)
+
+# Endless re-bakes: something the checks compare "changes" by itself (a value the rig writes as
+# it is evaluated...) - each re-bake would set off the next one and keep Blender busy for good.
+# A re-bake that moved no path counts; when the same thing set off LOOP_LIMIT of them in a row,
+# each one right after the one before (a loop doesn't wait - an animator's edits come with
+# pauses: an IK/FK switch flipped a few times isn't one), it isn't checked any more (until a file
+# is loaded) and the console says what it was.
+LOOP_LIMIT = 3
+LOOP_GAP = 1.0      # seconds from one re-bake's end to the next one's start that still count as "in a row"
+_why = [None]       # what the last check found changed: (object name, hash key) / 'range' / 'new' / 'force'
+_ignored = set()    # what isn't checked any more
+_useless = []       # the reasons of the automatic re-bakes in a row that moved no path
+_last_done = [0.0]  # when the last bake ended
+
+
+def _unbaked():
+    """A path still to be calculated: a new one, or one that couldn't be (its bone / object was
+    gone) whose bone / object is there again. One that can't be isn't tried on every check: that
+    baked every path again on each click."""
+    from . import core
+    sync_caches()
+    for c in caches.values():
+        if not c.B and (not c.failed or core.resolve(c.obj_name, c.bone_name)[1] is not None):
+            return True
+    return False
+
+
+def _note_bake(job):
+    why = getattr(job, "why", None)
+    if why in (None, 'new', 'force') or getattr(job, "moved", True):
+        _useless.clear()
+        return
+    if getattr(job, "gap", 0.0) > LOOP_GAP:
+        _useless.clear()        # (after a pause: an edit, not a loop - a new count starts)
+    _useless.append(why)
+    if len(_useless) >= LOOP_LIMIT and all(w == why for w in _useless[-LOOP_LIMIT:]):
+        _useless.clear()
+        _ignored.add(why)
+        what = "the frame range" if why == 'range' else "%s of %s" % (
+            (why[1][0].lstrip("#") if why[1] else "its animation"), why[0])
+        print("Editable Motion Paths: %s kept changing by itself without moving the paths (%d updates "
+              "in a row) - not checked any more, so the paths aren't calculated again and again. If "
+              "it should move them, press Update next to the path list." % (what, LOOP_LIMIT))
 
 
 def schedule_rebake(delay=0.35, force=False, curves=True, keep=False):
@@ -796,16 +951,21 @@ def _job_step(job):
 def _job_done(job):
     global flash
     job.finish()
-    _aux_drop()
+    _aux_drop(_BAKE_SCENE)
     if flash is not None and flash[0].startswith("Calculating motion paths"):
         flash = None
+    _note_bake(job)
+    _last_done[0] = time.time()
     tag_redraw()
 
 
-def _aux_drop():
+_BAKE_SCENE = ".Motion Paths Bake"     # (core.AUX_NAME: the paths' bake scene - the snapshots have one of their own)
+
+
+def _aux_drop(name=None):
     from . import core
     try:
-        core.drop_aux()
+        core.drop_aux(name)
     except Exception:
         pass
 
@@ -858,12 +1018,16 @@ def _bake_timer():
         _check_curves = False
         st = settings()
         if st is not None and st.paths:
-            if force or any(not c.B for c in caches.values()) or sync_caches() or _range_changed() \
-                    or _needs_rebake(curves):
+            why = 'force' if force else 'new' if _unbaked() else \
+                'range' if 'range' not in _ignored and _range_changed() else \
+                _why[0] if _needs_rebake(curves) else None
+            if why is not None:
                 sync_caches()
                 scene = bpy.context.scene
                 _job = core.BakeJob(scene, list(caches.values()), near=scene.frame_current)
+                _job.why = why
                 _job_started = time.time()
+                _job.gap = _job_started - _last_done[0]
                 # quick scenes at once (as before); heavy ones and long ranges in steps, without a
                 # freeze - the first of them on the next tick (this one checked what changed: on a
                 # big rig that takes a moment already)
@@ -871,11 +1035,12 @@ def _bake_timer():
                     return 0.02
                 job, _job = _job, None
                 _job_done(job)
-            tag_redraw()
+            # (nothing redrawn when nothing was baked: drawing asks for a check when a path isn't
+            # calculated yet - a redraw after every check kept that going for good)
     except Exception as ex:  # never let a timer die silently with a traceback storm
         print("Editable Motion Paths: auto update failed:", ex)
         _job = None
-        _aux_drop()
+        _aux_drop(_BAKE_SCENE)
     _bake_timer_on = False
     return None
 
@@ -913,6 +1078,10 @@ def _on_frame(scene, *_args):
     from . import onion
     if baking or onion.busy():
         return
+    from . import com
+    if not com.busy():
+        from . import snapshots
+        snapshots.frame_changed(scene)      # (a Static one previewing a frame goes back to its own)
     _dg_frame_all = scene.frame_current
     if settings(scene) is not None and (settings(scene).show_onion or settings(scene).show_com):
         global _dg_frame
@@ -959,6 +1128,9 @@ def _on_depsgraph(scene, depsgraph):
     _dg_frame_all = scene.frame_current
     if not same_frame:
         return      # (a frame change reports the actions as updated too: no curve changed)
+    if st.show_snapshots and len(st.snapshots) and             any(isinstance(u.id, bpy.types.Action) for u in depsgraph.updates):
+        from . import snapshots
+        snapshots.anim_changed()        # (the Live ones follow the animation)
     if not caches or not st.auto_update:
         # no path: the ghosts and the center of mass still follow the animation
         if st.show_onion or st.show_com:
@@ -975,7 +1147,7 @@ def _on_depsgraph(scene, depsgraph):
             except Exception:
                 pass
             tag_redraw()        # the path follows right away (e.g. a modifier's settings)
-            schedule_rebake()
+            _rebake_if_shown(scene)
             spans = _edit_spans(scene, depsgraph)
             onion.changed(spans=spans)
             com.changed(spans)
@@ -986,14 +1158,24 @@ def _on_depsgraph(scene, depsgraph):
     if same_frame and not modal_running and not (bpy.context.screen is not None and
                                                  bpy.context.screen.is_animation_playing) and \
             any(isinstance(u.id, bpy.types.Object) for u in depsgraph.updates):
-        schedule_rebake(curves=False)
+        _rebake_if_shown(scene, curves=False)
+
+
+def _rebake_if_shown(scene, curves=True):
+    """Something changed: the paths are checked (and baked again if it moves them) - only while one
+    is shown; else that is noted and done when one shows."""
+    global _hidden_changes
+    if paths_shown(scene):
+        schedule_rebake(curves=curves)
+    else:
+        _hidden_changes = True
 
 
 # Settings that only say how the paths are shown / edited (like Blender's overlays): Ctrl+Z
 # doesn't change them (the ghosts don't go off, the edit mode doesn't jump back), it goes to the
 # edits. What is data stays with undo: the path list (and its active row), the selection, the
 # ranges, the masses.
-_UNDONE_SETTINGS = {"rna_type", "name", "paths", "active_index", "picked_handles", "select_history", "select_order", "com_limb_share",
+_UNDONE_SETTINGS = {"rna_type", "name", "paths", "snapshots", "snapshot_index", "active_index", "picked_handles", "select_history", "select_order", "com_limb_share",
                     "com_limb_mass", "com_own_share", "com_own_mass", "com_body_mass", "range_mode", "frame_start", "frame_end"}
 VIEW_SETTINGS = set()       # filled in register(): every other setting of scene.emp
 _view_before = {}
@@ -1058,6 +1240,8 @@ def _on_undo(*_args):
         pass
     onion.changed(pose=True)
     com.changed()
+    from . import snapshots
+    snapshots.after_undo()      # (what is drawn stays until it is made again: no blinking)
     # (no need to mark the paths dirty: a path rebuilds when its curves differ from what it was
     # built from; hidden keys and value channels are taken over below)
     try:
@@ -1101,6 +1285,10 @@ def _on_load(*_args):
     ghosts.clear()
     _action_hashes.clear()
     _bake_memo.clear()
+    _ignored.clear()
+    _useless.clear()
+    from . import snapshots
+    snapshots.clear_runtime()
     _aux_drop()     # (one saved by an auto save, or by the add-on of before)
     st = settings()
     if st is not None and st.paths:
@@ -1229,6 +1417,19 @@ def flash_message(text, seconds=3.0):
 
 
 _isolated_last = None
+_isolated_at = 0.0
+
+
+def _isolation_shown():
+    """A Graph Editor and a 3D view's sidebar (the path list's Graph Editor buttons) are open."""
+    graph = side = False
+    for win in bpy.context.window_manager.windows:
+        for a in win.screen.areas:
+            if a.type == 'GRAPH_EDITOR':
+                graph = True
+            elif a.type == 'VIEW_3D' and any(r.type == 'UI' and r.width > 1 for r in a.regions):
+                side = True
+    return graph and side
 
 
 def _watch_isolated(st):
@@ -1310,10 +1511,15 @@ def _watch_active():
         st = settings()
         if st is None or not st.paths or modal_running:
             return 0.25
-        try:
-            _watch_isolated(st)
-        except Exception:
-            pass
+        global _isolated_at
+        now = time.time()
+        if now - _isolated_at > 1.0:
+            _isolated_at = now
+            try:
+                if _isolation_shown():
+                    _watch_isolated(st)
+            except Exception:
+                pass
         vl = bpy.context.view_layer
         obj = vl.objects.active if vl is not None else None
         try:
@@ -1397,9 +1603,11 @@ def unregister():
     if bpy.app.timers.is_registered(_watch_active):
         bpy.app.timers.unregister(_watch_active)
     from . import com, onion
-    for fn in (onion._tick, com._tick):
+    from . import snapshots
+    for fn in (onion._tick, com._tick, snapshots._tick):
         if bpy.app.timers.is_registered(fn):
             bpy.app.timers.unregister(fn)
+    snapshots._timer[0] = False
     _aux_drop()
     caches.clear()
 

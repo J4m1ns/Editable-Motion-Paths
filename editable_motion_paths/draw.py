@@ -367,8 +367,8 @@ def live_shift(cache):
                 state.blender_edit_running():
             obj, owner = core.resolve(cache.obj_name, cache.bone_name)
             if owner is not None and not state._constrained(owner) and _parent_change_stays(obj, owner):
-                W = obj.matrix_world @ owner.matrix if cache.bone_name else owner.matrix_world
-                M = W @ owner.matrix_basis.inverted_safe() @ cache.B_at(f).inverted_safe()
+                B, _ok = core.parent_space(obj, owner, cache.bone_name, cache.ptype == core.LOCATION)
+                M = B @ cache.B_at(f).inverted_safe()
                 if any(abs(M[i][j] - (1.0 if i == j else 0.0)) > 1e-5 for i in range(4) for j in range(4)):
                     D = M
     except (ValueError, AttributeError, ReferenceError):
@@ -1058,6 +1058,17 @@ def _draw_view():
                 gpu.state.depth_mask_set(False)
                 gpu.state.line_width_set(1.0)
                 gpu.state.point_size_set(1.0)
+    if st.show_snapshots and len(st.snapshots):
+        from . import snapshots
+        try:
+            snapshots.draw(scene, st, us)
+        except Exception as ex:
+            _part_failed("Snapshots", ex)
+        finally:
+            gpu.state.face_culling_set('NONE')
+            gpu.state.color_mask_set(True, True, True, True)
+            gpu.state.depth_mask_set(False)
+            gpu.state.line_width_set(1.0)
     if len(st.vertex_paths):
         try:
             _draw_vertex_paths(scene, st)

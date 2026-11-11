@@ -160,10 +160,12 @@ def parent_basis(cache, tg, k):
     try:
         if tg.is_bone:
             bone = tg.owner.bone
-            off = bone.matrix_local.to_3x3().inverted()
-            if bone.parent is not None:
-                off = off @ bone.parent.matrix_local.to_3x3()
-            B = B @ off
+            # (a location path of a bone with Local Location off: its space is the parent's already)
+            if cache.ptype != core.LOCATION or bone.use_local_location:
+                off = bone.matrix_local.to_3x3().inverted()
+                if bone.parent is not None:
+                    off = off @ bone.parent.matrix_local.to_3x3()
+                B = B @ off
         elif tg.owner.parent is not None:
             B = B @ tg.owner.matrix_parent_inverse.to_3x3().inverted()
     except (ValueError, AttributeError):

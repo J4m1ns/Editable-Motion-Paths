@@ -2,7 +2,7 @@
 
 import bpy
 
-from . import core, ops_easing, ops_fmods, ops_tools, state
+from . import core, ops_easing, ops_fmods, ops_tools, snapshots, state
 
 
 def _k(op, key, props=None, **mods):
@@ -68,6 +68,7 @@ TOOL_KEYMAP = (
     _k("wm.call_menu", 'T', {"name": "EMP_MT_timing"}, shift=True),
     _k("wm.call_panel", 'U', {"name": "EMP_PT_display_popover", "keep_open": True}),
     _k("wm.call_panel", 'J', {"name": "EMP_PT_modifiers_popover", "keep_open": True}),
+    _k("wm.call_panel", 'Y', {"name": "EMP_PT_snapshots_popover", "keep_open": True}),
     _k("emp.easing_preset", 'P', {"gallery": True}),
     _k("emp.set_view", 'H', {"name": "show_handles"}, ctrl=True),
     _k("emp.set_view", 'H', {"name": "show_frames"}, ctrl=True, shift=True),
@@ -131,6 +132,7 @@ HELP = (
         ("Right-click", "path menu (Edit Value, Space, LoopTools...)"),
         ("U", "display settings under the mouse"),
         ("J", "modifiers of the active path under the mouse"),
+        ("Y", "snapshots of the pose under the mouse (also in Pose Mode)"),
         ("P", "easing presets under the mouse"),
         ("Ctrl+H / Ctrl+Shift+H", "show / hide the handles / the frame dots"),
     )),
@@ -245,6 +247,9 @@ def draw_panel_buttons(layout, st):
     col.use_property_split = False
     col.popover("EMP_PT_display_popover", text="Path Display", icon='COLOR')
     col.popover("EMP_PT_modifiers_popover", text="Path Modifiers", icon='MODIFIER')
+    row = col.row(align=True)
+    row.popover("EMP_PT_snapshots_popover", text="Snapshots", icon='POSE_HLT')
+    row.prop(st, "show_snapshots", text="", icon='HIDE_OFF' if st.show_snapshots else 'HIDE_ON')
 
 
 def draw_header_buttons(layout, st):
@@ -257,6 +262,7 @@ def draw_header_buttons(layout, st):
     row.popover("EMP_PT_com_popover", text="")
     layout.popover("EMP_PT_display_popover", text="", icon='COLOR')
     layout.popover("EMP_PT_modifiers_popover", text="", icon='MODIFIER')
+    layout.popover("EMP_PT_snapshots_popover", text="", icon='POSE_HLT')
 
 
 def _draw_proportional(layout, st, compact=False):
@@ -659,6 +665,8 @@ class EMP_PT_main(_Panel, bpy.types.Panel):
         col.separator()
         col.operator("emp.path_update", text="", icon='FILE_REFRESH')
         col.operator("emp.path_remove", text="", icon='TRASH').scope = 'ALL'
+        col.separator()
+        col.prop(st, "only_selected", text="", icon='RESTRICT_SELECT_OFF')
         if len(st.vertex_paths) or context.mode == 'EDIT_MESH':
             # tracked vertices (Edit Mode, right-click: Track Motion Path): only to look at
             row = layout.row()
@@ -1081,7 +1089,7 @@ class EMP_PT_help(_Panel, bpy.types.Panel):
 classes = (EMP_MT_handle_type, EMP_MT_interpolation, EMP_MT_value_channel, EMP_OT_set_value_channel,
            EMP_MT_space, EMP_MT_looptools, EMP_MT_snap, EMP_MT_curves, EMP_MT_context, EMP_UL_paths,
            EMP_PT_main, EMP_PT_shape, EMP_PT_timing, ops_easing.EMP_PT_easing_sidebar, EMP_PT_keys,
-           ops_fmods.EMP_PT_modifiers,
+           ops_fmods.EMP_PT_modifiers, snapshots.EMP_PT_snapshots,
            EMP_PT_range, EMP_PT_display, EMP_PT_display_popover, EMP_PT_onion_popover, EMP_PT_com_popover, ops_fmods.EMP_PT_modifiers_popover,
            ops_easing.EMP_PT_easing_presets,
            EMP_PT_help, EMP_PT_smoothing)
@@ -1121,6 +1129,11 @@ def register():
         km = kc.keymaps.new("Pose", space_type='EMPTY')
         kmi = km.keymap_items.new("wm.tool_set_by_id", 'T', 'PRESS', ctrl=True)
         kmi.properties.name = EMP_PoseTool.bl_idname
+        _addon_keymaps.append((km, kmi))
+        # Y: the snapshots, with any tool in Pose Mode
+        kmi = km.keymap_items.new("wm.call_panel", 'Y', 'PRESS')
+        kmi.properties.name = "EMP_PT_snapshots_popover"
+        kmi.properties.keep_open = True
         _addon_keymaps.append((km, kmi))
 
 

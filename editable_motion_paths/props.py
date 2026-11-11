@@ -270,7 +270,66 @@ class EMP_PathEntry(bpy.types.PropertyGroup):
                                     "(highlighted) all take it; drag over the icons to set several")
 
 
+def _snap_changed(self, context):
+    from . import snapshots
+    snapshots.changed(self)
+
+
+def _snapshots_toggled(self, context):
+    from . import snapshots
+    if self.show_snapshots:
+        for s in self.snapshots:
+            snapshots.changed(s)
+    state.tag_redraw()
+
+
+class EMP_Snapshot(bpy.types.PropertyGroup):
+    """A pose kept to compare with (see snapshots.py)."""
+    uid: IntProperty(options={'HIDDEN'})
+    name: StringProperty(name="Name", default="Snapshot")
+    show: BoolProperty(name="Show", default=True, update=_snap_changed,
+                       description="Show this snapshot (hidden, it costs nothing)")
+    expanded: BoolProperty(name="Expanded", default=True)
+    kind: EnumProperty(name="Part", update=_snap_changed,
+                       items=[('POSE', "Whole Pose", "The whole character"),
+                              ('BONES', "Selected Bones", "Only the part the bones move")])
+    bones: StringProperty(options={'HIDDEN'})
+    scope: EnumProperty(name="Bones", update=_snap_changed, default='LIMB',
+                        items=[('BONE', "Bone", "Only the part of the selected bones themselves"),
+                               ('LIMB', "Limb", "The part the selected bones move: what follows them too "
+                                                "(children, IK chains)")])
+    mode: EnumProperty(name="Mode", update=_snap_changed,
+                       items=[('STATIC', "Static", "The pose as it was taken (a photo of it)"),
+                              ('LIVE', "Live", "The pose on its frame as the animation has it now - it follows "
+                                               "every edit")])
+    frame: IntProperty(name="Frame", update=_snap_changed,
+                       description="Live: the frame whose pose it shows. Static: the frame it was taken on; "
+                                   "changed, it shows that frame's pose - the check mark next to it keeps it, "
+                                   "another frame on the timeline goes back to the one it was taken on")
+    taken: IntProperty(options={'HIDDEN'})     # Static: the frame its kept pose is of
+    offset: FloatVectorProperty(name="Offset", subtype='TRANSLATION', size=3, update=_redraw,
+                                description="Moved aside by this much (world space): side by side with the "
+                                            "character")
+    color: FloatVectorProperty(name="Color", subtype='COLOR', size=3, min=0.0, max=1.0,
+                               default=(0.25, 0.65, 1.0), update=_redraw)
+    opacity: FloatProperty(name="Opacity", default=0.35, min=0.0, max=1.0, subtype='FACTOR', update=_redraw)
+    display: EnumProperty(name="Display", update=_redraw,
+                          items=[('SILHOUETTE', "Silhouette", "One flat see-through color"),
+                                 ('WIRE', "Wire", "The edges")])
+    in_front: BoolProperty(name="In Front", default=True, update=_redraw,
+                           description="Seen through the character and everything else")
+    line_width: FloatProperty(name="Wire Width", default=1.5, min=1.0, soft_max=6.0, update=_redraw,
+                              description="Wire: how thick the lines are")
+    armature: PointerProperty(type=bpy.types.Object)
+    data: PointerProperty(type=bpy.types.Mesh)     # Static: its shape and values (a mesh no object uses)
+
+
 class EMP_Settings(bpy.types.PropertyGroup):
+    snapshots: CollectionProperty(type=EMP_Snapshot)
+    snapshot_index: IntProperty()
+    show_snapshots: BoolProperty(name="Snapshots", default=True, update=_snapshots_toggled,
+                                 description="Show the snapshots (off: they cost nothing - nothing drawn, nothing "
+                                             "kept up to date)")
     paths: CollectionProperty(type=EMP_PathEntry)
     vertex_paths: CollectionProperty(type=EMP_VertexPath)
     vertex_active_index: IntProperty(name="Vertex Path", default=0)
@@ -314,6 +373,11 @@ class EMP_Settings(bpy.types.PropertyGroup):
         default=False, update=_redraw)
     window_before: IntProperty(name="Before", default=15, min=0, update=_redraw)
     window_after: IntProperty(name="After", default=15, min=0, update=_redraw)
+    only_selected: BoolProperty(
+        name="Only Selected",
+        description="Show only the paths of the selected bones / objects (with none selected, nothing "
+                    "is drawn or kept up to date - no cost)",
+        default=False, update=_redraw)
     color_mode: EnumProperty(
         name="Color",
         items=[
@@ -863,7 +927,8 @@ GRAPH_LOOK = PREF_NAMES[-18:-3]
 for _n in PREF_NAMES:
     setattr(EMP_Settings, _n, _pref_property(_n))
 
-classes = (EMP_BrushSettings, EMP_VertexPoint, EMP_VertexPath, EMP_PathEntry, EMP_Settings, EMP_Preferences)
+classes = (EMP_BrushSettings, EMP_VertexPoint, EMP_VertexPath, EMP_PathEntry, EMP_Snapshot, EMP_Settings,
+           EMP_Preferences)
 
 
 def register():

@@ -50,6 +50,8 @@ editable_motion_paths/          the extension (this folder is what gets zipped)
   bezier.py, geom.py, fit.py,   math without Blender data: Bezier segments, geometry, key refitting
   easing.py, keys.py            (Clean Up), easing curves, key topology on F-Curves
   onion.py, com.py              onion skinning, center of mass (background work, own draw passes)
+  snapshots.py                  snapshots: poses kept to compare / apply (Static: a mesh of its own no
+                                object uses; Live: worked out in a hidden scene), their operators and popover
   icons/                        PNG icons (brushes, easing gallery)
 README.md (the short tour), docs/MANUAL.md (everything), docs/media/ (the README's GIFs),
 API_GUIDE.md, DEV_GUIDE.md, LICENSE (GPL-3.0-or-later)
