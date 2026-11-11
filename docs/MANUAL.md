@@ -29,6 +29,10 @@ Remove button for extensions in the Add-ons tab).
    again: back to the tool you had).
 4. Click a key on the path to show its handles, then drag the key or a handle, or use
    G / R / S like on a mesh.
+5. To remove a path, click it in the path list and press **−** next to the list; the trash
+   button under it removes all paths. **Only Selected** (the arrow-cursor button below them)
+   shows only the paths of the selected bones / objects - with nothing selected, nothing is
+   drawn or kept up to date.
 
 Only the paths of *selected* bones/objects can be edited; other paths are drawn gray, and
 clicking a gray path selects its bone. If nothing on a path is selected, the hotkeys fall back

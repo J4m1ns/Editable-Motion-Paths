@@ -82,6 +82,9 @@ Works on Blender **4.4 and newer**: the whole test suite runs on both 4.4 and 5.
 1. Select a bone in Pose Mode (or an object), open the sidebar (**N**) > **Motion Paths** > **+**.
 2. Press **Edit Paths** (or **Ctrl+T** in Pose Mode).
 3. Click a key on the path and drag it - or use **G / R / S** like on a mesh.
+4. To remove a path: click it in the path list and press **−** next to the list (the trash
+   button removes all of them). **Only Selected** (under those buttons) shows only the paths of
+   the selected bones.
 
 | Key | What it does |
 |---|---|

@@ -1885,6 +1885,9 @@ class BakeJob:
                 c.failed = True
                 continue
             self.items.append([c, [None] * n, [True] * n])
+        # (what each path had: a re-bake that changes none of it moved nothing - see finish())
+        self.old = {id(it[0]): (it[0].fs, it[0].B, it[0].Cam, it[0].cam_obj) for it in self.items}
+        self.moved = True
         self.first = any(not item[0].B for item in self.items)     # (a path not drawn yet)
         self.order = list(range(self.fs, self.fe + 1))
         self.window = None
@@ -2098,13 +2101,43 @@ class BakeJob:
         alive = set(id(c) for c in state.caches.values())
         cams, cam_obj = self._cam(self.cams)
         baked = {}
+        self.moved = False
         for c, mats, ok in self.items:
             if id(c) not in alive:
                 continue
-            self._put(c, self.fs, mats, ok, cams, cam_obj)
+            if not self._unchanged(c, mats, ok, cams, cam_obj):
+                # (the same parent spaces again: the path stays as it is - not worked out anew)
+                self.moved = True
+                self._put(c, self.fs, mats, ok, cams, cam_obj)
             baked[c.key] = (c.fs, c.B, c.Cam, c.cam_fs, c.cam_obj)
         if baked:
             state.remember_bake(getattr(self, "memo_sig", None), baked)
+
+    def _unchanged(self, c, mats, ok, cams, cam_obj):
+        """The parent spaces just baked are the ones the path had before this bake."""
+        fs, B, Cam, was_cam = self.old.get(id(c), (None, None, None, None))
+        if not B or fs != self.fs or c.fs != fs or len(B) != len(mats) or len(c.B or ()) != len(B) or \
+                bool(Cam) != bool(cams) or (cams and (was_cam != cam_obj or len(Cam) != len(cams))):
+            return False
+        mats = list(mats)
+        _fill_singular(mats, list(ok))
+        return _same_mats(B, mats) and (not cams or _same_mats(Cam, cams))
+
+
+def _same_mats(a, b, eps=1e-6):
+    """Two lists of matrices alike (to eps: a rig evaluated twice on a frame gives the same)."""
+    if len(a) != len(b):
+        return False
+    for x, y in zip(a, b):
+        if x is y:
+            continue
+        if x is None or y is None:
+            return False
+        if x == y:
+            continue
+        if max(abs(v) for row in (x - y) for v in row) > eps:
+            return False
+    return True
 
 
 def bake(scene, caches):

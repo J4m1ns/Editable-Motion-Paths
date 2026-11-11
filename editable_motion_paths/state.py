@@ -211,8 +211,8 @@ def visible_caches(scene=None):
         if not e.show or (st.only_selected and not _entry_selected(e)):
             continue
         k = entry_key(e, st.edit_mode)
-        if k in seen:
-            continue
+        if k is None or k in seen:
+            continue        # (no object: its object was deleted - nothing to calculate)
         seen.add(k)
         c = caches.get(k)
         if c is not None and c.B:
@@ -723,10 +723,12 @@ def _needs_rebake(curves=True):
         new = _fcurve_hashes(obj, curves)
         old = _action_hashes.get(name)
         if old is None:
+            _why[0] = (name, None)
             return True
         keys = set(new) | set(old) if curves else {k for k in set(new) | set(old) if k[0].startswith("#")}
         for k in keys:
-            if new.get(k) != old.get(k) and not _harmless(obj, k[0], memo):
+            if new.get(k) != old.get(k) and (name, k) not in _ignored and not _harmless(obj, k[0], memo):
+                _why[0] = (name, k)
                 return True
         # only own channels changed: keep hashes current so later comparisons stay precise
         if curves:
@@ -737,6 +739,49 @@ def _needs_rebake(curves=True):
 
 
 _check_curves = True     # the next check compares the curves too (an action changed)
+
+# Endless re-bakes: something the checks compare "changes" by itself (a value the rig writes as
+# it is evaluated...) - each re-bake would set off the next one and keep Blender busy for good.
+# A re-bake that moved no path counts; when the same thing set off LOOP_LIMIT of them in a row,
+# each one right after the one before (a loop doesn't wait - an animator's edits come with
+# pauses: an IK/FK switch flipped a few times isn't one), it isn't checked any more (until a file
+# is loaded) and the console says what it was.
+LOOP_LIMIT = 3
+LOOP_GAP = 1.0      # seconds from one re-bake's end to the next one's start that still count as "in a row"
+_why = [None]       # what the last check found changed: (object name, hash key) / 'range' / 'new' / 'force'
+_ignored = set()    # what isn't checked any more
+_useless = []       # the reasons of the automatic re-bakes in a row that moved no path
+_last_done = [0.0]  # when the last bake ended
+
+
+def _unbaked():
+    """A path still to be calculated: a new one, or one that couldn't be (its bone / object was
+    gone) whose bone / object is there again. One that can't be isn't tried on every check: that
+    baked every path again on each click."""
+    from . import core
+    sync_caches()
+    for c in caches.values():
+        if not c.B and (not c.failed or core.resolve(c.obj_name, c.bone_name)[1] is not None):
+            return True
+    return False
+
+
+def _note_bake(job):
+    why = getattr(job, "why", None)
+    if why in (None, 'new', 'force') or getattr(job, "moved", True):
+        _useless.clear()
+        return
+    if getattr(job, "gap", 0.0) > LOOP_GAP:
+        _useless.clear()        # (after a pause: an edit, not a loop - a new count starts)
+    _useless.append(why)
+    if len(_useless) >= LOOP_LIMIT and all(w == why for w in _useless[-LOOP_LIMIT:]):
+        _useless.clear()
+        _ignored.add(why)
+        what = "the frame range" if why == 'range' else "%s of %s" % (
+            (why[1][0].lstrip("#") if why[1] else "its animation"), why[0])
+        print("Editable Motion Paths: %s kept changing by itself without moving the paths (%d updates "
+              "in a row) - not checked any more, so the paths aren't calculated again and again. If "
+              "it should move them, press Update next to the path list." % (what, LOOP_LIMIT))
 
 
 def schedule_rebake(delay=0.35, force=False, curves=True, keep=False):
@@ -909,6 +954,8 @@ def _job_done(job):
     _aux_drop(_BAKE_SCENE)
     if flash is not None and flash[0].startswith("Calculating motion paths"):
         flash = None
+    _note_bake(job)
+    _last_done[0] = time.time()
     tag_redraw()
 
 
@@ -971,12 +1018,16 @@ def _bake_timer():
         _check_curves = False
         st = settings()
         if st is not None and st.paths:
-            if force or any(not c.B for c in caches.values()) or sync_caches() or _range_changed() \
-                    or _needs_rebake(curves):
+            why = 'force' if force else 'new' if _unbaked() else \
+                'range' if 'range' not in _ignored and _range_changed() else \
+                _why[0] if _needs_rebake(curves) else None
+            if why is not None:
                 sync_caches()
                 scene = bpy.context.scene
                 _job = core.BakeJob(scene, list(caches.values()), near=scene.frame_current)
+                _job.why = why
                 _job_started = time.time()
+                _job.gap = _job_started - _last_done[0]
                 # quick scenes at once (as before); heavy ones and long ranges in steps, without a
                 # freeze - the first of them on the next tick (this one checked what changed: on a
                 # big rig that takes a moment already)
@@ -984,7 +1035,8 @@ def _bake_timer():
                     return 0.02
                 job, _job = _job, None
                 _job_done(job)
-            tag_redraw()
+            # (nothing redrawn when nothing was baked: drawing asks for a check when a path isn't
+            # calculated yet - a redraw after every check kept that going for good)
     except Exception as ex:  # never let a timer die silently with a traceback storm
         print("Editable Motion Paths: auto update failed:", ex)
         _job = None
@@ -1233,6 +1285,8 @@ def _on_load(*_args):
     ghosts.clear()
     _action_hashes.clear()
     _bake_memo.clear()
+    _ignored.clear()
+    _useless.clear()
     from . import snapshots
     snapshots.clear_runtime()
     _aux_drop()     # (one saved by an auto save, or by the add-on of before)
