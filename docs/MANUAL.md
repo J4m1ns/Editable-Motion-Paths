@@ -14,7 +14,7 @@ Requires Blender 4.4 or newer (tested on 5.2).
 ## Install
 
 Edit > Preferences > Get Extensions > **Install from Disk…** → choose
-`editable_motion_paths-2.0.5.zip`.
+`editable_motion_paths-2.0.6.zip`.
 
 To remove it: Edit > Preferences > **Get Extensions**, find *Editable Motion Paths* among the
 installed ones, and in the dropdown menu at the right of its row choose **Uninstall** (Blender shows no
@@ -472,7 +472,7 @@ to the character to compare side by side).
 The arrow next to a snapshot: *Update*, *Duplicate*, *Convert to Whole Pose / Selected Bones*
 (Selected Bones: the bones selected now), *Make Static / Live* (Live made Static keeps its pose of
 now), *Move Up / Down*; the arrow at the top: *Remove All*, *Toggle Visibility*, *Expand /
-Collapse*. A collapsed snapshot has a check mark next to its arrow: Apply.
+Collapse*. A collapsed snapshot has an **Apply** button next to its name.
 
 **Apply...** puts the snapshot's pose back on the bones and keys it - every bone it keeps (*Whole
 Pose*) or only the selected ones, on the **Current Frame** or (off) on the snapshot's own frame
@@ -538,8 +538,8 @@ evaluated, like the onion ghosts) and follow your edits.
 
 ## Display
 
-**Global / Local / Camera** (the dropdown menu under the globe / local / camera icon of each path
-in the path list; the highlighted paths all take it): *Global* paths are the motion in the world;
+**Global / Local / Camera / Relative To** (the dropdown menu under the globe / local / camera icon of
+each path in the path list; the highlighted paths all take it): *Global* paths are the motion in the world;
 *Local* leaves the parents' motion out - the path is drawn in the parent's space as it is on the
 current frame, so it shows (and you edit) only the bone's or object's own motion, and it moves
 along with the parent when the frame changes. *Camera* shows the motion as the active camera sees
@@ -549,6 +549,15 @@ shows its bounce, not the distance covered; looking through the camera, its own 
 drawn). It is edited the same way; moving the camera by hand
 shows at once, and when you change the camera's motion (or pick another camera) the path is worked
 out again.
+
+*Relative To* does the same with an object or a bone of your choice instead of the camera: the path is
+drawn relative to it on the current frame, so only the motion against it is left - a hand holding a
+prop shows how it slides on the prop, a foot on a moving platform how it moves on it, a hand on the
+other hand how the two drift apart. In the same menu, *Relative to Active* takes the active bone or
+object (in Pose Mode select the path's bone, Shift+click the other one last), *Relative To...* lets you
+pick an object and, for an armature, a bone. The icon turns into the Child Of icon; its tooltip names
+the reference. It is edited the same way as any path, and when the reference's animation changes the
+path is worked out again.
 
 **Track Motion Path** (a mesh vertex): in Edit Mode, make a vertex active, right-click and pick
 *Track Motion Path* at the bottom of the menu; set the *Range* (the scene's by default) and *Create

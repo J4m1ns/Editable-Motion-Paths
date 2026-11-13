@@ -148,13 +148,15 @@ def sync_caches(scene=None):
         c = caches.get(k)
         if c is None:
             c = caches[k] = core.PathCache(*k)
-            # (a bone whose location has its own axes: its location path's parent space is another)
+            # (a bone whose location has its own axes, a bone / object turned by its constraints: its location
+            # path's parent space is another)
             own = _own_loc_space(k[0], k[1])
             other = next((o for o in caches.values() if o is not c and o.key[:2] == k[:2] and o.B
                           and (not own or (o.ptype == core.LOCATION) == (k[2] == core.LOCATION))), None)
             if other is not None:
                 c.fs, c.B, c.bake_id = other.fs, other.B, other.bake_id
                 c.Cam, c.cam_fs, c.cam_obj = other.Cam, other.cam_fs, other.cam_obj
+                c.Ref, c.ref_fs, c.ref_key = other.Ref, other.ref_fs, other.ref_key
         h = hidden.get(k, set())
         if h != c.hidden:
             c.hidden = h
@@ -397,6 +399,8 @@ def _pose_owners(obj):
     if obj.type != 'ARMATURE' or obj.pose is None:
         return []
     names = {c.bone_name for c in caches.values() if c.obj_name == obj.name and c.bone_name}
+    # (a bone some path is drawn Relative To: its motion is in that path)
+    names |= {b for o, b in relative_refs() if o == obj and b}
     if not names:
         return None
     bones = obj.pose.bones
@@ -561,7 +565,21 @@ def _tracked_objects():
     cam = bpy.context.scene.camera if bpy.context.scene is not None else None
     if cam is not None and any(c.cam is not None for c in caches.values()):
         objs.update(_depends_on(cam))       # (Camera space: the camera's motion is in the paths)
+    for o, _b in relative_refs():
+        objs.update(_depends_on(o))         # (Relative To: the reference's motion is in the paths)
     return objs
+
+
+def relative_refs(scene=None):
+    """[(object, bone name)] the paths are drawn Relative To."""
+    st = settings(scene)
+    out = []
+    for e in (st.paths if st is not None else ()):
+        if getattr(e, "relative", False) and e.rel_object is not None and e.object is not None:
+            k = (e.rel_object, e.rel_bone)
+            if k not in out:
+                out.append(k)
+    return out
 
 
 def anim_signature(scene, hashes=None):
@@ -622,12 +640,16 @@ _LINEAR_CONSTRAINTS = {'CHILD_OF', 'ARMATURE'}   # (they only put a parent space
 
 
 def _own_loc_space(obj_name, bone_name):
-    """The bone moves by its location along other axes than its rotation turns it (see
-    core.own_loc_space)."""
+    """The bone / object moves by its location along other axes than its rotation turns it (see
+    core.own_loc_map): Local Location off and the like, or constraints that turn it (Track To)."""
     from . import core
-    obj = bpy.data.objects.get(obj_name) if bone_name else None
-    bone = obj.data.bones.get(bone_name) if obj is not None and obj.type == 'ARMATURE' else None
-    return bone is not None and core.own_loc_space(bone)
+    obj = bpy.data.objects.get(obj_name)
+    if obj is None:
+        return False
+    if not bone_name:
+        return core.own_loc_map(obj, "")
+    pb = obj.pose.bones.get(bone_name) if obj.type == 'ARMATURE' and obj.pose is not None else None
+    return pb is not None and core.own_loc_map(pb, bone_name)
 
 
 def _constrained(owner):
@@ -1242,6 +1264,10 @@ def _on_undo(*_args):
     com.changed()
     from . import snapshots
     snapshots.after_undo()      # (what is drawn stays until it is made again: no blinking)
+    try:
+        _reconcile_order()      # (the selection order as the selection the undo brought back)
+    except Exception:
+        pass
     # (no need to mark the paths dirty: a path rebuilds when its curves differ from what it was
     # built from; hidden keys and value channels are taken over below)
     try:
@@ -1500,6 +1526,34 @@ def _watch_order(st):
     gone = [k for k in selection_order() if not _owner_selected(*k)]
     if gone:
         forget_selected(gone)
+
+
+def _reconcile_order():
+    """After an undo / redo: the selection is the undo step's, but the order the step kept lags behind it -
+    a click's undo step is made before the watcher notes the click (see _watch_order): the bone clicked
+    last was missing from it, and the cascade put it after every bone clicked later. The bones / objects
+    with paths selected now that the order lacks join it, the active one last (its click was the latest)."""
+    st = settings()
+    if st is None or not st.paths:
+        return
+    order = selection_order()
+    vl = bpy.context.view_layer
+    obj = vl.objects.active if vl is not None else None
+    active = None
+    if obj is not None:
+        bone = obj.data.bones.active.name if obj.type == 'ARMATURE' and obj.mode == 'POSE' and \
+            obj.data.bones.active is not None else ""
+        active = (obj.name, bone)
+    missing = []
+    for e in st.paths:
+        k = (e.object.name, e.bone_name) if e.object is not None else None
+        if k is not None and k not in order and k not in missing and _owner_selected(*k):
+            missing.append(k)
+    missing.sort(key=lambda k: k == active)
+    for k in missing:
+        note_selected(k)
+    if active is not None:
+        _order_active[0] = (active[0], active[1], _owner_selected(*active))
 
 
 def _watch_active():

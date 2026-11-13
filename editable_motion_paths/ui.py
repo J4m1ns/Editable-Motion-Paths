@@ -617,7 +617,8 @@ class EMP_UL_paths(bpy.types.UIList):
             if cache is not None and cache.locked:
                 row.operator("emp.lock_info", text="", icon='LOCKED', emboss=False).reason = cache.lock_reason
             # Global / Local / Camera: the icon opens a menu of the three
-            icon = {'GLOBAL': 'WORLD', 'LOCAL': 'ORIENTATION_LOCAL', 'CAMERA': 'CAMERA_DATA'}[item.space]
+            icon = {'GLOBAL': 'WORLD', 'LOCAL': 'ORIENTATION_LOCAL', 'CAMERA': 'CAMERA_DATA',
+                    'RELATIVE': 'CON_CHILDOF'}[item.space]
             row.operator("emp.path_space_menu", text="", icon=icon, emboss=False).index = index
             # isolate this path's curves in the Graph Editor (pressed while they are isolated)
             from .ops_tools import graph_isolated

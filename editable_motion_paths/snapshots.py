@@ -1045,7 +1045,8 @@ def draw_list(layout, context, toggle=True):
         row.label(text="", icon='RECORD_ON' if snap.mode == 'LIVE' else 'IMAGE_DATA')
         row.prop(snap, "name", text="")
         if not snap.expanded:
-            row.operator("emp.snapshot_apply", text="", icon='CHECKMARK', emboss=False).uid = snap.uid
+            # (a button that says what it does, joined to the name: not an icon beside the menu's arrow)
+            row.operator("emp.snapshot_apply", text="Apply").uid = snap.uid
         row.context_pointer_set("emp_snapshot", snap)
         row.menu("EMP_MT_snapshot_entry", text="", icon='DOWNARROW_HLT')
         row.operator("emp.snapshot_remove", text="", icon='X', emboss=False).uid = snap.uid
@@ -1079,7 +1080,7 @@ def draw_list(layout, context, toggle=True):
         r.prop(snap, "in_front")
         if snap.display == 'WIRE':
             r.prop(snap, "line_width", text="Width")
-        box.operator("emp.snapshot_apply", text="Apply...", icon='CHECKMARK').uid = snap.uid
+        box.operator("emp.snapshot_apply", text="Apply...").uid = snap.uid
 
 
 class EMP_PT_snapshots(bpy.types.Panel):

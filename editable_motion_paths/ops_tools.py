@@ -547,13 +547,22 @@ class EMP_OT_path_space(bpy.types.Operator):
 
 
 class EMP_OT_path_space_menu(bpy.types.Operator):
-    """Global / Local / Camera: the world, only the bone's / object's own motion, or as the active """ \
-        """camera sees it. The highlighted paths all take it"""
+    """Global / Local / Camera / Relative To: the world, only the bone's / object's own motion, as the """ \
+        """active camera sees it, or against an object / bone of your choice. The highlighted paths all take it"""
     bl_idname = "emp.path_space_menu"
     bl_label = "Path Space"
     bl_options = {'INTERNAL'}
 
     index: IntProperty(options={'HIDDEN', 'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, context, props):
+        st = state.settings(context.scene)
+        e = st.paths[props.index] if st is not None and 0 <= props.index < len(st.paths) else None
+        if e is not None and e.space == 'RELATIVE' and e.rel_object is not None:
+            return "Relative to %s%s. %s" % (e.rel_object.name, (", " + e.rel_bone) if e.rel_bone else "",
+                                             cls.__doc__)
+        return cls.__doc__
 
     def invoke(self, context, event):
         index = self.index
@@ -567,7 +576,77 @@ class EMP_OT_path_space_menu(bpy.types.Operator):
                                    ('CAMERA', "Camera", 'CAMERA_DATA')):
                 op = menu.layout.operator("emp.path_space", text=name, icon=icon, depress=sp == cur)
                 op.index, op.space = index, sp
+            menu.layout.separator()
+            op = menu.layout.operator("emp.path_relative", text="Relative to Active", icon='CON_CHILDOF')
+            op.index, op.use_active = index, True
+            op = menu.layout.operator("emp.path_relative", text="Relative To...", icon='CON_CHILDOF',
+                                      depress=cur == 'RELATIVE')
+            op.index = index
         context.window_manager.popup_menu(draw, title="Space")
+        return {'FINISHED'}
+
+
+class EMP_OT_path_relative(bpy.types.Operator):
+    """Relative To: draw (and edit) the path as seen from an object or bone of your choice - only the motion """ \
+        """against it is left (a hand holding a prop). The highlighted paths all take it"""
+    bl_idname = "emp.path_relative"
+    bl_label = "Relative To"
+    bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
+
+    index: IntProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    use_active: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    target: StringProperty(name="Object", description="The object the path is drawn relative to")
+    bone: StringProperty(name="Bone", description="A bone of that armature (empty: the object itself)")
+
+    @classmethod
+    def description(cls, context, props):
+        if props.use_active:
+            return "Relative to the active bone / object (Shift+click it last in the view)"
+        return cls.__doc__
+
+    def _entry(self, context):
+        st = state.settings(context.scene)
+        return st.paths[self.index] if st is not None and 0 <= self.index < len(st.paths) else None
+
+    def invoke(self, context, event):
+        e = self._entry(context)
+        if e is None or e.object is None:
+            return {'CANCELLED'}
+        if self.use_active:
+            ob = context.active_object
+            if ob is None:
+                self.report({'INFO'}, "No active object: select what the path should be relative to")
+                return {'CANCELLED'}
+            bone = ob.data.bones.active.name if ob.type == 'ARMATURE' and ob.mode == 'POSE' and \
+                ob.data.bones.active is not None else ""
+            self.target, self.bone = ob.name, bone
+            return self.execute(context)
+        if e.rel_object is not None:
+            self.target, self.bone = e.rel_object.name, e.rel_bone
+        return context.window_manager.invoke_props_dialog(self, confirm_text="Relative To")
+
+    def draw(self, context):
+        lay = self.layout
+        lay.prop_search(self, "target", bpy.data, "objects", text="Object")
+        ob = bpy.data.objects.get(self.target)
+        if ob is not None and ob.type == 'ARMATURE':
+            lay.prop_search(self, "bone", ob.data, "bones", text="Bone")
+
+    def execute(self, context):
+        e = self._entry(context)
+        ob = bpy.data.objects.get(self.target)
+        if e is None or ob is None:
+            self.report({'INFO'}, "Pick the object (and bone) the path should be relative to")
+            return {'CANCELLED'}
+        bone = self.bone if ob.type == 'ARMATURE' and self.bone in ob.data.bones else ""
+        if ob == e.object and bone == e.bone_name:
+            self.report({'INFO'}, "That is this path's own %s: select another one to be relative to (in Pose Mode, "
+                                  "Shift+click it last)" % ("bone" if bone else "object"))
+            return {'CANCELLED'}
+        e.rel_bone = bone
+        e.rel_object = ob
+        e.space = 'RELATIVE'
+        state.tag_redraw()
         return {'FINISHED'}
 
 
@@ -2159,7 +2238,7 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
             touched.add(fc)
 
 
-classes = (EMP_OT_com_reset_all, EMP_OT_com_set_weights, EMP_OT_path_pick, EMP_OT_path_space, EMP_OT_path_space_menu, EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
+classes = (EMP_OT_com_reset_all, EMP_OT_com_set_weights, EMP_OT_path_pick, EMP_OT_path_space, EMP_OT_path_space_menu, EMP_OT_path_relative, EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
            EMP_OT_reset_graph_look, EMP_OT_com_limb_reset, EMP_OT_edit_limb_weight,
            EMP_OT_smoothing_none, EMP_OT_set_view, EMP_OT_onion_mode, EMP_OT_onion_update, EMP_OT_path_update,
            EMP_OT_edit_tool,
