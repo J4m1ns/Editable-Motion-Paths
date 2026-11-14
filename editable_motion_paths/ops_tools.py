@@ -643,6 +643,11 @@ class EMP_OT_path_relative(bpy.types.Operator):
             self.report({'INFO'}, "That is this path's own %s: select another one to be relative to (in Pose Mode, "
                                   "Shift+click it last)" % ("bone" if bone else "object"))
             return {'CANCELLED'}
+        if core.carried_by(e.object, e.bone_name, ob, bone):
+            self.report({'INFO'}, "%s moves with this path's %s (it is its child): against it there is no motion "
+                                  "to see, and an edit would move it too - pick one it doesn't carry" % (
+                                      bone or ob.name, "bone" if e.bone_name else "object"))
+            return {'CANCELLED'}
         e.rel_bone = bone
         e.rel_object = ob
         e.space = 'RELATIVE'

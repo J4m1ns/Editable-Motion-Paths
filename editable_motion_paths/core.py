@@ -868,6 +868,13 @@ class PathCache:
                             state.schedule_rebake(force=True, keep=True)
                 elif getattr(e, "relative", False) and e.rel_object is not None:
                     M = reference_matrix(e.rel_object, e.rel_bone)
+                    if M is not None and not self.locked and carried_by(e.object, e.bone_name, e.rel_object,
+                                                                          e.rel_bone):
+                        # (the reference moves with this bone / object: an edit would move it too)
+                        self.locked, self.lock_reason = True, (
+                            "Relative To %s, which moves with this %s (its child): an edit would move it too - "
+                            "pick a reference it doesn't carry" % (e.rel_bone or e.rel_object.name,
+                                                                   "bone" if e.bone_name else "object"))
                     if M is not None:
                         self.rel = float(bpy.context.scene.frame_current)
                         self.rel_live = tuple(tuple(round(x, 6) for x in row) for row in M)
@@ -1794,6 +1801,28 @@ def reference_matrix(obj, bone="", dg=None):
             return None
         return ob.matrix_world @ pb.matrix
     return ob.matrix_world.copy()
+
+
+def carried_by(obj, bone, ref, ref_bone=""):
+    """Is the reference (an object, a bone) carried by this bone / object - itself, its child, a child of its
+    children (a prop parented to the hand)? Relative To it shows no motion, and an edit would move it too (the
+    path jumped once baked again)."""
+    o, b = ref, ref_bone
+    for _i in range(1000):
+        if o is None:
+            return False
+        if b and o.type == 'ARMATURE' and o.pose is not None:
+            pb = o.pose.bones.get(b)
+            while pb is not None:
+                if o == obj and pb.name == bone:
+                    return True
+                pb = pb.parent
+        if o == obj and not bone:
+            return True
+        if o.parent is None:
+            return False
+        o, b = o.parent, (o.parent_bone if o.parent_type == 'BONE' else "")
+    return False
 
 
 def _object_parent_matrix(obj):

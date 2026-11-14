@@ -1119,6 +1119,11 @@ def _on_depsgraph(scene, depsgraph):
     st = settings(scene)
     if st is None:
         return
+    if st.paths and scene == bpy.context.scene and not modal_running:
+        try:
+            sync_list_active(st)        # (a bone / object clicked in the view: its row at once)
+        except Exception:
+            pass
     if st.show_onion or st.show_com:
         global _dg_frame
         f = scene.frame_current
@@ -1528,6 +1533,49 @@ def _watch_order(st):
         forget_selected(gone)
 
 
+_list_active = [None]      # the active bone / object the path list's active row last followed
+
+
+def _view_active():
+    """(object name, bone name, its path editable now) of the active bone / object in the view, or None."""
+    vl = bpy.context.view_layer
+    obj = vl.objects.active if vl is not None else None
+    if obj is None:
+        return None
+    if obj.type == 'ARMATURE' and obj.mode == 'POSE':
+        b = obj.data.bones.active
+        if b is None:
+            return (obj.name, "", False)
+        pb = obj.pose.bones.get(b.name)
+        return (obj.name, b.name, pb is not None and compat.bone_selected(pb))
+    try:
+        return (obj.name, "", obj.mode == 'OBJECT' and obj.select_get())
+    except RuntimeError:
+        return None
+
+
+def sync_list_active(st=None):
+    """The path list's active row follows the bone / object made active in the view (clicked, Shift+clicked
+    last), like the Outliner follows the view: its row becomes the active one - the list's highlight, the
+    charts, the modifier stack go with it. Only when the active one changes (and it is selected and has a
+    path): a key clicked on another path's line makes that path's row the active one, and it stays so."""
+    st = st if st is not None else settings()
+    if st is None:
+        return
+    key = _view_active()
+    if key == _list_active[0]:
+        return
+    _list_active[0] = key
+    if key is None or not key[2]:
+        return
+    for i, e in enumerate(st.paths):
+        if e.object is not None and e.object.name == key[0] and e.bone_name == key[1]:
+            if st.active_index != i:
+                st.active_index = i
+                tag_redraw()
+            return
+
+
 def _reconcile_order():
     """After an undo / redo: the selection is the undo step's, but the order the step kept lags behind it -
     a click's undo step is made before the watcher notes the click (see _watch_order): the bone clicked
@@ -1554,6 +1602,7 @@ def _reconcile_order():
         note_selected(k)
     if active is not None:
         _order_active[0] = (active[0], active[1], _owner_selected(*active))
+    _list_active[0] = _view_active()     # (the active row as the undo step kept it)
 
 
 def _watch_active():
@@ -1578,6 +1627,10 @@ def _watch_active():
         obj = vl.objects.active if vl is not None else None
         try:
             _watch_order(st)
+        except Exception:
+            pass
+        try:
+            sync_list_active(st)
         except Exception:
             pass
         if obj is None:

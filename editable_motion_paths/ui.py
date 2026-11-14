@@ -112,7 +112,7 @@ HELP = (
     )),
     ("Keys", (
         ("Ctrl+Click path", "insert a key"),
-        ("E", "extrude: continue the motion (wheel: frames)"),
+        ("E", "extrude: a new key, moved with the mouse (wheel: frames)"),
         ("Shift+D", "duplicate and move the copies"),
         ("Ctrl+R, Ctrl+K", "loop cut / knife"),
         ("Ctrl+B", "bevel (A width, S segments, P profile)"),

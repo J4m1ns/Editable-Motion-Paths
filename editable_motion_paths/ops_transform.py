@@ -558,6 +558,24 @@ class EMP_OT_transform(bpy.types.Operator):
             self.handle_mode = False
         return self.n_elems > 0
 
+    def _grab_point(self, context):
+        """A click-drag on a key / handle (or G with the mouse on one): the point grabbed. The mouse moves the
+        selection at its depth, so it stays right under the mouse - at the depth of the selection's middle, a key
+        nearer or farther than the others (a path going away from the view, Camera space) ran a little ahead of
+        the mouse or behind it."""
+        if self.mode != 'TRANSLATE' or context.region_data is None:
+            return None
+        region, rv3d = context.region, context.region_data
+        best, bd = None, 16.0 * compat.ui_scale()
+        for _c, es in self.groups:
+            for e in es:
+                if e.src is not None:
+                    continue
+                s = view3d_utils.location_3d_to_region_2d(region, rv3d, e.co)
+                if s is not None and (s - self.mouse_start).length < bd:
+                    best, bd = e.co.copy(), (s - self.mouse_start).length
+        return best
+
     def _main_elem(self):
         for _c, es in self.groups:
             for e in es:
@@ -855,6 +873,7 @@ class EMP_OT_transform(bpy.types.Operator):
         else:
             self.mouse_start = Vector((event.mouse_region_x, event.mouse_region_y))
         self.mouse_virtual = self.mouse_start.copy()
+        self.grab = self._grab_point(context)
         if self.start_x > -100000:
             self.mouse_last = self.mouse_start.copy()
         else:
@@ -1001,7 +1020,8 @@ class EMP_OT_transform(bpy.types.Operator):
                     v[others[1]] = vals[1]
                 self.value = v
                 return
-            p0 = self.pivot
+            # (a click-drag: at the depth of the key / handle grabbed - it stays under the mouse)
+            p0 = self.grab if getattr(self, "grab", None) is not None else self.pivot
             if cons is None:
                 n = _view_dir(rv3d)
                 a = _plane_hit(region, rv3d, self.mouse_start, p0, n)

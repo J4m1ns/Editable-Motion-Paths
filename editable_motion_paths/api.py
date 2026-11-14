@@ -564,8 +564,8 @@ def bevel(obj, bone=None, frames=None, width=3.0, segments=2, profile=0.5, clamp
 
 
 def extrude(obj, bone=None, frame=None, frames_later=6, offset=(0.0, 0.0, 0.0), mode=None):
-    """New key `frames_later` after the end key at `frame` (before it for the first key),
-    continuing the motion, moved by `offset` (world)."""
+    """New key `frames_later` after the end key at `frame` (before it for the first key), like Extrude
+    in Edit Mode: on that key (a hold), moved from it by `offset` (world)."""
     return _run_op(bpy.ops.emp.extrude, [frame], obj, bone, mode, frames=frames_later, offset=offset)
 
 

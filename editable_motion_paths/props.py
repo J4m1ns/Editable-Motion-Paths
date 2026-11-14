@@ -145,12 +145,14 @@ def _local_changed(self, context):
     if not _local_busy[0]:
         _local_busy[0] = True
         try:
+            from . import core
             st = state.settings(context.scene if context else None)
             mine = state.caches.get(state.entry_key(self)) if self.object is not None else None
             if st is not None and mine is not None and mine.owner_selected():
                 for e in st.paths:
                     if e != self and e.object is not None and _space_of(e) != _space_of(self) and \
-                            not (self.rel_object == e.object and self.rel_bone == e.bone_name):
+                            not (self.relative and core.carried_by(e.object, e.bone_name, self.rel_object,
+                                                                   self.rel_bone)):
                         c = state.caches.get(state.entry_key(e))
                         if c is not None and c.owner_selected():
                             e.rel_object, e.rel_bone = self.rel_object, self.rel_bone

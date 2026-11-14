@@ -60,7 +60,9 @@ the active one, on the active one it takes it out (like Blender's Shift+click); 
 is what counts (a bone left selected while its armature was out of Pose Mode doesn't come back
 with it); the paths being
 edited are highlighted, like selected rows in the Outliner (the active one is also the list's
-highlighted row); **−** takes all the highlighted paths out of the list (with none, the active one).
+highlighted row). It works the other way too: a bone or object clicked in the view (Shift+click:
+the last one) makes its row the active one, and the list scrolls to it; a key clicked on another
+path's line makes that path's row the active one; **−** takes all the highlighted paths out of the list (with none, the active one).
 The arrow button next to a path isolates its curves of the current mode in
 the **Graph Editor** (the bone's other curves are hidden); it stays pressed while they are
 isolated, and a second click shows them all again.
@@ -129,10 +131,10 @@ The tool uses the settings you know from modeling, in the header and with the us
 | Input | Action |
 |---|---|
 | Ctrl+Click on the path | insert a key; the motion doesn't change |
-| **E** | extrude from the first or last key: a new key that continues the motion, with the handle type of the key it grows from; the mouse places it, the wheel sets how many frames later (inside the path, use Shift+D) |
+| **E** | extrude from the first or last key, like in Edit Mode: a new key starts on the key it grows from (with its handle type) and the mouse moves it; the wheel sets how many frames later - only the timing, it stays where it is (inside the path, use Shift+D) |
 | **Shift+D** | duplicate: copies go halfway to the next key and follow the mouse; the **wheel** moves them through the motion a frame at a time (jumping over other keys). *Duplicate in Time* (menu) places copies with left / right instead |
 | **Ctrl+C / Ctrl+V** | copy the pose of the active key / paste it on the current frame: the channels of the current mode (*Whole Pose* in the redo panel: all of them). With several paths, each one's selected key is copied and pasted back on the same bone / object; a rotation pasted on a bone with another rotation mode (another Euler order, quaternions, axis angle) is converted, so the pose is the same |
-| **Ctrl+R** | loop cut: evenly spaced keys in the segment under the mouse (wheel: number of cuts) |
+| **Ctrl+R** | loop cut: evenly spaced keys in the segment under the mouse (wheel: number of cuts); away from the paths Ctrl+R stays Blender's (Blender 5.3: Convert Rotation Mode in Pose Mode) |
 | **Ctrl+K** | knife, like the mesh Knife: keys are inserted where the line crosses the path. LMB: point (drag: draw), RMB: fixes this cut (its keys stay where they are when you turn the view) and starts a new one; nothing is cut until Enter, and Esc cancels all the cuts, like the mesh Knife, Shift: snap to the middle of a segment, Ctrl: no snapping (it snaps to keys and frame dots), A: angle constraint (screen / relative), X / Y / Z: along an axis, S: frame numbers, Ctrl+Z: undo a point, Enter / Space: cut; the view can be turned while cutting |
 | **Ctrl+B** | bevel: round a key into a Bezier arc. It goes through the keys around it (the path outside the arc keeps its shape and timing); when one side reaches the end of the path, the other goes on and the arc gets longer on that side. C: **Clamp** (stop at the next keys), A: width, S or wheel: segments, P: profile, 0.5 = circle |
 | **M** | merge at the last selected (active, white ring) key, the first, the center or the 3D cursor; *Keep Timing* (on): the new shape between the keys around is travelled with the old spacing (only handles change, no keys are added) |
