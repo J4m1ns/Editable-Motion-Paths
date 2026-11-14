@@ -151,8 +151,8 @@ def _local_changed(self, context):
             if st is not None and mine is not None and mine.owner_selected():
                 for e in st.paths:
                     if e != self and e.object is not None and _space_of(e) != _space_of(self) and \
-                            not (self.relative and core.carried_by(e.object, e.bone_name, self.rel_object,
-                                                                   self.rel_bone)):
+                            not (self.relative and core.follows(e.object, e.bone_name, self.rel_object,
+                                                                self.rel_bone)):
                         c = state.caches.get(state.entry_key(e))
                         if c is not None and c.owner_selected():
                             e.rel_object, e.rel_bone = self.rel_object, self.rel_bone

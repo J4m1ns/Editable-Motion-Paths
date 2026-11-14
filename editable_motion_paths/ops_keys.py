@@ -1264,10 +1264,14 @@ class EMP_OT_extrude(bpy.types.Operator):
             nb = ks[i + 1].t if sign > 0 and i + 1 < len(ks) else (ks[i - 1].t if sign < 0 and i > 0 else None)
             if nb is not None and (t_new - nb) * sign >= -1e-3:
                 continue        # would land on or past the next key
-            for fc in ch.fcurves:
+            # (the key type of the key it grows from: a Breakdown extrudes a Breakdown)
+            ktypes = [fc.keyframe_points[src.idx[j]].type if fc is not None and j < len(src.idx) and
+                      0 <= src.idx[j] < len(fc.keyframe_points) else 'KEYFRAME' for j, fc in enumerate(ch.fcurves)]
+            for j, fc in enumerate(ch.fcurves):
                 if fc is not None and len(fc.keyframe_points):
                     kp = fc.keyframe_points.insert(t_new, core.raw_curve_values(fc, [t_new])[0], options={'FAST'})
                     kp.interpolation = src.interp
+                    kp.type = ktypes[j]
                     fc.update()
             core.ensure_keys(tg, c.ptype, [t_new])
             c.extend_to(t_new)

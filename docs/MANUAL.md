@@ -131,7 +131,7 @@ The tool uses the settings you know from modeling, in the header and with the us
 | Input | Action |
 |---|---|
 | Ctrl+Click on the path | insert a key; the motion doesn't change |
-| **E** | extrude from the first or last key, like in Edit Mode: a new key starts on the key it grows from (with its handle type) and the mouse moves it; the wheel sets how many frames later - only the timing, it stays where it is (inside the path, use Shift+D) |
+| **E** | extrude from the first or last key, like in Edit Mode: a new key starts on the key it grows from (with its handle and key type) and the mouse moves it; the wheel sets how many frames later - only the timing, it stays where it is (inside the path, use Shift+D) |
 | **Shift+D** | duplicate: copies go halfway to the next key and follow the mouse; the **wheel** moves them through the motion a frame at a time (jumping over other keys). *Duplicate in Time* (menu) places copies with left / right instead |
 | **Ctrl+C / Ctrl+V** | copy the pose of the active key / paste it on the current frame: the channels of the current mode (*Whole Pose* in the redo panel: all of them). With several paths, each one's selected key is copied and pasted back on the same bone / object; a rotation pasted on a bone with another rotation mode (another Euler order, quaternions, axis angle) is converted, so the pose is the same |
 | **Ctrl+R** | loop cut: evenly spaced keys in the segment under the mouse (wheel: number of cuts); away from the paths Ctrl+R stays Blender's (Blender 5.3: Convert Rotation Mode in Pose Mode) |
@@ -559,7 +559,11 @@ other hand how the two drift apart. In the same menu, *Relative to Active* takes
 object (in Pose Mode select the path's bone, Shift+click the other one last), *Relative To...* lets you
 pick an object and, for an armature, a bone. The icon turns into the Child Of icon; its tooltip names
 the reference. It is edited the same way as any path, and when the reference's animation changes the
-path is worked out again.
+path is worked out again. A reference that moves with the path's own bone / object - its child (a prop
+parented to the hand), or moved by a constraint aimed at it (a Child Of, an IK chain the control is the
+target of) - isn't taken: an edit would move it too. Set some other way (or a camera that follows the
+bone in Camera space), the path gets a lock icon whose tooltip says why; so does a path whose reference
+bone was renamed or deleted (it is drawn in Global then).
 
 **Track Motion Path** (a mesh vertex): in Edit Mode, make a vertex active, right-click and pick
 *Track Motion Path* at the bottom of the menu; set the *Range* (the scene's by default) and *Create

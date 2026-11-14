@@ -858,6 +858,12 @@ class PathCache:
                     scene = bpy.context.scene
                     self.cam = float(scene.frame_current)
                     camera = scene.camera
+                    if camera is not None and not self.locked and follows(e.object, e.bone_name, camera):
+                        # (a camera that follows this bone / object - parented, Copy Location...: an edit moves it too)
+                        self.locked, self.lock_reason = True, (
+                            "Camera space with a camera that moves with this %s: an edit would move the camera too - "
+                            "use Global, or Relative To something it doesn't move" % ("bone" if e.bone_name else
+                                                                                       "object"))
                     if camera is not None:
                         self.cam_live = tuple(tuple(round(x, 6) for x in row) for row in camera.matrix_world)
                         ask = (self.bake_id, camera.name)
@@ -868,13 +874,18 @@ class PathCache:
                             state.schedule_rebake(force=True, keep=True)
                 elif getattr(e, "relative", False) and e.rel_object is not None:
                     M = reference_matrix(e.rel_object, e.rel_bone)
-                    if M is not None and not self.locked and carried_by(e.object, e.bone_name, e.rel_object,
-                                                                          e.rel_bone):
+                    if M is None and not self.locked:
+                        # (its bone renamed or deleted: drawn in Global - say so, rather than Relative)
+                        self.locked, self.lock_reason = True, (
+                            "Relative To: %s has no bone %r any more (renamed or deleted) - drawn in Global; pick "
+                            "the reference again in the space menu" % (e.rel_object.name, e.rel_bone))
+                    elif M is not None and not self.locked and follows(e.object, e.bone_name, e.rel_object,
+                                                                       e.rel_bone):
                         # (the reference moves with this bone / object: an edit would move it too)
                         self.locked, self.lock_reason = True, (
-                            "Relative To %s, which moves with this %s (its child): an edit would move it too - "
-                            "pick a reference it doesn't carry" % (e.rel_bone or e.rel_object.name,
-                                                                   "bone" if e.bone_name else "object"))
+                            "Relative To %s, which moves with this %s (its child, or a constraint / IK aimed at "
+                            "it): an edit would move it too - pick a reference it doesn't move" % (
+                                e.rel_bone or e.rel_object.name, "bone" if e.bone_name else "object"))
                     if M is not None:
                         self.rel = float(bpy.context.scene.frame_current)
                         self.rel_live = tuple(tuple(round(x, 6) for x in row) for row in M)
@@ -1321,6 +1332,24 @@ def write_handle(ch, k, side, slopes, dt, key_vals, htype=None, touched=None, on
             kp.handle_right = (x + dt_c, y + slopes[c] * dt_c)
         else:
             kp.handle_left = (x - dt_c, y - slopes[c] * dt_c)
+        other = kp.handle_left_type if side == 'R' else kp.handle_right_type
+        if (kp.handle_right_type if side == 'R' else kp.handle_left_type) == 'ALIGNED' and \
+                (other in {'AUTO', 'AUTO_CLAMPED'} or
+                 (other == 'ALIGNED' and (k.hl if side == 'R' else k.hr) is None)):
+            # (Blender lines an Aligned handle up with the other one - an Auto one, or (an Aligned pair) the left
+            # one: the edit was undone at once - an end key's handle (its other one isn't on the path) didn't turn
+            # at all. The other one goes on the same line with its own length, Aligned - the edited one leads,
+            # like in the Graph Editor)
+            if side == 'R':
+                kp.handle_left_type = 'ALIGNED'
+                d = x - kp.handle_left[0]
+                if d > EPS:
+                    kp.handle_left = (x - d, y - slopes[c] * d)
+            else:
+                kp.handle_right_type = 'ALIGNED'
+                d = kp.handle_right[0] - x
+                if d > EPS:
+                    kp.handle_right = (x + d, y + slopes[c] * d)
         old = (k.s_r if side == 'R' else k.s_l) if (k.s_r if side == 'R' else k.s_l) else None
         _sync_cycle_handle(fc, idx, side, slopes[c], htype, old[c] if old is not None and c < len(old) else None)
         if touched is not None:
@@ -1823,6 +1852,92 @@ def carried_by(obj, bone, ref, ref_bone=""):
             return False
         o, b = o.parent, (o.parent_bone if o.parent_type == 'BONE' else "")
     return False
+
+
+_follows_memo = {}
+
+
+def follows(obj, bone, ref, ref_bone=""):
+    """Does the reference (an object, a bone; the camera) move with this bone / object? Carried by it (carried_by),
+    or moved by a constraint aimed at it or at something it carries - a Child Of / Copy Location on a prop held by
+    the hand, the forearm of an IK chain the edited control is the target of (on the reference or what carries
+    it, or the IK chain it is in). Relative To / Camera space against it: an edit moves it too, the path jumped once
+    baked again. (Remembered for a second: the rig's constraints don't change while it is drawn.)"""
+    if ref is None:
+        return False
+    key = (obj.name if obj else "", bone, ref.name, ref_bone)
+    now = time.time()
+    got = _follows_memo.get(key)
+    if got is not None and now - got[1] < 1.0:
+        return got[0]
+    if len(_follows_memo) > 256:
+        _follows_memo.clear()
+    try:
+        out = _follows(obj, bone, ref, ref_bone, {}, {})
+    except (ReferenceError, AttributeError, RecursionError):
+        out = False
+    _follows_memo[key] = (out, now)
+    return out
+
+
+def _iks(o, ik):
+    """The IK constraints of an armature's bones: [(bone, constraint)], once per look."""
+    got = ik.get(o.name)
+    if got is None:
+        got = ik[o.name] = [(y, c) for y in o.pose.bones for c in y.constraints if c.type == 'IK']
+    return got
+
+
+def _follows(obj, bone, ref, ref_bone, seen, ik):
+    key = (ref.name, ref_bone)
+    if key in seen:
+        return seen[key]
+    seen[key] = False           # (a loop of constraints: not through itself)
+    if carried_by(obj, bone, ref, ref_bone):
+        seen[key] = True
+        return True
+
+    def aims(c):
+        if c.mute or not getattr(c, "enabled", True) or c.influence <= 0.0:
+            return False
+        t = getattr(c, "target", None)
+        if t is not None and _follows(obj, bone, t, getattr(c, "subtarget", "") or "", seen, ik):
+            return True
+        t = getattr(c, "pole_target", None)        # (an IK's pole turns its chain too)
+        return t is not None and _follows(obj, bone, t, getattr(c, "pole_subtarget", "") or "", seen, ik)
+    out = False
+    o, b = ref, ref_bone
+    for _i in range(1000):
+        if o is None:
+            break
+        if b and o.type == 'ARMATURE' and o.pose is not None:
+            pb = o.pose.bones.get(b)
+            up = set()
+            p = pb
+            while p is not None and not out:
+                up.add(p.name)
+                out = any(aims(c) for c in p.constraints)
+                p = p.parent
+            # (an IK chain aimed at it moves its bones - and what they carry)
+            for y, c in ([] if out else _iks(o, ik)):
+                n, k, q = c.chain_count, 0, y
+                inside = False
+                while q is not None and (n == 0 or k < n):
+                    if q.name in up:
+                        inside = True
+                        break
+                    q, k = q.parent, k + 1
+                if inside and aims(c):
+                    out = True
+                    break
+        if out or any(aims(c) for c in o.constraints):
+            out = True
+            break
+        if o.parent is None:
+            break
+        o, b = o.parent, (o.parent_bone if o.parent_type == 'BONE' else "")
+    seen[key] = out
+    return out
 
 
 def _object_parent_matrix(obj):

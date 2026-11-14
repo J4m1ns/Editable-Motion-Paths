@@ -1124,6 +1124,10 @@ def _on_depsgraph(scene, depsgraph):
             sync_list_active(st)        # (a bone / object clicked in the view: its row at once)
         except Exception:
             pass
+        try:
+            _watch_order(st)            # (and its place in the selection order, click by click)
+        except Exception:
+            pass
     if st.show_onion or st.show_com:
         global _dg_frame
         f = scene.frame_current
@@ -1397,25 +1401,39 @@ def selection_order(scene=None):
     return _order_cache[1]
 
 
+_keys_off = set()       # paths whose keys were all deselected while their bone / object stayed selected
+
+
 def note_selected(path_key, scene=None):
-    """A key of this path got selected (or its bone / object): the path joins the selection order
-    (if it isn't in it)."""
+    """A key of this path got selected (or its bone / object): the path joins the selection order (if it
+    isn't in it). One that stayed in it only for its selected bone (its keys were deselected) goes to its
+    end: its keys clicked again are clicked after the others."""
     order = selection_order(scene)
     key = tuple(path_key[:2])
     if key in order:
-        return
+        if key not in _keys_off:
+            return
+        order = [k for k in order if k != key]
+    _keys_off.discard(key)
     import json
     st = settings(scene)
     if st is not None:
         st.select_order = json.dumps([list(k) for k in order + [key]][-64:])
 
 
-def forget_selected(path_keys, scene=None):
-    """These paths have no selected keys any more: out of the selection order."""
+def forget_selected(path_keys, scene=None, keys_only=False):
+    """These paths have no selected keys any more: out of the selection order. keys_only: only their keys
+    were deselected - one whose bone / object is still selected stays (Offset Cascade goes by the bones
+    then: their order is still the one they were clicked in)."""
     order = selection_order(scene)
     drop = {tuple(k[:2]) for k in path_keys}
+    if keys_only:
+        kept = {k for k in drop if k in order and _owner_selected(*k)}
+        _keys_off.update(kept)
+        drop -= kept
     if not any(k in drop for k in order):
         return
+    _keys_off.difference_update(drop)
     import json
     st = settings(scene)
     if st is not None:
@@ -1514,23 +1532,51 @@ def _owner_selected(obj_name, bone_name):
 _order_active = [None]     # the active bone / object the selection order last saw
 
 
-def _watch_order(st):
-    """The selection order follows bones / objects clicked in the view (Offset Cascade): one with a
-    path that becomes the active one (and is selected) joins it - only when it becomes active, so a
-    reset of the order isn't undone by the one that just stays active; one deselected leaves it."""
+def _view_active_key():
     vl = bpy.context.view_layer
     obj = vl.objects.active if vl is not None else None
-    if obj is not None:
-        bone = obj.data.bones.active.name if obj.type == 'ARMATURE' and obj.mode == 'POSE' and \
-            obj.data.bones.active is not None else ""
-        key = (obj.name, bone, _owner_selected(obj.name, bone))
-        if key != _order_active[0]:
-            _order_active[0] = key
-            if key[2] and any(e.object == obj and e.bone_name == bone for e in st.paths):
-                note_selected((obj.name, bone))
-    gone = [k for k in selection_order() if not _owner_selected(*k)]
+    if obj is None:
+        return None
+    bone = obj.data.bones.active.name if obj.type == 'ARMATURE' and obj.mode == 'POSE' and \
+        obj.data.bones.active is not None else ""
+    return (obj.name, bone)
+
+
+def _selected_owners(st):
+    """The bones / objects with paths that are selected now, in the path list's order."""
+    out = []
+    for e in st.paths:
+        k = (e.object.name, e.bone_name) if e.object is not None else None
+        if k is not None and k not in out and _owner_selected(*k):
+            out.append(k)
+    return out
+
+
+def _watch_order(st):
+    """The selection order follows the bones / objects clicked in the view (Offset Cascade): the ones
+    deselected leave it; the ones selected that aren't in it join it (the active one last: clicked last) - all
+    of them, not only the active one: a bone deselected and clicked again that was the active one all along
+    never joined, and went last; one that becomes the active one (Shift+click on one already selected) goes
+    last. It looks after every update (each click) and on a timer."""
+    now = _selected_owners(st)
+    order = selection_order()
+    gone = [k for k in order if not _owner_selected(*k)]
     if gone:
         forget_selected(gone)
+        order = selection_order()
+    # (selected and not in it yet: last, the active one the very last - the ones noted already, by a click on a
+    # key or a row, keep their place)
+    active = _view_active_key()
+    new = [k for k in now if k not in order]
+    if new:
+        new.sort(key=lambda k: k == active)
+        for k in new:
+            note_selected(k)
+    if active != _order_active[0]:
+        _order_active[0] = active
+        if active in now and active not in new and selection_order()[-1:] != [active]:
+            _keys_off.add(active)       # (in it already: to its end)
+            note_selected(active)
 
 
 _list_active = [None]      # the active bone / object the path list's active row last followed
@@ -1600,8 +1646,8 @@ def _reconcile_order():
     missing.sort(key=lambda k: k == active)
     for k in missing:
         note_selected(k)
-    if active is not None:
-        _order_active[0] = (active[0], active[1], _owner_selected(*active))
+    _order_active[0] = _view_active_key()
+    _keys_off.clear()
     _list_active[0] = _view_active()     # (the active row as the undo step kept it)
 
 

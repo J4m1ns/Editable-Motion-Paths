@@ -289,7 +289,7 @@ def deselect_all(caches):
                     kps.foreach_set(attr, [False] * n)
                     changed = True
         cache.dirty = True
-    state.forget_selected([c.key for c in caches])
+    state.forget_selected([c.key for c in caches], keys_only=True)
     return changed
 
 
