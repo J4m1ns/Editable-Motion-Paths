@@ -416,7 +416,8 @@ def _drop_idle():
     if _pending() or time.time() - _last_work[0] < IDLE_DROP:
         return 0.5
     try:
-        core.drop_aux(AUX_NAME)
+        if core.drop_aux(AUX_NAME) is False:
+            return 0.5          # (the playhead is dragged: after it - see core.scrubbing)
     except Exception:
         pass
     return None
@@ -697,6 +698,45 @@ def _values_on(pb, f, curves):
     return out
 
 
+_ROT_SLOTS = {"rotation_quaternion": (3, 7), "rotation_euler": (7, 10), "rotation_axis_angle": (10, 14)}
+
+
+def _rot_prop(mode):
+    return {'QUATERNION': "rotation_quaternion", 'AXIS_ANGLE': "rotation_axis_angle"}.get(mode, "rotation_euler")
+
+
+def _in_mode(row, kept_mode, pb, there):
+    """The kept values with their rotation in the bone's rotation mode now: a bone converted to another mode since
+    the snapshot was taken (Blender 5.3's Convert Rotation Mode, Ctrl+R) would get the values of a mode it no longer
+    uses - an unused quaternion is no turn at all. `there`: the bone's values where they are keyed (the turn
+    nearest to them: an Euler without a 360 degrees jump, a quaternion on the same side)."""
+    mode = pb.rotation_mode
+    if not kept_mode or kept_mode == mode:
+        return row
+    from mathutils import Euler, Quaternion, Vector
+    a, b = _ROT_SLOTS[_rot_prop(kept_mode)]
+    v = [float(x) for x in row[a:b]]
+    if kept_mode == 'QUATERNION':
+        q = Quaternion(v).normalized()
+    elif kept_mode == 'AXIS_ANGLE':
+        q = Quaternion(Vector(v[1:4]).normalized(), v[0]) if any(abs(x) > 1e-12 for x in v[1:4]) else Quaternion()
+    else:
+        q = Euler(v, kept_mode).to_quaternion()
+    now = dict(zip([p for p, _k in _TF], there))
+    out = list(row)
+    a, b = _ROT_SLOTS[_rot_prop(mode)]
+    if mode == 'QUATERNION':
+        if Quaternion(now["rotation_quaternion"]).dot(q) < 0.0:
+            q.negate()
+        out[a:b] = list(q)
+    elif mode == 'AXIS_ANGLE':
+        axis, angle = q.to_axis_angle()
+        out[a:b] = [angle] + list(axis)
+    else:
+        out[a:b] = list(q.to_euler(mode, Euler(now["rotation_euler"], mode)))
+    return out
+
+
 def apply(context, snap, part, current_frame, factor=1.0):
     """Put the snapshot's values on the bones (all it keeps / the selected ones) and key them - on
     the current frame, or on the snapshot's own; factor: how far from the pose there toward the
@@ -707,7 +747,8 @@ def apply(context, snap, part, current_frame, factor=1.0):
     got = pose_of(context, snap)
     if not got:
         return 0
-    names, vals, _modes = got
+    names, vals, modes = got
+    kept_modes = dict(zip(names, modes))
     scene = context.scene
     # (a Static one: the frame its kept pose is of, whatever frame it previews)
     f = scene.frame_current if current_frame else (snap.frame if snap.mode == 'LIVE' else snap.taken)
@@ -723,6 +764,7 @@ def apply(context, snap, part, current_frame, factor=1.0):
         before = [tuple(getattr(pb, prop)) for prop, _k in _TF]
         # (the pose there: as it is on this frame - unkeyed changes too -, else as the curves have it)
         there = before if f == scene.frame_current else _values_on(pb, f, curves)
+        row = _in_mode(row, kept_modes.get(name), pb, there)
         i = 0
         for (prop, k), now in zip(_TF, there):
             setattr(pb, prop, _blend(prop, now, row[i:i + k], factor))
@@ -1045,7 +1087,8 @@ def draw_list(layout, context, toggle=True):
         row.label(text="", icon='RECORD_ON' if snap.mode == 'LIVE' else 'IMAGE_DATA')
         row.prop(snap, "name", text="")
         if not snap.expanded:
-            row.operator("emp.snapshot_apply", text="", icon='CHECKMARK', emboss=False).uid = snap.uid
+            # (a button that says what it does, joined to the name: not an icon beside the menu's arrow)
+            row.operator("emp.snapshot_apply", text="Apply").uid = snap.uid
         row.context_pointer_set("emp_snapshot", snap)
         row.menu("EMP_MT_snapshot_entry", text="", icon='DOWNARROW_HLT')
         row.operator("emp.snapshot_remove", text="", icon='X', emboss=False).uid = snap.uid
@@ -1079,7 +1122,7 @@ def draw_list(layout, context, toggle=True):
         r.prop(snap, "in_front")
         if snap.display == 'WIRE':
             r.prop(snap, "line_width", text="Width")
-        box.operator("emp.snapshot_apply", text="Apply...", icon='CHECKMARK').uid = snap.uid
+        box.operator("emp.snapshot_apply", text="Apply...").uid = snap.uid
 
 
 class EMP_PT_snapshots(bpy.types.Panel):

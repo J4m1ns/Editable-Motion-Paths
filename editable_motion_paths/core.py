@@ -163,7 +163,7 @@ def value_candidates(obj, bone):
 class Target:
     """Resolved bone or object with its animation channels."""
 
-    def __init__(self, obj, owner, is_bone, value=None):
+    def __init__(self, obj, owner, is_bone, value=None, coll=None):
         self.obj = obj
         self.owner = owner
         self.is_bone = is_bone
@@ -173,7 +173,8 @@ class Target:
         else:
             self.prefix = ""
             self.group_name = "Object Transforms"
-        self.coll = compat.get_fcurves(obj)
+        # (coll: other curves to read - live.preview's copy with the key auto keying is about to set)
+        self.coll = coll if coll is not None else compat.get_fcurves(obj)
         self.rot_mode = owner.rotation_mode
         rp, rn = rotation_prop(self.rot_mode)
         self.loc = Channels(self.coll, self.prefix, owner, "location", 3)
@@ -480,6 +481,20 @@ def _anim_lock(tg):
     return False, ""
 
 
+def _location_setter(owner):
+    """The constraint that sets the owner's location in full, whatever its keys say (Copy Location on every
+    axis, no offset; Copy Transforms) - its name, or None."""
+    for c in getattr(owner, "constraints", ()):
+        if c.mute or not getattr(c, "enabled", True) or c.influence < 1.0 - 1e-6 or \
+                getattr(c, "target", None) is None:
+            continue
+        if c.type == 'COPY_LOCATION' and c.use_x and c.use_y and c.use_z and not c.use_offset:
+            return "Copy Location"
+        if c.type == 'COPY_TRANSFORMS':
+            return "Copy Transforms"
+    return None
+
+
 def _lock_state(tg, ptype):
     locked, why = _anim_lock(tg)
     if locked:
@@ -487,6 +502,9 @@ def _lock_state(tg, ptype):
     if ptype == LOCATION:
         if tg.is_bone and tg.owner.bone.use_connect:
             return True, "Connected bone: its location can't move. Press 2 to edit Rotation"
+        setter = _location_setter(tg.owner)
+        if setter:
+            return True, "A %s constraint sets its location. Press 2 to edit Rotation" % setter
         if all(tg.loc_locks()):
             return True, "Location is locked. Press 2 to edit Rotation"
     elif ptype == ROTATION and tg.rot.count == 3 and all(tg.rot_locks()):
@@ -510,7 +528,14 @@ class PathCache:
         self.cam = None         # Camera space: the frame whose camera view every frame is drawn in
         self.cam_obj = ""       # (the camera the matrices are of)
         self.cam_live = None    # Camera space: the camera's matrix right now (moved by hand meanwhile)
+        self.preview_coll = None    # (live.preview: its curves with the key Blender's drag is about to set)
         self._cam_B = None      # (what it was made from, the parent spaces as seen from the camera)
+        self.Ref = []           # Relative To: the reference's (object / bone) matrix on every baked frame (from ref_fs)
+        self.ref_fs = 0
+        self.ref_key = None     # (the reference the matrices are of: (object name, bone name))
+        self.rel = None         # Relative To: the frame whose reference every frame is drawn relative to
+        self.rel_live = None    # (the reference's matrix right now - moved by hand meanwhile)
+        self._ref_B = None
         self.bake_id = 0
         self.sig = None
         self.dirty = True
@@ -563,7 +588,8 @@ class PathCache:
         obj, owner = resolve(self.obj_name, self.bone_name)
         if owner is None:
             return None
-        return Target(obj, owner, bool(self.bone_name), self.value_ref if self.ptype == VALUE else None)
+        return Target(obj, owner, bool(self.bone_name), self.value_ref if self.ptype == VALUE else None,
+                      self.preview_coll)
 
     def owner_selected(self):
         obj, owner = resolve(self.obj_name, self.bone_name)
@@ -583,7 +609,8 @@ class PathCache:
             # Local: the parent stays as it is on the current frame, so only the bone's / object's
             # own motion shows (and is edited)
             t = self.local
-        B = self.B if self.cam is None else self._camera_B()
+        B = self.B if self.cam is None and self.rel is None else \
+            (self._camera_B() if self.cam is not None else self._relative_B())
         x = t - self.fs
         if x <= 0.0:
             return B[0]
@@ -605,19 +632,37 @@ class PathCache:
         key = (id(self.B), len(self.B), self.fs, self.cam, id(self.Cam), self.cam_live)
         if self._cam_B is not None and self._cam_B[0] == key:
             return self._cam_B[1]
-        Cam, n = self.Cam, len(self.Cam)
-
-        def at(f):
-            return Cam[min(max(int(round(f)) - self.cam_fs, 0), n - 1)]
-        now = at(self.cam)
-        # the camera moved by hand since the bake (G on it): that move taken as made on every frame -
-        # live = D @ now, every frame's camera D @ Cam(f), so the view of frame f is
-        # live @ Cam(f)^-1 @ D^-1 (a camera standing still: the world path, as it should be)
-        live = Matrix(self.cam_live) if self.cam_live is not None else now
-        back = now @ live.inverted_safe()
-        out = [live @ at(self.fs + i).inverted_safe() @ back @ b for i, b in enumerate(self.B)]
+        out = self._seen_from(self.Cam, self.cam_fs, self.cam, self.cam_live)
         self._cam_B = (key, out)
         return out
+
+    def _relative_B(self):
+        """Relative To: the parent spaces as seen from the reference (an object, a bone), from where it is on
+        the current frame - the motion against it (a hand holding a prop: only what moves against the prop is
+        left). The same as Camera space with the reference for the camera."""
+        if not self.Ref:
+            return self.B           # (not baked with the reference yet: it is being baked again)
+        key = (id(self.B), len(self.B), self.fs, self.rel, id(self.Ref), self.rel_live)
+        if self._ref_B is not None and self._ref_B[0] == key:
+            return self._ref_B[1]
+        out = self._seen_from(self.Ref, self.ref_fs, self.rel, self.rel_live)
+        self._ref_B = (key, out)
+        return out
+
+    def _seen_from(self, mats, mats_fs, anchor, live):
+        """Every frame's parent space as seen from the frame given by mats (the camera's / the reference's
+        matrix on each frame), put where that frame is on the anchor frame."""
+        n = len(mats)
+
+        def at(f):
+            return mats[min(max(int(round(f)) - mats_fs, 0), n - 1)]
+        now = at(anchor)
+        # the camera / reference moved by hand since the bake (G on it): that move taken as made on every
+        # frame - live = D @ now, every frame's D @ M(f), so the view of frame f is live @ M(f)^-1 @ D^-1
+        # (one standing still: the world path, as it should be)
+        live = Matrix(live) if live is not None else now
+        back = now @ live.inverted_safe()
+        return [live @ at(self.fs + i).inverted_safe() @ back @ b for i, b in enumerate(self.B)]
 
     def extend_to(self, t):
         """Make the path reach frame t (keys added past the ends) until the next bake; the
@@ -806,6 +851,8 @@ class PathCache:
         self.local = None
         self.cam = None
         self.cam_live = None
+        self.rel = None
+        self.rel_live = None
         for e in (settings.paths if settings else ()):
             if e.object is not None and e.object.name == self.obj_name and e.bone_name == self.bone_name:
                 if e.local:
@@ -814,6 +861,12 @@ class PathCache:
                     scene = bpy.context.scene
                     self.cam = float(scene.frame_current)
                     camera = scene.camera
+                    if camera is not None and not self.locked and follows(e.object, e.bone_name, camera):
+                        # (a camera that follows this bone / object - parented, Copy Location...: an edit moves it too)
+                        self.locked, self.lock_reason = True, (
+                            "Camera space with a camera that moves with this %s: an edit would move the camera too - "
+                            "use Global, or Relative To something it doesn't move" % ("bone" if e.bone_name else
+                                                                                       "object"))
                     if camera is not None:
                         self.cam_live = tuple(tuple(round(x, 6) for x in row) for row in camera.matrix_world)
                         ask = (self.bake_id, camera.name)
@@ -822,11 +875,35 @@ class PathCache:
                             # (baked without this camera: again, with it - once per bake, no endless baking)
                             self._cam_asked = ask
                             state.schedule_rebake(force=True, keep=True)
+                elif getattr(e, "relative", False) and e.rel_object is not None:
+                    M = reference_matrix(e.rel_object, e.rel_bone)
+                    if M is None and not self.locked:
+                        # (its bone renamed or deleted: drawn in Global - say so, rather than Relative)
+                        self.locked, self.lock_reason = True, (
+                            "Relative To: %s has no bone %r any more (renamed or deleted) - drawn in Global; pick "
+                            "the reference again in the space menu" % (e.rel_object.name, e.rel_bone))
+                    elif M is not None and not self.locked and follows(e.object, e.bone_name, e.rel_object,
+                                                                       e.rel_bone):
+                        # (the reference moves with this bone / object: an edit would move it too)
+                        self.locked, self.lock_reason = True, (
+                            "Relative To %s, which moves with this %s (its child, or a constraint / IK aimed at "
+                            "it): an edit would move it too - pick a reference it doesn't move" % (
+                                e.rel_bone or e.rel_object.name, "bone" if e.bone_name else "object"))
+                    if M is not None:
+                        self.rel = float(bpy.context.scene.frame_current)
+                        self.rel_live = tuple(tuple(round(x, 6) for x in row) for row in M)
+                        key = (e.rel_object.name, e.rel_bone)
+                        ask = (self.bake_id, key)
+                        if (not self.Ref or self.ref_key != key) and self.B and \
+                                getattr(self, "_ref_asked", None) != ask:
+                            # (baked without this reference: again, with it - once per bake)
+                            self._ref_asked = ask
+                            state.schedule_rebake(force=True, keep=True)
                 break
         lay = (settings.layout, settings.circle_radius, settings.circle_use_range, settings.circle_start,
                settings.circle_end) if settings and self.ptype in (SCALE, VALUE) else None
         sig = (self.bake_id, self.rot_len, tg.rot_mode, self.track_mode, self.value_side, lay, self.local, self.cam,
-               self.cam_live,
+               self.cam_live, self.rel, self.rel_live, id(self.Ref),
                tuple(tuple(_fc_signature(fc) for fc in ch.fcurves) for ch in used),
                tuple(tuple(ch.static) for ch in used))
         if not force and not self.dirty and sig == self.sig and self.valid:
@@ -1258,6 +1335,24 @@ def write_handle(ch, k, side, slopes, dt, key_vals, htype=None, touched=None, on
             kp.handle_right = (x + dt_c, y + slopes[c] * dt_c)
         else:
             kp.handle_left = (x - dt_c, y - slopes[c] * dt_c)
+        other = kp.handle_left_type if side == 'R' else kp.handle_right_type
+        if (kp.handle_right_type if side == 'R' else kp.handle_left_type) == 'ALIGNED' and \
+                (other in {'AUTO', 'AUTO_CLAMPED'} or
+                 (other == 'ALIGNED' and (k.hl if side == 'R' else k.hr) is None)):
+            # (Blender lines an Aligned handle up with the other one - an Auto one, or (an Aligned pair) the left
+            # one: the edit was undone at once - an end key's handle (its other one isn't on the path) didn't turn
+            # at all. The other one goes on the same line with its own length, Aligned - the edited one leads,
+            # like in the Graph Editor)
+            if side == 'R':
+                kp.handle_left_type = 'ALIGNED'
+                d = x - kp.handle_left[0]
+                if d > EPS:
+                    kp.handle_left = (x - d, y - slopes[c] * d)
+            else:
+                kp.handle_right_type = 'ALIGNED'
+                d = kp.handle_right[0] - x
+                if d > EPS:
+                    kp.handle_right = (x + d, y + slopes[c] * d)
         old = (k.s_r if side == 'R' else k.s_l) if (k.s_r if side == 'R' else k.s_l) else None
         _sync_cycle_handle(fc, idx, side, slopes[c], htype, old[c] if old is not None and c < len(old) else None)
         if touched is not None:
@@ -1666,18 +1761,235 @@ def own_loc_space(bone):
     return not bone.use_local_location or not bone.use_inherit_rotation or bone.inherit_scale != 'FULL'
 
 
+# Constraints that only turn or scale their owner - where it is stays its location's doing (Blender moves the
+# owner's origin / head by its location through its parents, then the constraint turns it there)
+TURNING_CONSTRAINTS = {'TRACK_TO', 'DAMPED_TRACK', 'LOCKED_TRACK', 'COPY_ROTATION', 'LIMIT_ROTATION',
+                       'COPY_SCALE', 'LIMIT_SCALE', 'MAINTAIN_VOLUME', 'STRETCH_TO'}
+
+
+def _full_child_of(c, arm=None):
+    """A Child Of that is a parent in full: every channel, full influence, a target, in World or (a bone's)
+    Pose space."""
+    return c.type == 'CHILD_OF' and getattr(c, "target", None) is not None and c.influence >= 1.0 - 1e-6 and \
+        (c.owner_space == 'WORLD' or (c.owner_space == 'POSE' and arm is not None)) and \
+        c.target_space in {'WORLD', 'POSE'} and \
+        all(getattr(c, "use_%s_%s" % (a, x), True) for a in ("location", "rotation", "scale") for x in "xyz")
+
+
+def _child_of_matrix(c, arm=None):
+    """What a full Child Of puts in front of its owner, in the world: its target's matrix (in the target's
+    space) times its inverse - a bone's Pose space owner: seen through its armature's matrix."""
+    t = c.target
+    T = t.matrix_world
+    if c.subtarget and t.type == 'ARMATURE' and t.pose is not None:
+        pb = t.pose.bones.get(c.subtarget)
+        if pb is not None:
+            T = T @ pb.matrix
+    if c.target_space == 'POSE' and t.type == 'ARMATURE':
+        T = t.matrix_world.inverted() @ T
+    C = T @ c.inverse_matrix
+    if c.owner_space == 'POSE' and arm is not None:
+        C = arm.matrix_world @ C @ arm.matrix_world.inverted()
+    return C
+
+
+def location_frame(owner):
+    """The bone / object has constraints that turn or scale it (a camera with Track To), and besides them at
+    most full Child Ofs: its rotation is theirs, not its own channels' - the parent space world @ basis^-1
+    would hold that turn and send a location edit another way (issue #11). Its location still moves it
+    through its parents and those Child Ofs: their matrix (world, in the order they come), else None."""
+    on = [c for c in owner.constraints if not c.mute and getattr(c, "enabled", True) and c.influence > 0.0]
+    if not any(c.type in TURNING_CONSTRAINTS for c in on):
+        return None
+    arm = owner.id_data if isinstance(owner, bpy.types.PoseBone) else None
+    C = Matrix.Identity(4)
+    for c in on:
+        if c.type in TURNING_CONSTRAINTS:
+            continue
+        if not _full_child_of(c, arm):
+            return None
+        C = _child_of_matrix(c, arm) @ C
+    return C
+
+
+def turned_by_constraint(owner):
+    return location_frame(owner) is not None
+
+
+def own_loc_map(owner, bone_name):
+    """Does a location path of this bone / object take its own parent space (see parent_space)?"""
+    return (bool(bone_name) and own_loc_space(owner.bone)) or turned_by_constraint(owner)
+
+
+def reference_matrix(obj, bone="", dg=None):
+    """Relative To: the reference's world matrix - an object's, or a bone's (its armature's matrix times its
+    pose); dg: as that depsgraph has it (the bake scene). None if the bone is gone."""
+    if obj is None:
+        return None
+    ob = obj.evaluated_get(dg) if dg is not None else obj
+    if bone:
+        pb = ob.pose.bones.get(bone) if ob.type == 'ARMATURE' and ob.pose is not None else None
+        if pb is None:
+            return None
+        return ob.matrix_world @ pb.matrix
+    return ob.matrix_world.copy()
+
+
+def carried_by(obj, bone, ref, ref_bone=""):
+    """Is the reference (an object, a bone) carried by this bone / object - itself, its child, a child of its
+    children (a prop parented to the hand)? Relative To it shows no motion, and an edit would move it too (the
+    path jumped once baked again)."""
+    o, b = ref, ref_bone
+    for _i in range(1000):
+        if o is None:
+            return False
+        if b and o.type == 'ARMATURE' and o.pose is not None:
+            pb = o.pose.bones.get(b)
+            while pb is not None:
+                if o == obj and pb.name == bone:
+                    return True
+                pb = pb.parent
+        if o == obj and not bone:
+            return True
+        if o.parent is None:
+            return False
+        o, b = o.parent, (o.parent_bone if o.parent_type == 'BONE' else "")
+    return False
+
+
+_follows_memo = {}
+
+
+def follows(obj, bone, ref, ref_bone=""):
+    """Does the reference (an object, a bone; the camera) move with this bone / object? Carried by it (carried_by),
+    or moved by a constraint aimed at it or at something it carries - a Child Of / Copy Location on a prop held by
+    the hand, the forearm of an IK chain the edited control is the target of (on the reference or what carries
+    it, or the IK chain it is in). Relative To / Camera space against it: an edit moves it too, the path jumped once
+    baked again. (Remembered for a second: the rig's constraints don't change while it is drawn.)"""
+    if ref is None:
+        return False
+    key = (obj.name if obj else "", bone, ref.name, ref_bone)
+    now = time.time()
+    got = _follows_memo.get(key)
+    if got is not None and now - got[1] < 1.0:
+        return got[0]
+    if len(_follows_memo) > 256:
+        _follows_memo.clear()
+    try:
+        out = _follows(obj, bone, ref, ref_bone, {}, {})
+    except (ReferenceError, AttributeError, RecursionError):
+        out = False
+    _follows_memo[key] = (out, now)
+    return out
+
+
+def _iks(o, ik):
+    """The IK constraints of an armature's bones: [(bone, constraint)], once per look."""
+    got = ik.get(o.name)
+    if got is None:
+        got = ik[o.name] = [(y, c) for y in o.pose.bones for c in y.constraints if c.type == 'IK']
+    return got
+
+
+def _follows(obj, bone, ref, ref_bone, seen, ik):
+    key = (ref.name, ref_bone)
+    if key in seen:
+        return seen[key]
+    seen[key] = False           # (a loop of constraints: not through itself)
+    if carried_by(obj, bone, ref, ref_bone):
+        seen[key] = True
+        return True
+
+    def aims(c):
+        if c.mute or not getattr(c, "enabled", True) or c.influence <= 0.0:
+            return False
+        t = getattr(c, "target", None)
+        if t is not None and _follows(obj, bone, t, getattr(c, "subtarget", "") or "", seen, ik):
+            return True
+        t = getattr(c, "pole_target", None)        # (an IK's pole turns its chain too)
+        return t is not None and _follows(obj, bone, t, getattr(c, "pole_subtarget", "") or "", seen, ik)
+    out = False
+    o, b = ref, ref_bone
+    for _i in range(1000):
+        if o is None:
+            break
+        if b and o.type == 'ARMATURE' and o.pose is not None:
+            pb = o.pose.bones.get(b)
+            up = set()
+            p = pb
+            while p is not None and not out:
+                up.add(p.name)
+                out = any(aims(c) for c in p.constraints)
+                p = p.parent
+            # (an IK chain aimed at it moves its bones - and what they carry)
+            for y, c in ([] if out else _iks(o, ik)):
+                n, k, q = c.chain_count, 0, y
+                inside = False
+                while q is not None and (n == 0 or k < n):
+                    if q.name in up:
+                        inside = True
+                        break
+                    q, k = q.parent, k + 1
+                if inside and aims(c):
+                    out = True
+                    break
+        if out or any(aims(c) for c in o.constraints):
+            out = True
+            break
+        if o.parent is None:
+            break
+        o, b = o.parent, (o.parent_bone if o.parent_type == 'BONE' else "")
+    seen[key] = out
+    return out
+
+
+def _object_parent_matrix(obj):
+    """What Blender puts in front of an object's own transform before its constraints: its parent's world
+    matrix (a bone parent: at the bone's tail, or its own matrix with Relative Parenting) times the
+    parent inverse."""
+    par = obj.parent
+    if par is None:
+        return Matrix.Identity(4)
+    P = par.matrix_world
+    if obj.parent_type == 'BONE' and par.type == 'ARMATURE' and par.pose is not None:
+        pb = par.pose.bones.get(obj.parent_bone)
+        if pb is not None:
+            if pb.bone.use_relative_parent:
+                M = pb.matrix_channel.copy()
+            else:
+                M = pb.matrix.copy()
+                M.translation = pb.tail
+            P = P @ M
+    return P @ obj.matrix_parent_inverse
+
+
 def parent_space(obj, owner, bone_name, location=False):
     """(B, ok) on the current frame: the parent space of a bone / object as its path uses it -
     world = B @ basis. ok: it can be inverted (no zero scale; else it is taken from the frames
     around).
 
-    A location path of a bone whose location has its own axes (own_loc_space) takes the map from
-    the location to where the head goes instead - the matrix Blender moves the head by: the
-    parent's pose axes with Local Location off, else the parent's pose with the bone's rest offset
-    (the bone's own rotation / scale inheritance left out)."""
+    A location path of a bone whose location has its own axes (own_loc_space), or of a bone / object
+    turned by its constraints (turned_by_constraint: a camera with Track To), takes the map from the
+    location to where the head / origin goes instead - the matrix Blender moves it by: the parent's
+    pose axes with Local Location off, else the parent's pose with the bone's rest offset (the bone's
+    own rotation / scale inheritance and the constraints' turn left out); an object's parent matrix."""
+    C = location_frame(owner) if location else None
+    if C is not None and not bone_name:
+        # (an object turned by its constraints: its location moves its origin by its parent's matrix - and a
+        # full Child Of's in front of it - what the constraint turned is left out)
+        L3 = C.to_3x3() @ _object_parent_matrix(owner).to_3x3()
+        L = L3.to_4x4()
+        L.translation = owner.matrix_world.translation - L3 @ Vector(owner.location)
+        return L, abs(L3.determinant()) > SINGULAR
+    if bone_name and location and owner.bone.use_connect:
+        # (a connected bone: its location does nothing - Blender holds its head at the parent's tail; the
+        # path is where the head is, whatever the keys say - and it can't be edited, see _lock_state)
+        L = Matrix.Identity(4)
+        L.translation = obj.matrix_world @ owner.head - obj.matrix_world.to_3x3() @ Vector(owner.location)
+        return L, True
     if bone_name:
         bone = owner.bone
-        if location and own_loc_space(bone):
+        if location and (own_loc_space(bone) or turned_by_constraint(owner)):
             par = owner.parent
             if not bone.use_local_location:
                 L3 = par.matrix.to_3x3() if par is not None else Matrix.Identity(3)
@@ -1686,10 +1998,11 @@ def parent_space(obj, owner, bone_name, location=False):
                                             bone.matrix_local.to_3x3())
             else:
                 L3 = bone.matrix_local.to_3x3()
-            L = L3.to_4x4()
-            L.translation = owner.matrix.translation - L3 @ Vector(owner.location)
-            B = obj.matrix_world @ L
-            return B, abs(B.to_3x3().determinant()) > SINGULAR
+            # (world: the armature's matrix, a full Child Of's in front of it - the head where it is)
+            M3 = (C.to_3x3() if C is not None else Matrix.Identity(3)) @ obj.matrix_world.to_3x3() @ L3
+            B = M3.to_4x4()
+            B.translation = obj.matrix_world @ owner.matrix.translation - M3 @ Vector(owner.location)
+            return B, abs(M3.determinant()) > SINGULAR
         W = obj.matrix_world @ owner.matrix
     else:
         W = owner.matrix_world.copy()
@@ -1774,11 +2087,24 @@ AUX = True              # bake in the bake scene when it can be (False: in the u
 NEAR = 60               # a first bake: the frames this far around the current one first
 
 
+CURVE_CONSTRAINTS = {'FOLLOW_PATH', 'CLAMP_TO'}
+
+
 def _aux_fits(objs):
     """Can these be baked in a scene of their own? Not an object in Edit Mode, not one a Python
-    driver moves (it may read the scene of the interface - its frame would be the wrong one)."""
+    driver moves (it may read the scene of the interface - its frame would be the wrong one), not one
+    following a curve (Follow Path, Clamp To, Spline IK: in the bake scene, among other objects, Follow
+    Curve turned it another way - its location path was off by as much as its location turns: only the
+    objects and bones with paths are looked at, a rig's Spline IK tail keeps the bake scene)."""
+    paths = {}
+    for c in state.caches.values():
+        paths.setdefault(c.obj_name, set()).add(c.bone_name)
     for o in objs:
         if o.mode == 'EDIT':
+            return False
+        bones = paths.get(o.name, set())
+        owners = ([o] if "" in bones else []) +             ([o.pose.bones[b] for b in bones if b and b in o.pose.bones] if o.type == 'ARMATURE' and o.pose else [])
+        if any(c.type in CURVE_CONSTRAINTS and not c.mute and c.influence > 0.0 for ow in owners for c in ow.constraints):
             return False
         for idb in (o, getattr(o, "data", None)):
             ad = getattr(idb, "animation_data", None)
@@ -1801,7 +2127,10 @@ def aux_scene(scene, objs, name=None):
         if aux is None:
             aux = bpy.data.scenes.new(name)
             if aux.name != name:
-                bpy.data.scenes.remove(aux)
+                if scrubbing():
+                    aux[AUX_TAG] = True     # (removed later with all bake scenes: see scrubbing)
+                else:
+                    bpy.data.scenes.remove(aux)
                 return None
             aux[AUX_TAG] = True
             aux.use_fake_user = False
@@ -1843,12 +2172,29 @@ def camera_at(scene, f):
     return cam or first or scene.camera
 
 
+def scrubbing():
+    """The playhead is being dragged (the timeline's scrubbing band, the frame numbers on top of an
+    editor). Blender 5.0+ crashes removing a scene meanwhile (it looks for the playing animation's
+    timer, and there is none while only scrubbing): the bake scenes are removed after it."""
+    try:
+        for w in bpy.context.window_manager.windows:
+            scr = w.screen
+            if scr is not None and getattr(scr, "is_scrubbing", False):
+                return True
+    except (AttributeError, ReferenceError, RuntimeError):
+        pass
+    return False
+
+
 def drop_aux(name=None):
     """The bake scene removed (nothing is baking: it isn't kept in the file or in undo steps).
-    name: that one (the paths' bake scene, the snapshots'), None: all of them."""
+    name: that one (the paths' bake scene, the snapshots'), None: all of them.
+    False: put off while the playhead is dragged (see scrubbing) - the caller tries again later."""
     gone = [s for s in bpy.data.scenes if s.library is None and s.get(AUX_TAG) and (name is None or s.name == name)]
     if not gone:
-        return
+        return True
+    if scrubbing():
+        return False
     try:
         for aux in gone:
             bpy.data.scenes.remove(aux)
@@ -1857,6 +2203,7 @@ def drop_aux(name=None):
         _ = bpy.context.view_layer.objects.active
     except (RuntimeError, ReferenceError, AttributeError):
         pass
+    return True
 
 
 class BakeJob:
@@ -1870,6 +2217,7 @@ class BakeJob:
         # (by name: undo frees the scene, a job outlives it)
         self.scene_name = scene.name
         self.ok_start = False
+        self.refs = {}
         settings = state.settings(scene)
         if not caches or settings is None:
             return
@@ -1885,8 +2233,16 @@ class BakeJob:
                 c.failed = True
                 continue
             self.items.append([c, [None] * n, [True] * n])
+        # Relative To: the reference of each cache drawn so - its matrix on every frame too
+        self.refs = {}
+        for e in settings.paths:
+            if getattr(e, "relative", False) and e.rel_object is not None and e.object is not None:
+                for it in self.items:
+                    c = it[0]
+                    if c.obj_name == e.object.name and c.bone_name == e.bone_name:
+                        self.refs[id(c)] = ((e.rel_object.name, e.rel_bone), [None] * n)
         # (what each path had: a re-bake that changes none of it moved nothing - see finish())
-        self.old = {id(it[0]): (it[0].fs, it[0].B, it[0].Cam, it[0].cam_obj) for it in self.items}
+        self.old = {id(it[0]): (it[0].fs, it[0].B, it[0].Cam, it[0].cam_obj, it[0].Ref) for it in self.items}
         self.moved = True
         self.first = any(not item[0].B for item in self.items)     # (a path not drawn yet)
         self.order = list(range(self.fs, self.fe + 1))
@@ -1939,6 +2295,10 @@ class BakeJob:
         aux = None
         if self.aux:
             objs = {id(obj): obj for _, obj, _ in live}
+            for (name, _bone), _m in self.refs.values():
+                ro = bpy.data.objects.get(name)
+                if ro is not None:
+                    objs[id(ro)] = ro       # (a reference nothing here hangs on: linked, or it isn't evaluated)
             aux = aux_scene(scene, objs.values()) if _aux_fits(objs.values()) else None
             if aux is None:
                 self.aux = False        # (from here on in the user's scene)
@@ -1972,6 +2332,19 @@ class BakeJob:
                     continue
                 obj = ob
             mats[k], ok[k] = parent_space(obj, owner, c.bone_name, c.ptype == LOCATION)
+        for (name, bone), rm in self.refs.values():
+            # (Relative To: the reference's matrix on this frame - None if it is gone: the frames around)
+            rm[k] = reference_matrix(bpy.data.objects.get(name), bone, dg)
+
+    def _refs_of(self, c, i=None, j=None):
+        """The reference's matrices baked for this cache ([] when it isn't drawn Relative To, or one is missing),
+        and the reference's key."""
+        got = self.refs.get(id(c))
+        if got is None:
+            return [], None
+        key, rm = got
+        part = rm[i:j] if i is not None else rm
+        return (list(part) if part and all(m is not None for m in part) else []), key
 
     def _step_aux(self, scene, aux, live, budget, t0):
         state.baking = True
@@ -2054,12 +2427,15 @@ class BakeJob:
         self.items = []
         return True
 
-    def _put(self, c, fs, mats, ok, cams, cam_obj):
+    def _put(self, c, fs, mats, ok, cams, cam_obj, i=None, j=None):
         mats = list(mats)
         _fill_singular(mats, list(ok))
         c.fs = fs
         c.B = mats
         c.Cam, c.cam_fs, c.cam_obj = cams, fs, cam_obj
+        refs, key = self._refs_of(c, i, j)
+        if key is not None:
+            c.Ref, c.ref_fs, c.ref_key = refs, fs, key
         c.failed = False
         c.bake_id += 1
         c.dirty = True
@@ -2075,19 +2451,22 @@ class BakeJob:
         yet, or in place of those frames of the path drawn before."""
         a, b = self.window
         i, j = a - self.fs, b - self.fs + 1
-        alive = set(id(c) for c in state.caches.values())
+        alive = set(id(c) for c in state.all_caches())
         cams, cam_obj = self._cam(self.cams[i:j])
         for c, mats, ok in self.items:
             if id(c) not in alive:
                 continue
             if not c.B:
-                self._put(c, a, mats[i:j], ok[i:j], cams, cam_obj)
+                self._put(c, a, mats[i:j], ok[i:j], cams, cam_obj, i, j)
             elif c.fs <= a and c.fe >= b:
                 win = list(mats[i:j])
                 _fill_singular(win, list(ok[i:j]))
                 x, y = a - c.fs, b - c.fs + 1
                 if c.Cam and cams and c.cam_fs == c.fs and len(c.Cam) == len(c.B):
                     c.Cam = c.Cam[:x] + cams + c.Cam[y:]
+                refs, key = self._refs_of(c, i, j)
+                if refs and c.Ref and c.ref_key == key and c.ref_fs == c.fs and len(c.Ref) == len(c.B):
+                    c.Ref = c.Ref[:x] + refs + c.Ref[y:]
                 c.B = c.B[:x] + win + c.B[y:]
                 c.bake_id += 1
                 c.dirty = True
@@ -2098,7 +2477,7 @@ class BakeJob:
         """The new parent spaces into the caches (those still in use)."""
         if not self.ok_start or not self.done:
             return
-        alive = set(id(c) for c in state.caches.values())
+        alive = set(id(c) for c in state.all_caches())
         cams, cam_obj = self._cam(self.cams)
         baked = {}
         self.moved = False
@@ -2109,15 +2488,19 @@ class BakeJob:
                 # (the same parent spaces again: the path stays as it is - not worked out anew)
                 self.moved = True
                 self._put(c, self.fs, mats, ok, cams, cam_obj)
-            baked[c.key] = (c.fs, c.B, c.Cam, c.cam_fs, c.cam_obj)
+            baked[c.key] = (c.fs, c.B, c.Cam, c.cam_fs, c.cam_obj)     # (the hidden ones too: undo takes them)
         if baked:
             state.remember_bake(getattr(self, "memo_sig", None), baked)
 
     def _unchanged(self, c, mats, ok, cams, cam_obj):
-        """The parent spaces just baked are the ones the path had before this bake."""
-        fs, B, Cam, was_cam = self.old.get(id(c), (None, None, None, None))
+        """The parent spaces just baked are the ones the path had before this bake (the camera's and the
+        reference's matrices too)."""
+        fs, B, Cam, was_cam, Ref = self.old.get(id(c), (None, None, None, None, None))
         if not B or fs != self.fs or c.fs != fs or len(B) != len(mats) or len(c.B or ()) != len(B) or \
                 bool(Cam) != bool(cams) or (cams and (was_cam != cam_obj or len(Cam) != len(cams))):
+            return False
+        refs, key = self._refs_of(c)
+        if key is not None and (c.ref_key != key or len(Ref or ()) != len(refs) or not _same_mats(Ref, refs)):
             return False
         mats = list(mats)
         _fill_singular(mats, list(ok))

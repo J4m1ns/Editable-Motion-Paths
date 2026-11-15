@@ -220,8 +220,8 @@ class EMP_OT_subdivide(bpy.types.Operator):
 
 
 class EMP_OT_loopcut(bpy.types.Operator):
-    """Insert evenly spaced keys in the segment under the mouse (Ctrl+R). Wheel: number of """ \
-        """cuts, click: confirm"""
+    """Insert evenly spaced keys in the segment under the mouse (Ctrl+R; away from the paths Ctrl+R is """ \
+        """Blender's own - Convert Rotation Mode in Pose Mode). Wheel: number of cuts, click: confirm"""
     bl_idname = "emp.loopcut"
     bl_label = "Loop Cut Path Segment"
     bl_options = {'REGISTER', 'UNDO'}
@@ -254,6 +254,11 @@ class EMP_OT_loopcut(bpy.types.Operator):
             return {'PASS_THROUGH'}
         self.seg = None
         self._hover(context, event)
+        if self.seg is None:
+            # no path segment near the mouse: Ctrl+R goes on to Blender (5.3: Convert Rotation Mode in Pose Mode)
+            state.markers = None
+            context.area.header_text_set(None)
+            return {'PASS_THROUGH'}
         context.window_manager.modal_handler_add(self)
         state.tag_redraw()
         return {'RUNNING_MODAL'}
@@ -1215,8 +1220,8 @@ class EMP_OT_duplicate(bpy.types.Operator):
 # ----------------------------------------------------------------------------
 
 class EMP_OT_extrude(bpy.types.Operator):
-    """Add a new key that continues the motion from the selected end key (E). Mouse: where it """ \
-        """goes, wheel: how many frames later"""
+    """Add a new key after the selected end key (E), like Extrude in Edit Mode: it starts on that key and """ \
+        """the mouse moves it; the wheel sets how many frames later (the timing, not where it is)"""
     bl_idname = "emp.extrude"
     bl_label = "Extrude Path Key"
     bl_options = {'REGISTER', 'UNDO'}
@@ -1224,7 +1229,7 @@ class EMP_OT_extrude(bpy.types.Operator):
     frames: IntProperty(name="Frames", default=6, min=1, soft_max=100,
                         description="How many frames after (or before) the selected key")
     offset: FloatVectorProperty(name="Offset", size=3, subtype='TRANSLATION',
-                                description="Move from where the motion would continue")
+                                description="Move from the key it grows from")
 
     MIDDLE_HINT = "Extrude works on the open ends of a path: use Duplicate (Shift+D) inside it"
 
@@ -1259,19 +1264,14 @@ class EMP_OT_extrude(bpy.types.Operator):
             nb = ks[i + 1].t if sign > 0 and i + 1 < len(ks) else (ks[i - 1].t if sign < 0 and i > 0 else None)
             if nb is not None and (t_new - nb) * sign >= -1e-3:
                 continue        # would land on or past the next key
-            # continue with the velocity of the last segment (or stay put on a single key)
-            other = ks[i - int(sign)] if 0 <= i - int(sign) < len(ks) else None
-            if other is not None and abs(src.t - other.t) > 1e-6:
-                vel = [(a - b) / (src.t - other.t) for a, b in zip(src.vals, other.vals)]
-                vel_w = (src.co - other.co) / (src.t - other.t)
-            else:
-                vel = [0.0] * len(src.vals)
-                vel_w = Vector()
-            dt = t_new - src.t
-            for fc in ch.fcurves:
+            # (the key type of the key it grows from: a Breakdown extrudes a Breakdown)
+            ktypes = [fc.keyframe_points[src.idx[j]].type if fc is not None and j < len(src.idx) and
+                      0 <= src.idx[j] < len(fc.keyframe_points) else 'KEYFRAME' for j, fc in enumerate(ch.fcurves)]
+            for j, fc in enumerate(ch.fcurves):
                 if fc is not None and len(fc.keyframe_points):
                     kp = fc.keyframe_points.insert(t_new, core.raw_curve_values(fc, [t_new])[0], options={'FAST'})
                     kp.interpolation = src.interp
+                    kp.type = ktypes[j]
                     fc.update()
             core.ensure_keys(tg, c.ptype, [t_new])
             c.extend_to(t_new)
@@ -1280,11 +1280,10 @@ class EMP_OT_extrude(bpy.types.Operator):
             k = next((k for k in c.keys if abs(k.t - t_new) < 1e-3), None)
             if k is None:
                 continue
-            if c.ptype == core.LOCATION:
-                W = src.co + vel_w * dt
-            else:
-                ref = [v + s * dt for v, s in zip(src.vals, vel)]
-                W = c.point(tg, t_new, ref)
+            # like Extrude in Edit Mode: the new key starts on the key it grows from (a location key where
+            # that one is, else the same pose), the mouse moves it from there; the frames (the wheel) only
+            # change when it is reached, not where it is
+            W = src.co.copy() if c.ptype == core.LOCATION else c.point(tg, t_new, list(src.vals))
             w = edit.Writer([t_new])
             w.key(c, tg, k, W + Vector(self.offset))
             # the new key gets the handle types of the key it grows from (Vector stays Vector)
@@ -1356,8 +1355,8 @@ class EMP_OT_extrude(bpy.types.Operator):
         self.offset = tuple(b - a) if a is not None and b is not None else (0.0, 0.0, 0.0)
         self._restore()
         self._apply(context)
-        context.area.header_text_set("Extrude: new key %d frame%s %s   wheel / PgUp PgDn: frames   "
-                                     "mouse: position   click: confirm   Esc: cancel" % (
+        context.area.header_text_set("Extrude: new key %d frame%s %s   wheel / PgUp PgDn: frames (timing)   "
+                                     "mouse: move it   click: confirm   Esc: cancel" % (
                                          self.frames, "" if self.frames == 1 else "s",
                                          "later" if self.sign > 0 else "earlier"))
         pick.tag_anim_editors()

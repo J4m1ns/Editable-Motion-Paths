@@ -363,8 +363,10 @@ def live_shift(cache):
     D = None
     try:
         f = bpy.context.scene.frame_current
-        if cache.local is None and cache.cam is None and cache.B and cache.fs <= f <= cache.fe and \
-                state.blender_edit_running():
+        from . import live
+        # (during Blender's own drag - and after it until the paths are baked again: no jump back meanwhile)
+        if cache.local is None and cache.cam is None and cache.rel is None and cache.B and cache.fs <= f <= cache.fe and \
+                (state.blender_edit_running() or state.after_blender_edit[0]) and not live.previewing(cache.key):
             obj, owner = core.resolve(cache.obj_name, cache.bone_name)
             if owner is not None and not state._constrained(owner) and _parent_change_stays(obj, owner):
                 B, _ok = core.parent_space(obj, owner, cache.bone_name, cache.ptype == core.LOCATION)
@@ -661,7 +663,7 @@ def scale_gizmo_points(st, cache, k, region=None, rv3d=None):
     rv3d = rv3d or bpy.context.region_data
     # X and Z sit on the edges of their ribbons (both sides), Y on the bone axis
     h = ribbon_half(st, cache)
-    mn = pick.handle_min_world(region, rv3d, k.co) * 0.7
+    mn = pick.handle_min_world(region, rv3d, k.co) * (25.0 / pick.MIN_HANDLE_PX)     # (25 px at least)
     out = {}
     y_rib = st.scale_y_display == 'RIBBON'
     for i, part in enumerate(('GX', 'GY', 'GZ')):
@@ -1014,10 +1016,17 @@ def _draw_vertex_paths(scene, st):
     base = tuple(st.color)
     gpu.state.blend_set('ALPHA')
     gpu.state.depth_test_set('NONE' if st.on_top else 'LESS_EQUAL')
+    from . import ops_vertex
     for e in st.vertex_paths:
         if not e.show or e.object is None or len(e.points) < 2:
             continue
-        pts = [tuple(p.co) for p in e.points]
+        # (following the animation: worked out from its bones now - else as it was tracked)
+        try:
+            pts = ops_vertex.current_points(e)
+        except Exception:
+            pts = None
+        if pts is None:
+            pts = [tuple(p.co) for p in e.points]
         cols = [base + (0.75,)] * len(pts)
         _lines(pts, cols, 1.5 * compat.ui_scale(), 'LINE_STRIP')
         sh = gpu.shader.from_builtin('UNIFORM_COLOR')

@@ -14,7 +14,7 @@ Requires Blender 4.4 or newer (tested on 5.2).
 ## Install
 
 Edit > Preferences > Get Extensions > **Install from Disk…** → choose
-`editable_motion_paths-2.0.5.zip`.
+`editable_motion_paths-2.0.6.zip`.
 
 To remove it: Edit > Preferences > **Get Extensions**, find *Editable Motion Paths* among the
 installed ones, and in the dropdown menu at the right of its row choose **Uninstall** (Blender shows no
@@ -48,6 +48,17 @@ there): drag a ring to turn around that axis only (it follows the mouse steadily
 | **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale, and a third green ribbon beside them for the Y scale (*outside* or *inside* the path's curves, like the Value track; on a circle always outside) that grows from a fixed inner edge like a graph, as wide as the Y scale, with one handle on its outer edge - or, in the preferences (*Scale Y: Color*), the Y scale as the color of the two ribbons (blue below 1, red above). A box at the current frame shows the current scale, its values written next to it (Display: *Box Values*; *Values at Keys* writes them at the keys) | Scale keys: a selected key shows a **scale gizmo** whose X and Z handles sit on the ribbon edges (drag an edge to make that ribbon wider; Y along the bone; the white one scales all). **Click** a gizmo handle to show that channel's handles as **whiskers** along the ribbon (time along the path, value across it) and pick both of them; drag a whisker to edit it. **V** and **T** (handle type, interpolation) work on the selected keys of that channel only, like on one curve in the Graph Editor. Clicking a whisker picks that handle (Shift: add another; undo brings the picking back). **Alt+S** makes the picked handles longer or shorter, **Alt+Shift+S** moves them up or down (both handles of a smooth key tilt together; one handle: the other one follows in line); with none picked, the channel's handles of the selected keys; I / O / B: before the key, after it, both. So the handles can be shaped from the keyboard alone. **S** scales all axes (X / Y / Z: one) |
 | **4 Value** | A **track** for one animated value (IK/FK switch, custom property, constraint influence…), *above the path* or *beside the path* (follows its shape in the plane of the motion, *outside* or *inside* its curves, and stays put when the view turns; on a circle a bigger value is always farther out) | That value: move its keys away from / toward the path. Pick the value in the sidebar or tool header |
 
+**A mode of its own**: each path in the path list has a mode icon - the chain while it is *Auto*
+(follows the mode picked at the top, 1 - 4); its menu pins one of its own (*Always Location / Rotation /
+...*), or **Shift+1 - 4** in the view pins it for the highlighted paths (again: back to Auto). An arm that turns stays in
+Rotation while the sword tip it swings shows Location; both are edited together like any paths.
+
+**Children follow at once**: when a bone / object with a path is edited (with the add-on, in the Graph
+Editor, or rotated with auto keying), the paths of what it carries by plain parenting - the sword in the
+hand, its tip, an object hung on a bone - move with it right away, during the drag, not after a re-bake. A
+chain with a constraint, a bone that doesn't inherit rotation / scale in full, is worked out once the edit
+is done, as before.
+
 Scale and Value paths of something that stays in place are drawn around a **circle** like a
 clock face, lying flat around the world Z axis (it stays put when the view turns): the frame
 range goes once around it and the current frame runs around (Display > Layout: Auto / Along the
@@ -60,7 +71,9 @@ the active one, on the active one it takes it out (like Blender's Shift+click); 
 is what counts (a bone left selected while its armature was out of Pose Mode doesn't come back
 with it); the paths being
 edited are highlighted, like selected rows in the Outliner (the active one is also the list's
-highlighted row); **−** takes all the highlighted paths out of the list (with none, the active one).
+highlighted row). It works the other way too: a bone or object clicked in the view (Shift+click:
+the last one) makes its row the active one, and the list scrolls to it; a key clicked on another
+path's line makes that path's row the active one; **−** takes all the highlighted paths out of the list (with none, the active one).
 The arrow button next to a path isolates its curves of the current mode in
 the **Graph Editor** (the bone's other curves are hidden); it stays pressed while they are
 isolated, and a second click shows them all again.
@@ -129,10 +142,10 @@ The tool uses the settings you know from modeling, in the header and with the us
 | Input | Action |
 |---|---|
 | Ctrl+Click on the path | insert a key; the motion doesn't change |
-| **E** | extrude from the first or last key: a new key that continues the motion, with the handle type of the key it grows from; the mouse places it, the wheel sets how many frames later (inside the path, use Shift+D) |
+| **E** | extrude from the first or last key, like in Edit Mode: a new key starts on the key it grows from (with its handle and key type) and the mouse moves it; the wheel sets how many frames later - only the timing, it stays where it is (inside the path, use Shift+D) |
 | **Shift+D** | duplicate: copies go halfway to the next key and follow the mouse; the **wheel** moves them through the motion a frame at a time (jumping over other keys). *Duplicate in Time* (menu) places copies with left / right instead |
 | **Ctrl+C / Ctrl+V** | copy the pose of the active key / paste it on the current frame: the channels of the current mode (*Whole Pose* in the redo panel: all of them). With several paths, each one's selected key is copied and pasted back on the same bone / object; a rotation pasted on a bone with another rotation mode (another Euler order, quaternions, axis angle) is converted, so the pose is the same |
-| **Ctrl+R** | loop cut: evenly spaced keys in the segment under the mouse (wheel: number of cuts) |
+| **Ctrl+R** | loop cut: evenly spaced keys in the segment under the mouse (wheel: number of cuts); away from the paths Ctrl+R stays Blender's (Blender 5.3: Convert Rotation Mode in Pose Mode) |
 | **Ctrl+K** | knife, like the mesh Knife: keys are inserted where the line crosses the path. LMB: point (drag: draw), RMB: fixes this cut (its keys stay where they are when you turn the view) and starts a new one; nothing is cut until Enter, and Esc cancels all the cuts, like the mesh Knife, Shift: snap to the middle of a segment, Ctrl: no snapping (it snaps to keys and frame dots), A: angle constraint (screen / relative), X / Y / Z: along an axis, S: frame numbers, Ctrl+Z: undo a point, Enter / Space: cut; the view can be turned while cutting |
 | **Ctrl+B** | bevel: round a key into a Bezier arc. It goes through the keys around it (the path outside the arc keeps its shape and timing); when one side reaches the end of the path, the other goes on and the arc gets longer on that side. C: **Clamp** (stop at the next keys), A: width, S or wheel: segments, P: profile, 0.5 = circle |
 | **M** | merge at the last selected (active, white ring) key, the first, the center or the 3D cursor; *Keep Timing* (on): the new shape between the keys around is travelled with the old spacing (only handles change, no keys are added) |
@@ -249,7 +262,9 @@ That is Blender's own behaviour. To keep edits local, turn it off:
     The paths with selected keys, else every path being edited; **L** or *Loop* off: all the keys
     simply move. In the redo panel of both Shift Phase and Offset Cascade, *Affect* picks what
     moves: *All* channels, or only *Location*, *Rotation*, *Scale* or the other *Values* - and of
-    those the channels (X / Y / Z...), like the easing presets;
+    those the channels (X / Y / Z...), like the easing presets. Both work without paths too: with
+    the path tool on, select the animated bones / objects (in the order they should follow each
+    other) and pick them from the Timing menu (Shift+T) - their whole animations move;
   * *Snap to Frames*.
 
 * **Slide (G G)**: *Spacing* (what it starts with) keeps the frames and slides the poses along
@@ -472,7 +487,7 @@ to the character to compare side by side).
 The arrow next to a snapshot: *Update*, *Duplicate*, *Convert to Whole Pose / Selected Bones*
 (Selected Bones: the bones selected now), *Make Static / Live* (Live made Static keeps its pose of
 now), *Move Up / Down*; the arrow at the top: *Remove All*, *Toggle Visibility*, *Expand /
-Collapse*. A collapsed snapshot has a check mark next to its arrow: Apply.
+Collapse*. A collapsed snapshot has an **Apply** button next to its name.
 
 **Apply...** puts the snapshot's pose back on the bones and keys it - every bone it keeps (*Whole
 Pose*) or only the selected ones, on the **Current Frame** or (off) on the snapshot's own frame
@@ -538,8 +553,8 @@ evaluated, like the onion ghosts) and follow your edits.
 
 ## Display
 
-**Global / Local / Camera** (the dropdown menu under the globe / local / camera icon of each path
-in the path list; the highlighted paths all take it): *Global* paths are the motion in the world;
+**Global / Local / Camera / Relative To** (the dropdown menu under the globe / local / camera icon of
+each path in the path list; the highlighted paths all take it): *Global* paths are the motion in the world;
 *Local* leaves the parents' motion out - the path is drawn in the parent's space as it is on the
 current frame, so it shows (and you edit) only the bone's or object's own motion, and it moves
 along with the parent when the frame changes. *Camera* shows the motion as the active camera sees
@@ -550,6 +565,19 @@ drawn). It is edited the same way; moving the camera by hand
 shows at once, and when you change the camera's motion (or pick another camera) the path is worked
 out again.
 
+*Relative To* does the same with an object or a bone of your choice instead of the camera: the path is
+drawn relative to it on the current frame, so only the motion against it is left - a hand holding a
+prop shows how it slides on the prop, a foot on a moving platform how it moves on it, a hand on the
+other hand how the two drift apart. In the same menu, *Relative to Active* takes the active bone or
+object (in Pose Mode select the path's bone, Shift+click the other one last), *Relative To...* lets you
+pick an object and, for an armature, a bone. The icon turns into the Child Of icon; its tooltip names
+the reference. It is edited the same way as any path, and when the reference's animation changes the
+path is worked out again. A reference that moves with the path's own bone / object - its child (a prop
+parented to the hand), or moved by a constraint aimed at it (a Child Of, an IK chain the control is the
+target of) - isn't taken: an edit would move it too. Set some other way (or a camera that follows the
+bone in Camera space), the path gets a lock icon whose tooltip says why; so does a path whose reference
+bone was renamed or deleted (it is drawn in Global then).
+
 **Track Motion Path** (a mesh vertex): in Edit Mode, make a vertex active, right-click and pick
 *Track Motion Path* at the bottom of the menu; set the *Range* (the scene's by default) and *Create
 Motion Path*. The vertex's positions are worked out frame by frame with the mesh as Blender makes
@@ -558,8 +586,23 @@ Surface, are off meanwhile) - on a heavy mesh that takes a while, the header sho
 and **Esc** stops. The path is only to look at (the vertex has no keys to edit): it is in its own
 list under the paths (vertex icon; the eye shows / hides it, **-** removes the picked one, **+**
 tracks the active vertex in Edit Mode), drawn with a dot
-on every frame and the current frame brighter, and kept in the file. After changing the
-animation, track it again to bring it up to date.
+on every frame and the current frame brighter, and kept in the file. A vertex that only an
+Armature modifier moves (its vertex groups, no envelopes / Preserve Volume, no shape keys or other
+modifiers that move vertices) **follows the animation by itself**: its path is worked out from its
+bones - an edit of a bone shows at once, also while dragging (as the paths of children do, see above),
+and Blender's own G / R / S with auto keying shows it as it will be. That is its **Live** mode; its
+row's mode icon (like a path's space) switches to **Static**: kept as it was tracked, with an
+**Update Static Path** button next to it that tracks it again over its range, from any mode. A vertex
+that something else moves too (a lattice, cloth, shape keys...) is Static only. Where the bones under
+it follow the controls through constraints (Rigify's deform bones), its path follows an edit once it
+is done - right after it, without a click.
+
+**Blender's G / R / S with auto keying**: while you drag a bone / object that has a path, its path and
+those of what it carries are drawn as they will be once the drag is keyed (a key on this frame - the
+frames around it change with it), not shifted as a whole; Esc puts them back at once. An object
+without animation moved by hand (the whole character's armature) moves every path and tracked vertex
+it carries with it at once - also bones that follow others by constraints inside it - and they stay
+there after you let go.
 
 The color button in the tool header (or **U**) opens the display settings you change while
 animating, only those of the current mode (1-4); the sidebar's *Display* panel has all of them.

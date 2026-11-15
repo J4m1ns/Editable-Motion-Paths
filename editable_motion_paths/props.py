@@ -126,16 +126,17 @@ _local_busy = [False]
 
 
 def _space_get(self):
-    return 1 if self.local else (2 if self.camera else 0)
+    return 1 if self.local else (2 if self.camera else (3 if self.relative and self.rel_object is not None else 0))
 
 
 def _space_set(self, value):
-    if value == 1:
-        self.camera = False
-        self.local = True
-    else:
-        self.local = False
-        self.camera = value == 2
+    self.local = value == 1
+    self.camera = value == 2
+    self.relative = value == 3
+
+
+def _space_of(e):
+    return (e.local, e.camera, e.relative, e.rel_object, e.rel_bone)
 
 
 def _local_changed(self, context):
@@ -144,19 +145,25 @@ def _local_changed(self, context):
     if not _local_busy[0]:
         _local_busy[0] = True
         try:
+            from . import core
             st = state.settings(context.scene if context else None)
             mine = state.caches.get(state.entry_key(self)) if self.object is not None else None
             if st is not None and mine is not None and mine.owner_selected():
                 for e in st.paths:
-                    if e != self and e.object is not None and (e.local, e.camera) != (self.local, self.camera):
+                    if e != self and e.object is not None and _space_of(e) != _space_of(self) and \
+                            not (self.relative and core.follows(e.object, e.bone_name, self.rel_object,
+                                                                self.rel_bone)):
                         c = state.caches.get(state.entry_key(e))
                         if c is not None and c.owner_selected():
-                            e.local, e.camera = self.local, self.camera
+                            e.rel_object, e.rel_bone = self.rel_object, self.rel_bone
+                            e.local, e.camera, e.relative = self.local, self.camera, self.relative
         finally:
             _local_busy[0] = False
     _refresh(self, context)
     if self.camera and any(not c.Cam for c in state.caches.values() if c.B):
         state.schedule_rebake(delay=0.05, force=True)     # (baked before: no camera matrices yet)
+    if self.relative and self.rel_object is not None:
+        state.schedule_rebake(delay=0.05, force=True)     # (the reference's matrices on every frame)
 
 
 _last_channels = [True, True, True, True]
@@ -223,6 +230,15 @@ class EMP_BrushSettings(bpy.types.PropertyGroup):
                     "the shape of the path counts, so more keys can go")
 
 
+def _vertex_auto_changed(self, context):
+    try:
+        state.sync_caches(context.scene if context else None)
+        state.schedule_rebake(0.05)
+        state.tag_redraw()
+    except Exception:
+        pass
+
+
 class EMP_VertexPoint(bpy.types.PropertyGroup):
     co: FloatVectorProperty(size=3)
 
@@ -234,11 +250,41 @@ class EMP_VertexPath(bpy.types.PropertyGroup):
     frame_start: IntProperty()
     show: BoolProperty(name="Show", default=True, update=_redraw)
     points: CollectionProperty(type=EMP_VertexPoint)
+    auto_update: BoolProperty(
+        name="Live", default=True, update=_vertex_auto_changed,
+        description="Live: the path follows the animation by itself (a vertex an Armature modifier moves: worked "
+                    "out from its bones). Static: kept as it was tracked - Update Static Path tracks it again")
+
+
+def _mode_pin_changed(self, context):
+    """A path's own mode (or the header's again): its path in that mode made / taken at once."""
+    try:
+        state.sync_caches(context.scene if context else None)
+        state.schedule_rebake(0.05)
+        state.tag_redraw()
+    except Exception:
+        pass
+
+
+MODE_ICONS = {'LOCATION': 'CON_LOCLIKE', 'ROTATION': 'CON_ROTLIKE', 'SCALE': 'CON_SIZELIKE', 'VALUE': 'DRIVER'}
 
 
 class EMP_PathEntry(bpy.types.PropertyGroup):
     object: PointerProperty(type=bpy.types.Object)
     bone_name: StringProperty()
+    # the path's own mode, or the one picked at the top (1 - 4): an arm in Rotation while the sword tip it swings
+    # shows Location (issue #12)
+    mode_pin: EnumProperty(
+        name="Mode", default='HEADER', update=_mode_pin_changed,
+        items=[('HEADER', "Auto", "This path follows the mode picked at the top (1 - 4)", 'LINKED', 0),
+               ('LOCATION', "Location", "This path is always shown and edited in Location, whatever mode is picked "
+                                        "at the top", 'CON_LOCLIKE', 1),
+               ('ROTATION', "Rotation", "This path is always shown and edited in Rotation, whatever mode is picked "
+                                        "at the top", 'CON_ROTLIKE', 2),
+               ('SCALE', "Scale", "This path is always shown and edited in Scale, whatever mode is picked at the "
+                                  "top", 'CON_SIZELIKE', 3),
+               ('VALUE', "Value", "This path is always shown and edited in Value, whatever mode is picked at the "
+                                  "top", 'DRIVER', 4)])
     # kept for files saved with 1.0 (paths were per type then); the type now comes from
     # the global Location / Rotation edit mode
     path_type: EnumProperty(items=[('LOCATION', "Location", ""), ('ROTATION', "Rotation", "")],
@@ -251,6 +297,12 @@ class EMP_PathEntry(bpy.types.PropertyGroup):
                                 description="Frames of hidden keys (H / Alt+H)")
     camera: BoolProperty(name="Camera", default=False, update=_local_changed,
                          description="Camera space: the path as the active camera sees it")
+    relative: BoolProperty(name="Relative", default=False, update=_local_changed,
+                           description="Relative To: the path as seen from an object or bone of your choice")
+    rel_object: PointerProperty(type=bpy.types.Object, name="Relative To", update=_local_changed,
+                                description="Relative To: the object the path is drawn relative to")
+    rel_bone: StringProperty(name="Bone", update=_local_changed,
+                             description="Relative To: a bone of that armature (empty: the object itself)")
     space: EnumProperty(
         name="Space", get=_space_get, set=_space_set,
         items=[('GLOBAL', "Global", "The motion in the world (the parents' motion is in the path)", 'WORLD', 0),
@@ -259,7 +311,10 @@ class EMP_PathEntry(bpy.types.PropertyGroup):
                 'ORIENTATION_LOCAL', 1),
                ('CAMERA', "Camera", "The motion as the active camera sees it: the path is drawn relative to the "
                                     "camera on the current frame (a camera that follows the character: only "
-                                    "what moves in its view is left)", 'CAMERA_DATA', 2)],
+                                    "what moves in its view is left)", 'CAMERA_DATA', 2),
+               ('RELATIVE', "Relative To", "The motion against an object or bone of your choice: the path is drawn "
+                                           "relative to it on the current frame (a hand holding a prop: only what "
+                                           "moves against the prop is left)", 'CON_CHILDOF', 3)],
         description="Where the path is drawn (and edited): the world, the parent's space or the active "
                     "camera's view. The paths being edited (highlighted) all take it")
     local: BoolProperty(name="Local", default=False, update=_local_changed,

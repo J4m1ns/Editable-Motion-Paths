@@ -88,10 +88,34 @@ def edit_mode(scene=None):
     return st.edit_mode if st is not None else 'LOCATION'
 
 
+mode_force = [None]     # (the Python API's mode for one call: every path in it, as before paths had their own)
+helper_caches = {}      # (object, bone, ROTATION) -> PathCache: hidden ones, the bones tracked vertices follow
+
+
+def all_caches():
+    """The paths' caches and the hidden ones of the tracked vertices' bones (what a bake bakes)."""
+    return list(caches.values()) + list(helper_caches.values())
+
+
+def entry_mode(entry):
+    """The mode a path is shown and edited in: its own (pinned in the path list) or the one picked at the top."""
+    if mode_force[0]:
+        return mode_force[0]
+    pin = getattr(entry, "mode_pin", 'HEADER')
+    return pin if pin != 'HEADER' else edit_mode(entry.id_data)
+
+
+def mode_in_use(mode, scene=None):
+    """Is this mode the one at the top, or the own mode of a path being edited?"""
+    if edit_mode(scene) == mode:
+        return True
+    return any(c.ptype == mode for c in editable_caches(scene))
+
+
 def entry_key(entry, mode=None):
     if entry.object is None:
         return None
-    return (entry.object.name, entry.bone_name, mode or edit_mode(entry.id_data))
+    return (entry.object.name, entry.bone_name, mode or entry_mode(entry))
 
 
 _bone_names = {}      # armature object name -> its bone names (in order) when last seen
@@ -130,11 +154,10 @@ def sync_caches(scene=None):
     if st is None:
         return []
     _follow_renamed_bones(st)
-    mode = st.edit_mode
     targets = set()
     wanted = []
     for e in st.paths:
-        k = entry_key(e, mode)
+        k = entry_key(e)        # (in its own mode, or the one at the top)
         if k is not None:
             targets.add(k[:2])
             wanted.append(k)
@@ -142,28 +165,43 @@ def sync_caches(scene=None):
         if k[:2] not in targets:
             del caches[k]
     need = []
-    refs = {entry_key(e, mode): (e.value_path, e.value_index) for e in st.paths if e.object is not None}
-    hidden = {entry_key(e, mode): parse_frames(e.hidden_keys) for e in st.paths if e.object is not None}
+    # (the bones the tracked vertices follow: hidden caches - no path of their own needed)
+    try:
+        from . import ops_vertex
+        want = {(o, b, core.ROTATION) for o, b in ops_vertex.helper_keys(st)}
+    except Exception:
+        want = set()
+    for k in list(helper_caches):
+        if k not in want:
+            del helper_caches[k]
+    for k in want:
+        if k not in helper_caches and k not in caches:
+            hc = helper_caches[k] = core.PathCache(*k)
+            need.append(hc)
+    refs = {entry_key(e): (e.value_path, e.value_index) for e in st.paths if e.object is not None}
+    hidden = {entry_key(e): parse_frames(e.hidden_keys) for e in st.paths if e.object is not None}
     for k in wanted:
         c = caches.get(k)
         if c is None:
             c = caches[k] = core.PathCache(*k)
-            # (a bone whose location has its own axes: its location path's parent space is another)
+            # (a bone whose location has its own axes, a bone / object turned by its constraints: its location
+            # path's parent space is another)
             own = _own_loc_space(k[0], k[1])
             other = next((o for o in caches.values() if o is not c and o.key[:2] == k[:2] and o.B
                           and (not own or (o.ptype == core.LOCATION) == (k[2] == core.LOCATION))), None)
             if other is not None:
                 c.fs, c.B, c.bake_id = other.fs, other.B, other.bake_id
                 c.Cam, c.cam_fs, c.cam_obj = other.Cam, other.cam_fs, other.cam_obj
+                c.Ref, c.ref_fs, c.ref_key = other.Ref, other.ref_fs, other.ref_key
         h = hidden.get(k, set())
         if h != c.hidden:
             c.hidden = h
             c.dirty = True
-        if mode == core.VALUE:
+        if k[2] == core.VALUE:
             ref = refs.get(k)
             if not (ref and ref[0]):
                 # nothing picked yet: the first animated value of the bone / object
-                e = next((e for e in st.paths if entry_key(e, mode) == k), None)
+                e = next((e for e in st.paths if entry_key(e) == k), None)
                 cands = core.value_candidates(e.object, e.bone_name) if e is not None else []
                 if cands and not baking:
                     e.value_path, e.value_index = cands[0][0], cands[0][1]
@@ -210,7 +248,7 @@ def visible_caches(scene=None):
     for e in st.paths:
         if not e.show or (st.only_selected and not _entry_selected(e)):
             continue
-        k = entry_key(e, st.edit_mode)
+        k = entry_key(e)
         if k is None or k in seen:
             continue        # (no object: its object was deleted - nothing to calculate)
         seen.add(k)
@@ -257,6 +295,8 @@ def paths_shown(scene=None):
                     return True
             except (RuntimeError, ReferenceError):
                 pass
+    if helper_caches and any(e.show and getattr(e, "auto_update", True) for e in st.vertex_paths):
+        return True     # (a tracked vertex that follows the animation)
     return False
 
 
@@ -397,6 +437,8 @@ def _pose_owners(obj):
     if obj.type != 'ARMATURE' or obj.pose is None:
         return []
     names = {c.bone_name for c in caches.values() if c.obj_name == obj.name and c.bone_name}
+    # (a bone some path is drawn Relative To: its motion is in that path)
+    names |= {b for o, b in relative_refs() if o == obj and b}
     if not names:
         return None
     bones = obj.pose.bones
@@ -554,14 +596,28 @@ def _depends_on(obj):
 
 def _tracked_objects():
     objs = {}
-    for name in {c.obj_name for c in caches.values()}:
+    for name in {c.obj_name for c in all_caches()}:
         obj = bpy.data.objects.get(name)
         if obj is not None:
             objs.update(_depends_on(obj))
     cam = bpy.context.scene.camera if bpy.context.scene is not None else None
     if cam is not None and any(c.cam is not None for c in caches.values()):
         objs.update(_depends_on(cam))       # (Camera space: the camera's motion is in the paths)
+    for o, _b in relative_refs():
+        objs.update(_depends_on(o))         # (Relative To: the reference's motion is in the paths)
     return objs
+
+
+def relative_refs(scene=None):
+    """[(object, bone name)] the paths are drawn Relative To."""
+    st = settings(scene)
+    out = []
+    for e in (st.paths if st is not None else ()):
+        if getattr(e, "relative", False) and e.rel_object is not None and e.object is not None:
+            k = (e.rel_object, e.rel_bone)
+            if k not in out:
+                out.append(k)
+    return out
 
 
 def anim_signature(scene, hashes=None):
@@ -594,7 +650,9 @@ def _bake_from_memo(scene):
     if got is None:
         return False
     done = True
-    for k, c in caches.items():
+    from . import live
+    live.clear()
+    for k, c in list(caches.items()) + list(helper_caches.items()):
         m = got.get(k)
         if m is None:
             done = False
@@ -607,6 +665,7 @@ def _bake_from_memo(scene):
         c.failed = False
     if done:
         remember_action_hashes()
+        live.snapshot()
     return done
 
 
@@ -622,12 +681,16 @@ _LINEAR_CONSTRAINTS = {'CHILD_OF', 'ARMATURE'}   # (they only put a parent space
 
 
 def _own_loc_space(obj_name, bone_name):
-    """The bone moves by its location along other axes than its rotation turns it (see
-    core.own_loc_space)."""
+    """The bone / object moves by its location along other axes than its rotation turns it (see
+    core.own_loc_map): Local Location off and the like, or constraints that turn it (Track To)."""
     from . import core
-    obj = bpy.data.objects.get(obj_name) if bone_name else None
-    bone = obj.data.bones.get(bone_name) if obj is not None and obj.type == 'ARMATURE' else None
-    return bone is not None and core.own_loc_space(bone)
+    obj = bpy.data.objects.get(obj_name)
+    if obj is None:
+        return False
+    if not bone_name:
+        return core.own_loc_map(obj, "")
+    pb = obj.pose.bones.get(bone_name) if obj.type == 'ARMATURE' and obj.pose is not None else None
+    return pb is not None and core.own_loc_map(pb, bone_name)
 
 
 def _constrained(owner):
@@ -643,12 +706,32 @@ def _harmless(obj, data_path, memo=None):
     That is the case for transform channels of a path target that moves no other path target
     (by the hierarchy or by a constraint) and has no constraint working on its own transform.
     """
-    targets = [c for c in caches.values() if c.obj_name == obj.name]
+    targets = [c for c in all_caches() if c.obj_name == obj.name]     # (the tracked vertices' bones too)
     if data_path.endswith('"]') and any(c.value_ref and c.value_ref[0] == data_path for c in targets) \
             and not _driven_by(obj, data_path):
         return True     # a custom property shown on a value track that moves nothing else
     # paths of other objects that hang on this one (a parent, Child Of on a bone, a driver...)
     memo = {} if memo is None else memo
+    # what a path is drawn against - a Relative To reference, the camera of Camera space - or what moves it: its
+    # own path edited (it is a path target too) moves the other path (it stayed until an Update)
+    seen_from = memo.get("seen_from")
+    if seen_from is None:
+        movers, selves, ref_bones = set(), set(), set()
+        st = settings()
+        refs = list(relative_refs())
+        if st is not None and bpy.context.scene.camera is not None and any(e.camera for e in st.paths):
+            refs.append((bpy.context.scene.camera, ""))
+        for o, b in refs:
+            movers.update(n for n in _depends_on(o) if n != o.name)    # (what moves it from outside)
+            if b:
+                ref_bones.add((o.name, b))
+            else:
+                selves.add(o.name)
+        seen_from = memo["seen_from"] = (movers, selves, ref_bones)
+    movers, selves, ref_bones = seen_from
+    bone_channel = data_path.startswith("pose.bones[")
+    if obj.name in movers or (obj.name in selves and not bone_channel):
+        return False
     for c in caches.values():
         other = bpy.data.objects.get(c.obj_name) if c.obj_name != obj.name else None
         if other is None:
@@ -681,6 +764,8 @@ def _harmless(obj, data_path, memo=None):
             moved = memo[(obj.name, bname)] = affected_bones(obj, {bname})
         if any(p.name in moved for p in pb.parent_recursive):
             return False    # (it moves a bone it hangs from: a neck sharing the head's turn...)
+        if any(o == obj.name and (rb == bname or rb in moved) for o, rb in ref_bones):
+            return False    # (a reference bone of a Relative To path, or one it moves)
         return not any(c.bone_name and c.bone_name != bname and c.bone_name in moved for c in targets)
     if data_path not in _TRANSFORM_PROPS or not any(not c.bone_name for c in targets):
         return False
@@ -760,7 +845,7 @@ def _unbaked():
     baked every path again on each click."""
     from . import core
     sync_caches()
-    for c in caches.values():
+    for c in all_caches():
         if not c.B and (not c.failed or core.resolve(c.obj_name, c.bone_name)[1] is not None):
             return True
     return False
@@ -948,9 +1033,23 @@ def _job_step(job):
     return max(0.02, spent)
 
 
+after_blender_edit = [False]    # (Blender's own G / R / S ran since the last bake: its shift kept until re-baked)
+
+
 def _job_done(job):
     global flash
     job.finish()
+    after_blender_edit[0] = False
+    try:
+        from . import ops_vertex
+        ops_vertex.store_points(settings())     # (the tracked vertices as they follow the animation: in the file)
+    except Exception:
+        pass
+    try:
+        from . import live
+        live.snapshot()         # (what the bake was made from: children follow an edited parent at once)
+    except Exception:
+        pass
     _aux_drop(_BAKE_SCENE)
     if flash is not None and flash[0].startswith("Calculating motion paths"):
         flash = None
@@ -962,12 +1061,35 @@ def _job_done(job):
 _BAKE_SCENE = ".Motion Paths Bake"     # (core.AUX_NAME: the paths' bake scene - the snapshots have one of their own)
 
 
-def _aux_drop(name=None):
+def _aux_drop(name=None, later=True):
+    """The bake scene removed (core.drop_aux); while the playhead is dragged, once it's let go."""
     from . import core
     try:
-        core.drop_aux(name)
+        if core.drop_aux(name) is False and later:
+            _drop_wait.add(name)
+            if not bpy.app.timers.is_registered(_aux_drop_later):
+                bpy.app.timers.register(_aux_drop_later, first_interval=0.3)
     except Exception:
         pass
+
+
+_drop_wait = set()      # (the bake scenes put off by _aux_drop: their names, None for all)
+
+
+def _aux_drop_later():
+    from . import core
+    if core.scrubbing():
+        return 0.3
+    names = list(_drop_wait)
+    _drop_wait.clear()
+    if _job is not None:
+        return None     # (a bake started meanwhile: its end removes the scene)
+    for name in (None,) if None in names else names:
+        try:
+            core.drop_aux(name)
+        except Exception:
+            pass
+    return None
 
 
 def bake_soon(scene=None, budget=0.15):
@@ -978,7 +1100,7 @@ def bake_soon(scene=None, budget=0.15):
     from . import core
     scene = scene or bpy.context.scene
     sync_caches(scene)
-    _job = core.BakeJob(scene, list(caches.values()), near=scene.frame_current)
+    _job = core.BakeJob(scene, all_caches(), near=scene.frame_current)
     _job_started = time.time()
     if _job.step(budget):
         job, _job = _job, None
@@ -1017,14 +1139,14 @@ def _bake_timer():
         curves = _check_curves
         _check_curves = False
         st = settings()
-        if st is not None and st.paths:
+        if st is not None and (st.paths or helper_caches or len(st.vertex_paths)):
             why = 'force' if force else 'new' if _unbaked() else \
                 'range' if 'range' not in _ignored and _range_changed() else \
                 _why[0] if _needs_rebake(curves) else None
             if why is not None:
                 sync_caches()
                 scene = bpy.context.scene
-                _job = core.BakeJob(scene, list(caches.values()), near=scene.frame_current)
+                _job = core.BakeJob(scene, all_caches(), near=scene.frame_current)
                 _job.why = why
                 _job_started = time.time()
                 _job.gap = _job_started - _last_done[0]
@@ -1097,6 +1219,26 @@ def _on_depsgraph(scene, depsgraph):
     st = settings(scene)
     if st is None:
         return
+    if st.paths and scene == bpy.context.scene and not modal_running:
+        try:
+            sync_list_active(st)        # (a bone / object clicked in the view: its row at once)
+        except Exception:
+            pass
+    if (st.paths or path_tool_on()) and scene == bpy.context.scene and not modal_running:
+        try:
+            _watch_order(st)            # (and its place in the selection order, click by click)
+        except Exception:
+            pass
+    if st.paths and scene == bpy.context.scene and not modal_running:
+        try:
+            from . import live
+            if blender_edit_running():
+                after_blender_edit[0] = True
+                live.preview(scene)     # (Blender's G / R / S with auto keying: the paths as they will be)
+            else:
+                live.end_preview()
+        except Exception:
+            pass
     if st.show_onion or st.show_com:
         global _dg_frame
         f = scene.frame_current
@@ -1131,7 +1273,7 @@ def _on_depsgraph(scene, depsgraph):
     if st.show_snapshots and len(st.snapshots) and             any(isinstance(u.id, bpy.types.Action) for u in depsgraph.updates):
         from . import snapshots
         snapshots.anim_changed()        # (the Live ones follow the animation)
-    if not caches or not st.auto_update:
+    if not (caches or helper_caches) or not st.auto_update:
         # no path: the ghosts and the center of mass still follow the animation
         if st.show_onion or st.show_com:
             if any(isinstance(u.id, bpy.types.Action) for u in depsgraph.updates):
@@ -1146,6 +1288,11 @@ def _on_depsgraph(scene, depsgraph):
                 ops_fmods.sync_active(bpy.context)     # modifier stack entries stay alike
             except Exception:
                 pass
+            try:
+                from . import live
+                live.update()   # (the paths of the children of an edited bone / object follow it at once)
+            except Exception:
+                pass
             tag_redraw()        # the path follows right away (e.g. a modifier's settings)
             _rebake_if_shown(scene)
             spans = _edit_spans(scene, depsgraph)
@@ -1158,6 +1305,12 @@ def _on_depsgraph(scene, depsgraph):
     if same_frame and not modal_running and not (bpy.context.screen is not None and
                                                  bpy.context.screen.is_animation_playing) and \
             any(isinstance(u.id, bpy.types.Object) for u in depsgraph.updates):
+        try:
+            from . import live
+            if live.update():
+                tag_redraw()    # (an object without animation moved by hand: its paths follow at once)
+        except Exception:
+            pass
         _rebake_if_shown(scene, curves=False)
 
 
@@ -1242,6 +1395,10 @@ def _on_undo(*_args):
     com.changed()
     from . import snapshots
     snapshots.after_undo()      # (what is drawn stays until it is made again: no blinking)
+    try:
+        _reconcile_order()      # (the selection order as the selection the undo brought back)
+    except Exception:
+        pass
     # (no need to mark the paths dirty: a path rebuilds when its curves differ from what it was
     # built from; hidden keys and value channels are taken over below)
     try:
@@ -1254,6 +1411,9 @@ def _on_undo(*_args):
         memo = _bake_from_memo(bpy.context.scene)
         if memo:
             _job = None         # (a bake half done was for the animation undone)
+        else:
+            from . import live
+            live.update()       # (an object moved by hand and undone: its paths back with it at once)
     except Exception:
         memo = False
     tag_redraw()
@@ -1366,25 +1526,39 @@ def selection_order(scene=None):
     return _order_cache[1]
 
 
+_keys_off = set()       # paths whose keys were all deselected while their bone / object stayed selected
+
+
 def note_selected(path_key, scene=None):
-    """A key of this path got selected (or its bone / object): the path joins the selection order
-    (if it isn't in it)."""
+    """A key of this path got selected (or its bone / object): the path joins the selection order (if it
+    isn't in it). One that stayed in it only for its selected bone (its keys were deselected) goes to its
+    end: its keys clicked again are clicked after the others."""
     order = selection_order(scene)
     key = tuple(path_key[:2])
     if key in order:
-        return
+        if key not in _keys_off:
+            return
+        order = [k for k in order if k != key]
+    _keys_off.discard(key)
     import json
     st = settings(scene)
     if st is not None:
         st.select_order = json.dumps([list(k) for k in order + [key]][-64:])
 
 
-def forget_selected(path_keys, scene=None):
-    """These paths have no selected keys any more: out of the selection order."""
+def forget_selected(path_keys, scene=None, keys_only=False):
+    """These paths have no selected keys any more: out of the selection order. keys_only: only their keys
+    were deselected - one whose bone / object is still selected stays (Offset Cascade goes by the bones
+    then: their order is still the one they were clicked in)."""
     order = selection_order(scene)
     drop = {tuple(k[:2]) for k in path_keys}
+    if keys_only:
+        kept = {k for k in drop if k in order and _owner_selected(*k)}
+        _keys_off.update(kept)
+        drop -= kept
     if not any(k in drop for k in order):
         return
+    _keys_off.difference_update(drop)
     import json
     st = settings(scene)
     if st is not None:
@@ -1418,6 +1592,7 @@ def flash_message(text, seconds=3.0):
 
 _isolated_last = None
 _isolated_at = 0.0
+_vtx_store_at = 0.0
 
 
 def _isolation_shown():
@@ -1483,23 +1658,157 @@ def _owner_selected(obj_name, bone_name):
 _order_active = [None]     # the active bone / object the selection order last saw
 
 
-def _watch_order(st):
-    """The selection order follows bones / objects clicked in the view (Offset Cascade): one with a
-    path that becomes the active one (and is selected) joins it - only when it becomes active, so a
-    reset of the order isn't undone by the one that just stays active; one deselected leaves it."""
+def _view_active_key():
     vl = bpy.context.view_layer
     obj = vl.objects.active if vl is not None else None
+    if obj is None:
+        return None
+    bone = obj.data.bones.active.name if obj.type == 'ARMATURE' and obj.mode == 'POSE' and \
+        obj.data.bones.active is not None else ""
+    return (obj.name, bone)
+
+
+def selected_owners_any():
+    """[(object name, bone name)] of every bone selected in Pose Mode (shown: not hidden) / object selected in
+    Object Mode - with a path or not."""
+    out = []
+    vl = bpy.context.view_layer
+    if vl is None:
+        return out
+    for o in vl.objects:
+        try:
+            if o.mode == 'POSE' and o.type == 'ARMATURE' and o.pose is not None:
+                for pb in o.pose.bones:
+                    if not pb.bone.hide and compat.bone_selected(pb):
+                        out.append((o.name, pb.name))
+            elif o.mode == 'OBJECT' and o.select_get() and bpy.context.mode == 'OBJECT':
+                out.append((o.name, ""))
+        except (RuntimeError, ReferenceError, AttributeError):
+            continue
+    return out
+
+
+def _selected_owners(st):
+    """The bones / objects selected now: with paths first, in the path list's order, then the others (Offset
+    Cascade / Shift Phase move animated bones without paths too)."""
+    out = []
+    for e in st.paths:
+        k = (e.object.name, e.bone_name) if e.object is not None else None
+        if k is not None and k not in out and _owner_selected(*k):
+            out.append(k)
+    for k in selected_owners_any():
+        if k not in out:
+            out.append(k)
+    return out
+
+
+def _watch_order(st):
+    """The selection order follows the bones / objects clicked in the view (Offset Cascade): the ones
+    deselected leave it; the ones selected that aren't in it join it (the active one last: clicked last) - all
+    of them, not only the active one: a bone deselected and clicked again that was the active one all along
+    never joined, and went last; one that becomes the active one (Shift+click on one already selected) goes
+    last. It looks after every update (each click) and on a timer."""
+    now = _selected_owners(st)
+    order = selection_order()
+    # (what isn't selected now leaves it - also an armature object noted in Object Mode: in Pose Mode it stays
+    # "selected", but only its bones count there)
+    gone = [k for k in order if k not in now]
+    if gone:
+        forget_selected(gone)
+        order = selection_order()
+    # (selected and not in it yet: last, the active one the very last - the ones noted already, by a click on a
+    # key or a row, keep their place)
+    active = _view_active_key()
+    new = [k for k in now if k not in order]
+    if new:
+        new.sort(key=lambda k: k == active)
+        for k in new:
+            note_selected(k)
+    if active != _order_active[0]:
+        _order_active[0] = active
+        if active in now and active not in new and selection_order()[-1:] != [active]:
+            _keys_off.add(active)       # (in it already: to its end)
+            note_selected(active)
+
+
+_list_active = [None]      # the active bone / object the path list's active row last followed
+
+
+def _view_active():
+    """(object name, bone name, its path editable now) of the active bone / object in the view, or None."""
+    vl = bpy.context.view_layer
+    obj = vl.objects.active if vl is not None else None
+    if obj is None:
+        return None
+    if obj.type == 'ARMATURE' and obj.mode == 'POSE':
+        b = obj.data.bones.active
+        if b is None:
+            return (obj.name, "", False)
+        pb = obj.pose.bones.get(b.name)
+        return (obj.name, b.name, pb is not None and compat.bone_selected(pb))
+    try:
+        return (obj.name, "", obj.mode == 'OBJECT' and obj.select_get())
+    except RuntimeError:
+        return None
+
+
+def sync_list_active(st=None):
+    """The path list's active row follows the bone / object made active in the view (clicked, Shift+clicked
+    last), like the Outliner follows the view: its row becomes the active one - the list's highlight, the
+    charts, the modifier stack go with it. Only when the active one changes (and it is selected and has a
+    path): a key clicked on another path's line makes that path's row the active one, and it stays so."""
+    st = st if st is not None else settings()
+    if st is None:
+        return
+    key = _view_active()
+    if key == _list_active[0]:
+        return
+    _list_active[0] = key
+    if key is None or not key[2]:
+        return
+    for i, e in enumerate(st.paths):
+        if e.object is not None and e.object.name == key[0] and e.bone_name == key[1]:
+            if st.active_index != i:
+                st.active_index = i
+                tag_redraw()
+            return
+
+
+def path_tool_on():
+    """The Edit Paths / Sculpt Paths tool is the active one (the selection order is kept then even without
+    paths: Offset Cascade on bones without paths)."""
+    ctx = bpy.context
+    try:
+        ws = ctx.workspace
+        tool = ws.tools.from_space_view3d_mode(ctx.mode, create=False) if ws is not None else None
+    except (AttributeError, TypeError, RuntimeError):
+        return False
+    return tool is not None and tool.idname.startswith("emp.")
+
+
+def _reconcile_order():
+    """After an undo / redo: the selection is the undo step's, but the order the step kept lags behind it -
+    a click's undo step is made before the watcher notes the click (see _watch_order): the bone clicked
+    last was missing from it, and the cascade put it after every bone clicked later. The bones / objects
+    with paths selected now that the order lacks join it, the active one last (its click was the latest)."""
+    st = settings()
+    if st is None:
+        return
+    order = selection_order()
+    vl = bpy.context.view_layer
+    obj = vl.objects.active if vl is not None else None
+    active = None
     if obj is not None:
         bone = obj.data.bones.active.name if obj.type == 'ARMATURE' and obj.mode == 'POSE' and \
             obj.data.bones.active is not None else ""
-        key = (obj.name, bone, _owner_selected(obj.name, bone))
-        if key != _order_active[0]:
-            _order_active[0] = key
-            if key[2] and any(e.object == obj and e.bone_name == bone for e in st.paths):
-                note_selected((obj.name, bone))
-    gone = [k for k in selection_order() if not _owner_selected(*k)]
-    if gone:
-        forget_selected(gone)
+        active = (obj.name, bone)
+    missing = [k for k in _selected_owners(st) if k not in order]
+    missing.sort(key=lambda k: k == active)
+    for k in missing:
+        note_selected(k)
+    _order_active[0] = _view_active_key()
+    _keys_off.clear()
+    _list_active[0] = _view_active()     # (the active row as the undo step kept it)
 
 
 def _watch_active():
@@ -1509,6 +1818,20 @@ def _watch_active():
     try:
         reconcile_modal()
         st = settings()
+        if st is not None and not st.paths and not modal_running and path_tool_on():
+            try:
+                _watch_order(st)        # (no path: the selection order still kept - Offset Cascade on bones)
+            except Exception:
+                pass
+        global _vtx_store_at
+        if st is not None and helper_caches and not modal_running and not blender_edit_running() and \
+                time.time() - _vtx_store_at > 1.0:
+            _vtx_store_at = time.time()
+            try:
+                from . import ops_vertex
+                ops_vertex.store_points(st)     # (the tracked vertices as they follow the animation: in the file)
+            except Exception:
+                pass
         if st is None or not st.paths or modal_running:
             return 0.25
         global _isolated_at
@@ -1526,6 +1849,16 @@ def _watch_active():
             _watch_order(st)
         except Exception:
             pass
+        try:
+            sync_list_active(st)
+        except Exception:
+            pass
+        try:
+            from . import live
+            if not blender_edit_running():
+                live.end_preview()      # (a drag that ended without an update after it)
+        except Exception:
+            pass
         if obj is None:
             return 0.25
         bone = ""
@@ -1537,6 +1870,8 @@ def _watch_active():
         _watch_last = key
         if not any(e.object == obj and e.bone_name == bone for e in st.paths):
             return 0.25
+        if any(e.object == obj and e.bone_name == bone and e.mode_pin != 'HEADER' for e in st.paths):
+            return 0.25     # (its path has its own mode: nothing to switch at the top for it)
         from . import core
         _o, owner = core.resolve(obj.name, bone)
         if owner is None:
@@ -1608,7 +1943,9 @@ def unregister():
         if bpy.app.timers.is_registered(fn):
             bpy.app.timers.unregister(fn)
     snapshots._timer[0] = False
-    _aux_drop()
+    if bpy.app.timers.is_registered(_aux_drop_later):
+        bpy.app.timers.unregister(_aux_drop_later)
+    _aux_drop(later=False)
     caches.clear()
 
 

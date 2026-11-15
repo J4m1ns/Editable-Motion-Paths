@@ -79,14 +79,20 @@ def _in_mode(mode):
     """The edit mode for one call, put back after it."""
     st = state.settings(_scene())
     before = st.edit_mode
-    if mode and mode != before:
-        st.edit_mode = mode
+    forced = state.mode_force[0]
+    if mode:
+        # (every path in the mode asked for - also one with its own mode in the path list)
+        state.mode_force[0] = mode
+        if mode != before:
+            st.edit_mode = mode
         state.sync_caches(_scene())
     try:
         yield
     finally:
+        state.mode_force[0] = forced
         if st.edit_mode != before:
             st.edit_mode = before
+        if mode:
             state.sync_caches(_scene())
 
 
@@ -204,7 +210,8 @@ def list_paths():
 
 
 def get_path(obj, bone=None, mode=None):
-    """Trajectory data: per-frame world points and speeds, and the keys with their handles."""
+    """Trajectory data: per-frame world points and speeds, and the keys with their handles. "locked": why
+    the path can't be edited (its lock icon's tooltip), or None - the editing functions raise it."""
     c = _cache(obj, bone, mode)
     frames = [t for t in c.times if abs(t - round(t)) < 1e-6]
     pts = [p for t, p in zip(c.times, c.points) if abs(t - round(t)) < 1e-6]
@@ -223,7 +230,8 @@ def get_path(obj, bone=None, mode=None):
                      core.VALUE: "the value, drawn above the location path"}[c.ptype],
             "frames": [int(round(f)) for f in frames], "points": [_v(p) for p in pts],
             "key_frames": [round(k.t, 3) for k in c.keys],
-            "speed_per_frame": [round(s, 5) for s in speeds], "keys": keys}
+            "speed_per_frame": [round(s, 5) for s in speeds], "keys": keys,
+            "locked": c.lock_reason if c.locked else None}
 
 
 # ----------------------------------------------------------------------------
@@ -400,10 +408,21 @@ def move_key(obj, bone=None, frame=None, target=None, offset=None, mode=None):
         return _move_key(obj, bone, frame, target, offset, mode)
 
 
+def _editable(c):
+    """A locked path (its lock icon in the path list: a linked action, a constraint that sets where it is, a
+    Relative To reference that moves with it...) isn't edited from a script either - it says why, like the icon's
+    tooltip (an edit would be lost on save, do nothing, or make the path jump)."""
+    if c.locked:
+        raise RuntimeError("The %s path of %s%s is locked: %s" % (c.ptype.lower(), c.obj_name,
+                                                                 (" " + c.bone_name) if c.bone_name else "",
+                                                                 c.lock_reason))
+
+
 def _move_key(obj, bone, frame, target, offset, mode):
     if frame is None or (target is None) == (offset is None):
         raise ValueError("move_key needs a frame and either target=(x, y, z) or offset=(x, y, z)")
     c = _cache(obj, bone, mode)
+    _editable(c)
     tg = c.target()
     core.ensure_keys(tg, c.ptype, [float(frame)], None, state.settings(_scene()).pin_partial)
     core.cycle_skip = {round(float(frame), 3)}
@@ -469,6 +488,7 @@ def _run_op(_op, _frames, _obj, _bone, _mode, **props):
     # (underscored names: operator properties like `frames` or `mode` go through **props)
     with _in_mode(_valid_mode(_mode)):
         c = _cache(_obj, _bone, _mode)
+        _editable(c)
         with _only(c):
             _select_owner_and_keys(c, _frames)
             win, area, region = _view3d()
@@ -564,8 +584,8 @@ def bevel(obj, bone=None, frames=None, width=3.0, segments=2, profile=0.5, clamp
 
 
 def extrude(obj, bone=None, frame=None, frames_later=6, offset=(0.0, 0.0, 0.0), mode=None):
-    """New key `frames_later` after the end key at `frame` (before it for the first key),
-    continuing the motion, moved by `offset` (world)."""
+    """New key `frames_later` after the end key at `frame` (before it for the first key), like Extrude
+    in Edit Mode: on that key (a hold), moved from it by `offset` (world)."""
     return _run_op(bpy.ops.emp.extrude, [frame], obj, bone, mode, frames=frames_later, offset=offset)
 
 
