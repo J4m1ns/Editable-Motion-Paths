@@ -2127,7 +2127,10 @@ def aux_scene(scene, objs, name=None):
         if aux is None:
             aux = bpy.data.scenes.new(name)
             if aux.name != name:
-                bpy.data.scenes.remove(aux)
+                if scrubbing():
+                    aux[AUX_TAG] = True     # (removed later with all bake scenes: see scrubbing)
+                else:
+                    bpy.data.scenes.remove(aux)
                 return None
             aux[AUX_TAG] = True
             aux.use_fake_user = False
@@ -2169,12 +2172,29 @@ def camera_at(scene, f):
     return cam or first or scene.camera
 
 
+def scrubbing():
+    """The playhead is being dragged (the timeline's scrubbing band, the frame numbers on top of an
+    editor). Blender 5.0+ crashes removing a scene meanwhile (it looks for the playing animation's
+    timer, and there is none while only scrubbing): the bake scenes are removed after it."""
+    try:
+        for w in bpy.context.window_manager.windows:
+            scr = w.screen
+            if scr is not None and getattr(scr, "is_scrubbing", False):
+                return True
+    except (AttributeError, ReferenceError, RuntimeError):
+        pass
+    return False
+
+
 def drop_aux(name=None):
     """The bake scene removed (nothing is baking: it isn't kept in the file or in undo steps).
-    name: that one (the paths' bake scene, the snapshots'), None: all of them."""
+    name: that one (the paths' bake scene, the snapshots'), None: all of them.
+    False: put off while the playhead is dragged (see scrubbing) - the caller tries again later."""
     gone = [s for s in bpy.data.scenes if s.library is None and s.get(AUX_TAG) and (name is None or s.name == name)]
     if not gone:
-        return
+        return True
+    if scrubbing():
+        return False
     try:
         for aux in gone:
             bpy.data.scenes.remove(aux)
@@ -2183,6 +2203,7 @@ def drop_aux(name=None):
         _ = bpy.context.view_layer.objects.active
     except (RuntimeError, ReferenceError, AttributeError):
         pass
+    return True
 
 
 class BakeJob:

@@ -1061,12 +1061,35 @@ def _job_done(job):
 _BAKE_SCENE = ".Motion Paths Bake"     # (core.AUX_NAME: the paths' bake scene - the snapshots have one of their own)
 
 
-def _aux_drop(name=None):
+def _aux_drop(name=None, later=True):
+    """The bake scene removed (core.drop_aux); while the playhead is dragged, once it's let go."""
     from . import core
     try:
-        core.drop_aux(name)
+        if core.drop_aux(name) is False and later:
+            _drop_wait.add(name)
+            if not bpy.app.timers.is_registered(_aux_drop_later):
+                bpy.app.timers.register(_aux_drop_later, first_interval=0.3)
     except Exception:
         pass
+
+
+_drop_wait = set()      # (the bake scenes put off by _aux_drop: their names, None for all)
+
+
+def _aux_drop_later():
+    from . import core
+    if core.scrubbing():
+        return 0.3
+    names = list(_drop_wait)
+    _drop_wait.clear()
+    if _job is not None:
+        return None     # (a bake started meanwhile: its end removes the scene)
+    for name in (None,) if None in names else names:
+        try:
+            core.drop_aux(name)
+        except Exception:
+            pass
+    return None
 
 
 def bake_soon(scene=None, budget=0.15):
@@ -1920,7 +1943,9 @@ def unregister():
         if bpy.app.timers.is_registered(fn):
             bpy.app.timers.unregister(fn)
     snapshots._timer[0] = False
-    _aux_drop()
+    if bpy.app.timers.is_registered(_aux_drop_later):
+        bpy.app.timers.unregister(_aux_drop_later)
+    _aux_drop(later=False)
     caches.clear()
 
 

@@ -416,7 +416,8 @@ def _drop_idle():
     if _pending() or time.time() - _last_work[0] < IDLE_DROP:
         return 0.5
     try:
-        core.drop_aux(AUX_NAME)
+        if core.drop_aux(AUX_NAME) is False:
+            return 0.5          # (the playhead is dragged: after it - see core.scrubbing)
     except Exception:
         pass
     return None
