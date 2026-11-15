@@ -671,6 +671,26 @@ def _harmless(obj, data_path, memo=None):
         return True     # a custom property shown on a value track that moves nothing else
     # paths of other objects that hang on this one (a parent, Child Of on a bone, a driver...)
     memo = {} if memo is None else memo
+    # what a path is drawn against - a Relative To reference, the camera of Camera space - or what moves it: its
+    # own path edited (it is a path target too) moves the other path (it stayed until an Update)
+    seen_from = memo.get("seen_from")
+    if seen_from is None:
+        movers, selves, ref_bones = set(), set(), set()
+        st = settings()
+        refs = list(relative_refs())
+        if st is not None and bpy.context.scene.camera is not None and any(e.camera for e in st.paths):
+            refs.append((bpy.context.scene.camera, ""))
+        for o, b in refs:
+            movers.update(n for n in _depends_on(o) if n != o.name)    # (what moves it from outside)
+            if b:
+                ref_bones.add((o.name, b))
+            else:
+                selves.add(o.name)
+        seen_from = memo["seen_from"] = (movers, selves, ref_bones)
+    movers, selves, ref_bones = seen_from
+    bone_channel = data_path.startswith("pose.bones[")
+    if obj.name in movers or (obj.name in selves and not bone_channel):
+        return False
     for c in caches.values():
         other = bpy.data.objects.get(c.obj_name) if c.obj_name != obj.name else None
         if other is None:
@@ -703,6 +723,8 @@ def _harmless(obj, data_path, memo=None):
             moved = memo[(obj.name, bname)] = affected_bones(obj, {bname})
         if any(p.name in moved for p in pb.parent_recursive):
             return False    # (it moves a bone it hangs from: a neck sharing the head's turn...)
+        if any(o == obj.name and (rb == bname or rb in moved) for o, rb in ref_bones):
+            return False    # (a reference bone of a Relative To path, or one it moves)
         return not any(c.bone_name and c.bone_name != bname and c.bone_name in moved for c in targets)
     if data_path not in _TRANSFORM_PROPS or not any(not c.bone_name for c in targets):
         return False
@@ -1124,6 +1146,7 @@ def _on_depsgraph(scene, depsgraph):
             sync_list_active(st)        # (a bone / object clicked in the view: its row at once)
         except Exception:
             pass
+    if (st.paths or path_tool_on()) and scene == bpy.context.scene and not modal_running:
         try:
             _watch_order(st)            # (and its place in the selection order, click by click)
         except Exception:
@@ -1542,12 +1565,36 @@ def _view_active_key():
     return (obj.name, bone)
 
 
+def selected_owners_any():
+    """[(object name, bone name)] of every bone selected in Pose Mode (shown: not hidden) / object selected in
+    Object Mode - with a path or not."""
+    out = []
+    vl = bpy.context.view_layer
+    if vl is None:
+        return out
+    for o in vl.objects:
+        try:
+            if o.mode == 'POSE' and o.type == 'ARMATURE' and o.pose is not None:
+                for pb in o.pose.bones:
+                    if not pb.bone.hide and compat.bone_selected(pb):
+                        out.append((o.name, pb.name))
+            elif o.mode == 'OBJECT' and o.select_get() and bpy.context.mode == 'OBJECT':
+                out.append((o.name, ""))
+        except (RuntimeError, ReferenceError, AttributeError):
+            continue
+    return out
+
+
 def _selected_owners(st):
-    """The bones / objects with paths that are selected now, in the path list's order."""
+    """The bones / objects selected now: with paths first, in the path list's order, then the others (Offset
+    Cascade / Shift Phase move animated bones without paths too)."""
     out = []
     for e in st.paths:
         k = (e.object.name, e.bone_name) if e.object is not None else None
         if k is not None and k not in out and _owner_selected(*k):
+            out.append(k)
+    for k in selected_owners_any():
+        if k not in out:
             out.append(k)
     return out
 
@@ -1560,7 +1607,9 @@ def _watch_order(st):
     last. It looks after every update (each click) and on a timer."""
     now = _selected_owners(st)
     order = selection_order()
-    gone = [k for k in order if not _owner_selected(*k)]
+    # (what isn't selected now leaves it - also an armature object noted in Object Mode: in Pose Mode it stays
+    # "selected", but only its bones count there)
+    gone = [k for k in order if k not in now]
     if gone:
         forget_selected(gone)
         order = selection_order()
@@ -1622,13 +1671,25 @@ def sync_list_active(st=None):
             return
 
 
+def path_tool_on():
+    """The Edit Paths / Sculpt Paths tool is the active one (the selection order is kept then even without
+    paths: Offset Cascade on bones without paths)."""
+    ctx = bpy.context
+    try:
+        ws = ctx.workspace
+        tool = ws.tools.from_space_view3d_mode(ctx.mode, create=False) if ws is not None else None
+    except (AttributeError, TypeError, RuntimeError):
+        return False
+    return tool is not None and tool.idname.startswith("emp.")
+
+
 def _reconcile_order():
     """After an undo / redo: the selection is the undo step's, but the order the step kept lags behind it -
     a click's undo step is made before the watcher notes the click (see _watch_order): the bone clicked
     last was missing from it, and the cascade put it after every bone clicked later. The bones / objects
     with paths selected now that the order lacks join it, the active one last (its click was the latest)."""
     st = settings()
-    if st is None or not st.paths:
+    if st is None:
         return
     order = selection_order()
     vl = bpy.context.view_layer
@@ -1638,11 +1699,7 @@ def _reconcile_order():
         bone = obj.data.bones.active.name if obj.type == 'ARMATURE' and obj.mode == 'POSE' and \
             obj.data.bones.active is not None else ""
         active = (obj.name, bone)
-    missing = []
-    for e in st.paths:
-        k = (e.object.name, e.bone_name) if e.object is not None else None
-        if k is not None and k not in order and k not in missing and _owner_selected(*k):
-            missing.append(k)
+    missing = [k for k in _selected_owners(st) if k not in order]
     missing.sort(key=lambda k: k == active)
     for k in missing:
         note_selected(k)
@@ -1658,6 +1715,11 @@ def _watch_active():
     try:
         reconcile_modal()
         st = settings()
+        if st is not None and not st.paths and not modal_running and path_tool_on():
+            try:
+                _watch_order(st)        # (no path: the selection order still kept - Offset Cascade on bones)
+            except Exception:
+                pass
         if st is None or not st.paths or modal_running:
             return 0.25
         global _isolated_at

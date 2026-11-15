@@ -113,7 +113,10 @@ emp.render_view(r"C:\path\shot.png", frame_numbers=True)   # every key's frame w
 
 ## Edit
 
-Each edit is one undo step, so you can try something and undo it.
+Each edit is one undo step, so you can try something and undo it. A locked path (its lock icon in the
+path list: a linked action, a constraint that sets where the bone is, a Relative To reference that moves
+with it...) isn't edited: the call raises a RuntimeError that says why - `get_path(...)["locked"]` has the
+same reason (None when it can be edited).
 
 ```python
 emp.move_key("Character_Rig", "CTRL_Foot_L", frame=25, offset=(0, 0, 0.05))   # world-space nudge

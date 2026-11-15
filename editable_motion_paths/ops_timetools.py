@@ -86,6 +86,54 @@ def _selected_caches(context):
     return [c for c in state.editable_caches(context.scene) if any(k.sel for k in c.keys)]
 
 
+class _Owner:
+    """A selected bone / object without a path, for the tools that move its whole animation (Offset Cascade,
+    Shift Phase): what they use of a path - its bone / object and its curves (no keys on a path, nothing drawn)."""
+
+    def __init__(self, obj_name, bone_name):
+        self.obj_name, self.bone_name = obj_name, bone_name
+        self.ptype = core.LOCATION
+        self.key = (obj_name, bone_name, core.LOCATION)
+        self.keys, self.points = [], []
+        self.dirty = False
+
+    def target(self):
+        obj, owner = core.resolve(self.obj_name, self.bone_name)
+        return core.Target(obj, owner, bool(self.bone_name)) if owner is not None else None
+
+    def refresh(self, force=False):
+        return True
+
+    def extend_to(self, t):
+        pass
+
+    def head(self):
+        obj, owner = core.resolve(self.obj_name, self.bone_name)
+        if owner is None:
+            return None
+        return (obj.matrix_world @ owner.head) if self.bone_name else obj.matrix_world.translation.copy()
+
+
+def pathless_owners(context):
+    """The selected bones / objects that have no path but are animated - Offset Cascade and Shift Phase move them
+    too (no path needed to offset or shift whole animations)."""
+    have = {(c.obj_name, c.bone_name) for c in state.caches.values()}
+    out = []
+    for k in state.selected_owners_any():
+        if k in have:
+            continue
+        o = _Owner(*k)
+        tg = o.target()
+        if tg is not None and tg.coll is not None and any(fc.data_path.startswith(tg.prefix) for fc in tg.coll):
+            out.append(o)
+    return out
+
+
+def can_time_whole(context):
+    """Offset Cascade / Shift Phase can run: paths being edited, or animated bones / objects selected."""
+    return bool(state.editable_caches(context.scene)) or bool(pathless_owners(context))
+
+
 # ----------------------------------------------------------------------------
 # Shared modal: drag left / right
 # ----------------------------------------------------------------------------
@@ -478,9 +526,11 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
         if len(caches) < 2:
             self.report({'WARNING'}, self.WHY)
             return {'CANCELLED'}
-        # (the order, on each path's first selected key - or its first key)
-        pts = [next((k.co.copy() for k in c.keys if k.sel), c.keys[0].co.copy() if c.keys else c.points[0].copy())
+        # (the order, on each path's first selected key - or its first key; a bone without a path: at its head)
+        pts = [c.head() if isinstance(c, _Owner) else
+               next((k.co.copy() for k in c.keys if k.sel), c.keys[0].co.copy() if c.keys else c.points[0].copy())
                for c in caches]
+        pts = [p for p in pts if p is not None]
         state.markers = (pts, context.area.as_pointer(), [str(i + 1) for i in range(len(caches))])
         return _HorizontalDrag.invoke(self, context, event)
 
@@ -493,8 +543,10 @@ class EMP_OT_offset_cascade(_HorizontalDrag, bpy.types.Operator):
         # objects, whole - a click on a bone also picks the key under it, on that one path only)
         caches = _selected_caches(context)
         if len(caches) < 2:
-            # (a path with no keys in this mode moves too: its bone's other channels are its animation)
-            caches = [c for c in state.editable_caches(context.scene) if c.keys or c.points]
+            # (a path with no keys in this mode moves too: its bone's other channels are its animation; selected
+            # animated bones / objects without a path too)
+            caches = [c for c in state.editable_caches(context.scene) if c.keys or c.points] + \
+                pathless_owners(context)
             self.whole = True
         else:
             self.whole = False
@@ -620,7 +672,8 @@ class EMP_OT_shift_phase(_HorizontalDrag, bpy.types.Operator):
         draw_affect(layout, self)
 
     def _caches(self, context):
-        return _selected_caches(context) or [c for c in state.editable_caches(context.scene) if c.keys]
+        return _selected_caches(context) or \
+            [c for c in state.editable_caches(context.scene) if c.keys] + pathless_owners(context)
 
     def _label(self):
         return "Shift Phase: %+g frames%s" % (self.amount, "  (in the loop)" if self.loop else "")
@@ -809,12 +862,19 @@ class EMP_MT_timing(bpy.types.Menu):
 
     @classmethod
     def poll(cls, context):
-        return bool(state.editable_caches(context.scene))
+        return can_time_whole(context)
 
     def draw(self, context):
         layout = self.layout
         layout.operator_context = 'INVOKE_REGION_WIN'
         st = state.settings(context.scene)
+        if not state.editable_caches(context.scene):
+            # (no path: the tools that move whole animations work on the selected bones / objects)
+            layout.operator("emp.offset_cascade", icon='MOD_ARRAY')
+            layout.operator("emp.shift_phase", icon='FILE_REFRESH')
+            layout.separator()
+            layout.label(text="The other timing tools need a path", icon='INFO')
+            return
         layout.operator("emp.ease", text="Ease", icon='IPO_EASE_IN_OUT')
         layout.menu("EMP_MT_space", icon='ALIGN_JUSTIFY')
         layout.operator("emp.tween", text="Breakdown", icon='IPO_SINE')
@@ -839,7 +899,7 @@ class EMP_OT_timing_menu(bpy.types.Operator):
     bl_label = "Timing Menu"
 
     def invoke(self, context, event):
-        if not state.editable_caches(context.scene):
+        if not can_time_whole(context):
             return {'PASS_THROUGH'}
         bpy.ops.wm.call_menu(name="EMP_MT_timing")
         return {'FINISHED'}

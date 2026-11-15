@@ -333,10 +333,11 @@ def build_elements(context, snapshots=None, created=None, connected=None, ensure
             center = None
             if cache.ptype == core.ROTATION and (k.sel or k.sel_l or k.sel_r):
                 center = cache.rot_frame(tg, k.t)[0].translation.copy()
-            if k.sel:
-                elems.append(Elem(cache, k, 'KEY', element_basis(cache, tg, k), 0.0, center))
-                continue
             m = pick.handle_min_world(region, rv3d, k.co) if has_view else 0.0
+            if k.sel:
+                # (m: its handles as drawn - S / R on the key work on what is seen)
+                elems.append(Elem(cache, k, 'KEY', element_basis(cache, tg, k), m, center))
+                continue
             if k.sel_l and k.hl is not None:
                 elems.append(Elem(cache, k, 'L', element_basis(cache, tg, k), m, center))
             if k.sel_r and k.hr is not None:
@@ -515,6 +516,8 @@ class EMP_OT_transform(bpy.types.Operator):
     time_wheel: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'},
                              description="Mouse wheel moves the keys in time (Shift+D)")
     start_x: IntProperty(default=-100000, options={'HIDDEN', 'SKIP_SAVE'})
+    # (a value typed: handles move / scale by it as they are - the mouse moves them as drawn)
+    typed: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
     start_y: IntProperty(default=-100000, options={'HIDDEN', 'SKIP_SAVE'})
 
     @classmethod
@@ -712,13 +715,21 @@ class EMP_OT_transform(bpy.types.Operator):
                 return k.co + rotated_handle(k, e.part, v0, d.normalized(), self._rot_amount())
         if self.individual and self.mode == 'SCALE' and self.orient == 'GLOBAL' \
                 and len(set(round(v, 6) for v in self.value)) == 1:
-            return k.co + scaled_handle(k, e.part, v0, self.value[0])
-        # the handle moves with the mouse (relative), so short handles drawn longer than they
-        # are can still be pulled right up to the key or through it
-        return X @ h
+            # (the handle as drawn scaled: it gets shorter / longer as seen - drawn longer than it is, its true
+            # length went to nothing while the drawn one hardly changed: "it can't be scaled smaller")
+            if self.typed:
+                return k.co + scaled_handle(k, e.part, v0, self.value[0])
+            return pick.real_handle(k, e.part, k.co + (e.co - k.co) * self.value[0], e.m)
+        # the handle's drawn end moves with the mouse - it stays under it (a short handle is drawn longer than it
+        # is: moved by the mouse's move as it is, it drifted away from the mouse); pulled up to the key or
+        # through it, it gets as short as it gets / turns round (a value typed: moved by it as it is)
+        if self.typed:
+            return X @ h
+        return pick.real_handle(k, e.part, X @ e.co, e.m)
 
-    def _key_handle_target(self, k, side, X):
-        """New world handle end when a single key's handles are rotated/scaled (R / S)."""
+    def _key_handle_target(self, k, side, X, m=0.0):
+        """New world handle end when a single key's handles are rotated/scaled (R / S); m: the least drawn
+        length of its handles (S scales them as drawn)."""
         h = k.hr if side == 'R' else k.hl
         v0 = h - k.co
         if self.mode in ROT_MODES:
@@ -727,8 +738,13 @@ class EMP_OT_transform(bpy.types.Operator):
             if d.length > 1e-12:
                 return k.co + rotated_handle(k, side, v0, d.normalized(), self._rot_amount())
         elif self.mode == 'SCALE' and len(set(round(v, 6) for v in self.value)) == 1:
-            return k.co + scaled_handle(k, side, v0, self.value[0])
-        return X @ h
+            if self.typed:
+                return k.co + scaled_handle(k, side, v0, self.value[0])
+            D = pick.display_handle(k, side, m)
+            return pick.real_handle(k, side, k.co + (D - k.co) * self.value[0], m)
+        if self.typed:
+            return X @ h
+        return pick.real_handle(k, side, X @ pick.display_handle(k, side, m), m)
 
     def _apply_key(self, cache, tg, ch, e, X, touched):
         k = e.k
@@ -754,7 +770,7 @@ class EMP_OT_transform(bpy.types.Operator):
                 if htype in AUTO_TYPES and not handle_mode:
                     continue
                 new_type = 'ALIGNED' if htype in AUTO_TYPES else ('FREE' if htype == 'VECTOR' else None)
-                W = self._key_handle_target(k, side, X) if handle_mode else X @ h
+                W = self._key_handle_target(k, side, X, e.m) if handle_mode else X @ h
                 slopes = cache.slopes_from_point(tg, k, side, W, vals, _side_dt(k, side))
                 core.write_handle(ch, k, side, slopes, _side_dt(k, side), vals, new_type, touched)
             return
@@ -774,7 +790,7 @@ class EMP_OT_transform(bpy.types.Operator):
                     dt = _side_dt(k, side)
                     if h is None or dt < core.EPS:
                         continue
-                    W = self._key_handle_target(k, side, X)
+                    W = self._key_handle_target(k, side, X, e.m)
                     s = cache.slopes_from_point(tg, k, side, W, vals, dt)
                     htype = _side_type(k, side)
                     new_type = 'ALIGNED' if htype in AUTO_TYPES else ('FREE' if htype == 'VECTOR' else None)
@@ -791,7 +807,12 @@ class EMP_OT_transform(bpy.types.Operator):
                 if dt < core.EPS:
                     continue
                 h = k.hr if side == 'R' else k.hl
-                if h is not None and (h - k.co).length < SHORT * _natural(k, side).length:
+                if h is not None and e.m > 0.0 and not self.typed:
+                    # (the handle as drawn scaled - see _handle_target)
+                    D = pick.display_handle(k, side, e.m)
+                    W = pick.real_handle(k, side, k.co + (D - k.co) * f, e.m)
+                    s = cache.slopes_from_point(tg, k, side, W, vals, dt)
+                elif h is not None and (h - k.co).length < SHORT * _natural(k, side).length:
                     # flat handle: grow it in world space from its natural length
                     W = k.co + scaled_handle(k, side, h - k.co, f)
                     s = cache.slopes_from_point(tg, k, side, W, vals, dt)
@@ -994,6 +1015,7 @@ class EMP_OT_transform(bpy.types.Operator):
         return self.snapper.find(region, rv3d, self.mouse_last, geo)
 
     def _compute(self, context, event):
+        self.typed = bool(self.numinput.active)
         self.mods = (bool(event.ctrl), bool(event.shift))
         self.elem_delta = {}
         self.snap_hit = None

@@ -251,7 +251,9 @@ That is Blender's own behaviour. To keep edits local, turn it off:
     The paths with selected keys, else every path being edited; **L** or *Loop* off: all the keys
     simply move. In the redo panel of both Shift Phase and Offset Cascade, *Affect* picks what
     moves: *All* channels, or only *Location*, *Rotation*, *Scale* or the other *Values* - and of
-    those the channels (X / Y / Z...), like the easing presets;
+    those the channels (X / Y / Z...), like the easing presets. Both work without paths too: with
+    the path tool on, select the animated bones / objects (in the order they should follow each
+    other) and pick them from the Timing menu (Shift+T) - their whole animations move;
   * *Snap to Frames*.
 
 * **Slide (G G)**: *Spacing* (what it starts with) keeps the frames and slides the poses along

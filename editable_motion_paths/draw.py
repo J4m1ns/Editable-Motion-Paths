@@ -661,7 +661,7 @@ def scale_gizmo_points(st, cache, k, region=None, rv3d=None):
     rv3d = rv3d or bpy.context.region_data
     # X and Z sit on the edges of their ribbons (both sides), Y on the bone axis
     h = ribbon_half(st, cache)
-    mn = pick.handle_min_world(region, rv3d, k.co) * 0.7
+    mn = pick.handle_min_world(region, rv3d, k.co) * (25.0 / pick.MIN_HANDLE_PX)     # (25 px at least)
     out = {}
     y_rib = st.scale_y_display == 'RIBBON'
     for i, part in enumerate(('GX', 'GY', 'GZ')):

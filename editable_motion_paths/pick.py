@@ -24,7 +24,9 @@ def _radius():
     return 12.0 * compat.ui_scale()
 
 
-MIN_HANDLE_PX = 36.0
+# (a short handle is drawn at least this long - grabbable; 36 px made one of 30 px look half as long again, and
+# S couldn't make a handle look shorter than that)
+MIN_HANDLE_PX = 20.0
 
 
 def handle_min_world(region, rv3d, co):
@@ -51,6 +53,17 @@ def display_handle(k, side, m):
     ln = v.length
     d = v / ln if ln > 1e-9 else (k.dir_r if side == 'R' else k.dir_l)
     return k.co + d * math.sqrt(ln * ln + m * m)
+
+
+def real_handle(k, side, D, m):
+    """The handle end whose drawn end (display_handle) is D - drawn length L, true length sqrt(L^2 - m^2): an
+    edit of the handle as it is drawn (dragged, G, S) keeps its end under the mouse / scales what is seen. Drawn
+    shorter than m: the shortest handle, still pointing that way."""
+    v = D - k.co
+    ln = v.length
+    if ln < 1e-12:
+        return k.co.copy()
+    return k.co + v * (max(math.sqrt(max(0.0, ln * ln - m * m)), 1e-3 * m) / ln)
 
 
 def _polyline_distance(region, rv3d, pts, m):
