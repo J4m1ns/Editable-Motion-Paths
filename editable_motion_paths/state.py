@@ -652,7 +652,7 @@ def _bake_from_memo(scene):
     done = True
     from . import live
     live.clear()
-    for k, c in caches.items():
+    for k, c in list(caches.items()) + list(helper_caches.items()):
         m = got.get(k)
         if m is None:
             done = False
@@ -1033,9 +1033,13 @@ def _job_step(job):
     return max(0.02, spent)
 
 
+after_blender_edit = [False]    # (Blender's own G / R / S ran since the last bake: its shift kept until re-baked)
+
+
 def _job_done(job):
     global flash
     job.finish()
+    after_blender_edit[0] = False
     try:
         from . import ops_vertex
         ops_vertex.store_points(settings())     # (the tracked vertices as they follow the animation: in the file)
@@ -1206,6 +1210,7 @@ def _on_depsgraph(scene, depsgraph):
         try:
             from . import live
             if blender_edit_running():
+                after_blender_edit[0] = True
                 live.preview(scene)     # (Blender's G / R / S with auto keying: the paths as they will be)
             else:
                 live.end_preview()
@@ -1277,6 +1282,12 @@ def _on_depsgraph(scene, depsgraph):
     if same_frame and not modal_running and not (bpy.context.screen is not None and
                                                  bpy.context.screen.is_animation_playing) and \
             any(isinstance(u.id, bpy.types.Object) for u in depsgraph.updates):
+        try:
+            from . import live
+            if live.update():
+                tag_redraw()    # (an object without animation moved by hand: its paths follow at once)
+        except Exception:
+            pass
         _rebake_if_shown(scene, curves=False)
 
 
@@ -1377,6 +1388,9 @@ def _on_undo(*_args):
         memo = _bake_from_memo(bpy.context.scene)
         if memo:
             _job = None         # (a bake half done was for the animation undone)
+        else:
+            from . import live
+            live.update()       # (an object moved by hand and undone: its paths back with it at once)
     except Exception:
         memo = False
     tag_redraw()

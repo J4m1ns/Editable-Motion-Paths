@@ -251,9 +251,9 @@ class EMP_VertexPath(bpy.types.PropertyGroup):
     show: BoolProperty(name="Show", default=True, update=_redraw)
     points: CollectionProperty(type=EMP_VertexPoint)
     auto_update: BoolProperty(
-        name="Follow the Animation", default=True, update=_vertex_auto_changed,
-        description="The path follows the animation by itself (a vertex an Armature modifier moves: worked out "
-                    "from its bones - an edit of a bone shows at once). Off: kept as it was tracked")
+        name="Live", default=True, update=_vertex_auto_changed,
+        description="Live: the path follows the animation by itself (a vertex an Armature modifier moves: worked "
+                    "out from its bones). Static: kept as it was tracked - Update Static Path tracks it again")
 
 
 def _mode_pin_changed(self, context):
@@ -276,7 +276,7 @@ class EMP_PathEntry(bpy.types.PropertyGroup):
     # shows Location (issue #12)
     mode_pin: EnumProperty(
         name="Mode", default='HEADER', update=_mode_pin_changed,
-        items=[('HEADER', "As at the Top", "This path follows the mode picked at the top (1 - 4)", 'LINKED', 0),
+        items=[('HEADER', "Auto", "This path follows the mode picked at the top (1 - 4)", 'LINKED', 0),
                ('LOCATION', "Location", "This path is always shown and edited in Location, whatever mode is picked "
                                         "at the top", 'CON_LOCLIKE', 1),
                ('ROTATION', "Rotation", "This path is always shown and edited in Rotation, whatever mode is picked "

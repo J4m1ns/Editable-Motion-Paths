@@ -6,7 +6,7 @@ stops) and kept in the file (scene.emp.vertex_paths)."""
 import time
 
 import bpy
-from bpy.props import IntProperty
+from bpy.props import BoolProperty, IntProperty
 
 from . import state
 
@@ -227,6 +227,13 @@ class EMP_OT_track_vertex(bpy.types.Operator):
     frame_end: IntProperty(name="End", description="Last frame of the path", options={'SKIP_SAVE'})
     entry: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})     # (Update: a vertex tracked before)
 
+    @classmethod
+    def description(cls, context, props):
+        if props.entry >= 0:
+            return ("Update Static Path: its positions worked out again over its range, with the mesh as Blender "
+                    "makes it (from any mode)")
+        return cls.__doc__
+
     BUDGET = 0.04       # seconds of frame stepping per tick (Blender stays responsive)
 
     @classmethod
@@ -345,25 +352,100 @@ class EMP_OT_track_vertex(bpy.types.Operator):
         if self.area is not None:
             self.area.header_text_set(None)
         obj = bpy.data.objects.get(self.obj_name)
+        if ok:
+            st = state.settings(sc)
+            e = next((e for e in st.vertex_paths if e.object == obj and e.index == self.idx), None)
+            if e is None:
+                e = st.vertex_paths.add()
+                e.object, e.index = obj, self.idx
+            e.frame_start = self.f0
+            e.points.clear()
+            for p in self.pts:
+                e.points.add().co = p
+            e.show = True
+            try:
+                bpy.ops.ed.undo_push(message="Track Motion Path")     # (Ctrl+Z takes the path away again)
+            except RuntimeError:
+                pass
         if obj is not None and self.edit:
             if context.view_layer.objects.active != obj:
                 context.view_layer.objects.active = obj
             bpy.ops.object.mode_set(mode='EDIT')
         if not ok:
             return {'CANCELLED'}
-        st = state.settings(sc)
-        e = next((e for e in st.vertex_paths if e.object == obj and e.index == self.idx), None)
-        if e is None:
-            e = st.vertex_paths.add()
-            e.object, e.index = obj, self.idx
-        e.frame_start = self.f0
-        e.points.clear()
-        for p in self.pts:
-            e.points.add().co = p
-        e.show = True
         state.tag_redraw()
         self.report({'INFO'}, "Motion path of vertex %d: frames %d - %d (%.1f s)" % (
             self.idx, self.f0, self.f0 + len(self.pts) - 1, time.time() - self.t_start))
+        return {'FINISHED'}
+
+
+def is_live(e):
+    return getattr(e, "auto_update", True) and e.object is not None and lbs_setup(e)[0] is not None
+
+
+class EMP_OT_vertex_path_mode(bpy.types.Operator):
+    """Live: the path follows the animation by itself. Static: kept as it was tracked"""
+    bl_idname = "emp.vertex_path_mode"
+    bl_label = "Vertex Path Mode"
+    bl_options = {'UNDO', 'INTERNAL'}
+
+    index: IntProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    live: BoolProperty(options={'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, context, props):
+        st = state.settings(context.scene)
+        e = st.vertex_paths[props.index] if st is not None and 0 <= props.index < len(st.vertex_paths) else None
+        if props.live:
+            why = lbs_setup(e)[1] if e is not None else ""
+            return ("Live: the path follows the animation by itself - worked out from the bones (an edit shows at "
+                    "once, while dragging where it can)" + ("" if not why else ". Not for this vertex: " + why +
+                                                            " - use Static and Update"))
+        return "Static: the path is kept as it was tracked; Update Static Path tracks it again over its range"
+
+    def execute(self, context):
+        st = state.settings(context.scene)
+        if st is None or not 0 <= self.index < len(st.vertex_paths):
+            return {'CANCELLED'}
+        e = st.vertex_paths[self.index]
+        if self.live and lbs_setup(e)[0] is None:
+            self.report({'INFO'}, "This vertex can't follow by itself (%s): Static, with Update Static Path" %
+                        lbs_setup(e)[1])
+            return {'CANCELLED'}
+        e.auto_update = self.live
+        state.tag_redraw()
+        return {'FINISHED'}
+
+
+class EMP_OT_vertex_path_mode_menu(bpy.types.Operator):
+    """Live (follows the animation by itself) or Static (kept as tracked, Update Static Path tracks it again)"""
+    bl_idname = "emp.vertex_path_mode_menu"
+    bl_label = "Vertex Path Mode"
+    bl_options = {'INTERNAL'}
+
+    index: IntProperty(options={'HIDDEN', 'SKIP_SAVE'})
+
+    def invoke(self, context, event):
+        st = state.settings(context.scene)
+        if st is None or not 0 <= self.index < len(st.vertex_paths):
+            return {'CANCELLED'}
+        index = self.index
+        e = st.vertex_paths[index]
+        live = is_live(e)
+        can = lbs_setup(e)[0] is not None
+
+        def draw(menu, _context):
+            lay = menu.layout
+            lay.operator_context = 'INVOKE_DEFAULT'
+            sub = lay.row()
+            sub.enabled = can
+            op = sub.operator("emp.vertex_path_mode", text="Live", icon='PLAY', depress=live)
+            op.index, op.live = index, True
+            op = lay.operator("emp.vertex_path_mode", text="Static", icon='FREEZE', depress=not live)
+            op.index, op.live = index, False
+            lay.separator()
+            lay.operator("emp.track_vertex", text="Update Static Path", icon='FILE_REFRESH').entry = index
+        context.window_manager.popup_menu(draw, title="Vertex Path")
         return {'FINISHED'}
 
 
@@ -405,14 +487,15 @@ class EMP_UL_vertex_paths(bpy.types.UIList):
         sub = row.row()
         sub.alignment = 'RIGHT'
         sub.label(text="%d - %d" % (item.frame_start, item.frame_start + max(len(item.points) - 1, 0)))
-        # follows the animation by itself (a vertex an Armature modifier moves), or tracked again by hand
-        setup, why = lbs_setup(item) if item.object is not None else (None, "")
+        # Live (follows the animation by itself) / Static (as tracked): the icon opens a menu, like the paths'
+        # spaces; Static: its Update button next to it
+        live = is_live(item)
         sub = row.row(align=True)
-        if setup is not None:
-            sub.prop(item, "auto_update", text="", emboss=False,
-                     icon='FILE_REFRESH' if item.auto_update else 'PINNED')
-        if setup is None or not item.auto_update:
-            sub.operator("emp.track_vertex", text="", icon='TRACKING_REFINE_FORWARDS', emboss=False).entry = index
+        sub.operator("emp.vertex_path_mode_menu", text="", emboss=False,
+                     icon='PLAY' if live else 'FREEZE').index = index
+        if not live:
+            sub.operator("emp.track_vertex", text="", icon='FILE_REFRESH', emboss=False).entry = index
 
 
-classes = (EMP_OT_track_vertex, EMP_OT_vertex_path_remove, EMP_UL_vertex_paths)
+classes = (EMP_OT_track_vertex, EMP_OT_vertex_path_mode, EMP_OT_vertex_path_mode_menu, EMP_OT_vertex_path_remove,
+           EMP_UL_vertex_paths)

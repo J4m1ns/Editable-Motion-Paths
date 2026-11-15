@@ -554,7 +554,7 @@ class EMP_OT_path_mode(bpy.types.Operator):
     bl_options = {'UNDO', 'INTERNAL'}
 
     index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
-    mode: EnumProperty(items=[('HEADER', "As at the Top", ""), ('LOCATION', "Location", ""),
+    mode: EnumProperty(items=[('HEADER', "Auto", ""), ('LOCATION', "Location", ""),
                               ('ROTATION', "Rotation", ""), ('SCALE', "Scale", ""), ('VALUE', "Value", "")],
                        options={'SKIP_SAVE'})
     toggle: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'},
@@ -589,7 +589,8 @@ class EMP_OT_path_mode(bpy.types.Operator):
             if e.mode_pin != mode:
                 e.mode_pin = mode
         state.flash_message("%d path%s: %s" % (len(picked), "" if len(picked) == 1 else "s",
-                                               "as at the top" if mode == 'HEADER' else "always " + mode.title()))
+                                               "Auto (as at the top)" if mode == 'HEADER' else
+                                               "always " + mode.title()))
         state.tag_redraw()
         return {'FINISHED'}
 
@@ -600,8 +601,8 @@ def _row_highlighted(e):
 
 
 class EMP_OT_path_mode_menu(bpy.types.Operator):
-    """This path's mode: as picked at the top (1 - 4), or one of its own - an arm in Rotation while the sword tip """ \
-        """it swings shows Location. The highlighted paths all take it (Shift+1 - 4 in the view)"""
+    """This path's mode: Auto (as picked at the top: 1 - 4), or one of its own - an arm in Rotation while the """ \
+        """sword tip it swings shows Location. The highlighted paths all take it (Shift+1 - 4 in the view)"""
     bl_idname = "emp.path_mode_menu"
     bl_label = "Path Mode"
     bl_options = {'INTERNAL'}
@@ -626,7 +627,8 @@ class EMP_OT_path_mode_menu(bpy.types.Operator):
         def draw(menu, _context):
             from .props import MODE_ICONS
             lay = menu.layout
-            op = lay.operator("emp.path_mode", text="As at the Top (1 - 4)", icon='LINKED', depress=cur == 'HEADER')
+            op = lay.operator("emp.path_mode", text="Auto (as at the top: 1 - 4)", icon='LINKED',
+                              depress=cur == 'HEADER')
             op.index, op.mode = index, 'HEADER'
             lay.separator()
             for m in ('LOCATION', 'ROTATION', 'SCALE', 'VALUE'):

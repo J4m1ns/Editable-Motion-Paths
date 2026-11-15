@@ -2467,8 +2467,7 @@ class BakeJob:
                 # (the same parent spaces again: the path stays as it is - not worked out anew)
                 self.moved = True
                 self._put(c, self.fs, mats, ok, cams, cam_obj)
-            if state.caches.get(c.key) is c:
-                baked[c.key] = (c.fs, c.B, c.Cam, c.cam_fs, c.cam_obj)
+            baked[c.key] = (c.fs, c.B, c.Cam, c.cam_fs, c.cam_obj)     # (the hidden ones too: undo takes them)
         if baked:
             state.remember_bake(getattr(self, "memo_sig", None), baked)
 

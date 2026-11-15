@@ -17,6 +17,8 @@ _kids = {}      # cache key -> (baked B list, fs): every path's parent space as 
 _chain = {}     # owner -> [ancestor owners that carry it rigidly, root first]
 _live = {}      # cache key -> the B list put on the cache here (a live one)
 _depth = {}
+_objs = {}      # object name -> its world matrix as baked: an object without animation that carries paths
+_carry = {}     # owner -> the nearest such object that carries it rigidly (constraints aiming inside it)
 _moved_before = set()    # ancestors edited since the bake (an edit undone back to the bake's curves: worked out once more)
 
 
@@ -69,6 +71,62 @@ def rigidly_carried(a_obj, a_bone, c_obj, c_bone):
     return False
 
 
+_OBJ_TF = {"location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "scale", "delta_location",
+           "delta_rotation_euler", "delta_rotation_quaternion", "delta_scale"}
+
+
+def _moves_by_itself(ob):
+    """Its own transform is animated (curves, drivers, NLA) or set by constraints: moved by hand, it isn't moved
+    the same on every frame."""
+    if _active(ob.constraints):
+        return True
+    ad = ob.animation_data
+    if ad is None:
+        return False
+    if len(ad.nla_tracks):
+        return True
+    for fc in compat.get_fcurves(ob) or ():
+        if fc.data_path in _OBJ_TF:
+            return True
+    return any(d.data_path in _OBJ_TF for d in ad.drivers)
+
+
+def _inside(t, x):
+    """The object t is x or hangs from it."""
+    while t is not None:
+        if t == x:
+            return True
+        t = t.parent
+    return False
+
+
+def _static_carrier(obj, owner, bone):
+    """The nearest object above this bone / object (or itself) that nothing moves but a hand - nothing animates
+    it or anything above it - and that carries it rigidly: every constraint on the way aims inside it. Moved by
+    hand (the whole character's armature moved, no keys), it moves the path the same on every frame."""
+    targets = []
+    if bone:
+        pb = owner
+        while pb is not None:
+            for c in _active(pb.constraints):
+                targets += [getattr(c, "target", None), getattr(c, "pole_target", None)]
+            pb = pb.parent
+    chain = []
+    o = obj
+    while o is not None:
+        chain.append(o)
+        o = o.parent
+    for i, x in enumerate(chain):
+        if any(_moves_by_itself(a) for a in chain[i:]):
+            continue
+        below = chain[:i]
+        tg = targets + [t for b in below for c in _active(b.constraints)
+                        for t in (getattr(c, "target", None), getattr(c, "pole_target", None))]
+        if all(t is None or _inside(t, x) for t in tg):
+            return x
+    return None
+
+
 def _basis_list(tg, fs, n):
     out = []
     for i in range(n):
@@ -88,6 +146,8 @@ def clear():
     _chain.clear()
     _live.clear()
     _depth.clear()
+    _objs.clear()
+    _carry.clear()
     _moved_before.clear()
 
 
@@ -100,7 +160,7 @@ def snapshot():
             if c.B:
                 owners.setdefault((c.obj_name, c.bone_name), []).append(c)
         helpers = {k[:2] for k in state.helper_caches}
-        if len(owners) < 2:
+        if not owners:
             return
         res = {}
         for k in owners:
@@ -108,6 +168,10 @@ def snapshot():
             if owner is not None:
                 res[k] = (obj, owner)
                 _depth[k] = _owner_depth(obj, owner, k[1])
+                x = _static_carrier(obj, owner, k[1])
+                if x is not None:
+                    _carry[k] = x.name
+                    _objs.setdefault(x.name, x.matrix_world.copy())
         for ka, cs in owners.items():
             if ka not in res or ka in helpers:
                 continue        # (a hidden one isn't edited with the add-on: its own curves are read anyway)
@@ -125,13 +189,12 @@ def snapshot():
             _anc[ka] = {"c": a, "B": a.B, "fs": a.fs, "basis": _basis_list(tg, a.fs, len(a.B)), "sig": a.sig}
             for kb in kids:
                 _chain.setdefault(kb, []).append(ka)
-        if not _anc:
-            return
         for kb in _chain:
             _chain[kb].sort(key=lambda k: _depth.get(k, 0))
-        for kb in _chain:
-            for c in owners.get(kb, ()):
-                _kids[c.key] = (c.B, c.fs)
+        for kb, cs in owners.items():
+            if kb in _chain or kb in _carry:
+                for c in cs:
+                    _kids[c.key] = (c.B, c.fs)
     except (ReferenceError, AttributeError):
         clear()
 
@@ -154,7 +217,7 @@ def update():
     """The edited parents' curves now against the bake: their children's paths moved with them. True if any."""
     if _pv["tmp"] and not state.blender_edit_running():
         end_preview()
-    if not _anc:
+    if not _anc and not _objs:
         return False
     try:
         return _update()
@@ -213,7 +276,8 @@ def preview(scene):
     they carry drawn as they will be once the drag is keyed (a key on this frame; the frames around it change with
     it) - not shifted as a whole and set right only after the drag."""
     if not scene.tool_settings.use_keyframe_insert_auto or not state.blender_edit_running():
-        return end_preview()
+        end_preview()
+        return update()         # (an object without animation moved by hand: its paths with it)
     from . import onion
     try:
         pend = onion._pending_keys(scene)
@@ -226,7 +290,8 @@ def preview(scene):
         bone = m.group(1).replace('\\"', '"').replace('\\\\', '\\') if m else ""
         owners.setdefault((ob.name, bone), []).append((ob, fc, v))
     if not owners:
-        return end_preview()
+        end_preview()
+        return update()
     try:
         for (oname, _b), items in owners.items():
             ob = items[0][0]
@@ -253,7 +318,7 @@ def preview(scene):
                 c.preview_coll = None
                 c.dirty = True
         _pv["caches"] = shown
-        if _anc:
+        if _anc or _objs:
             for key in _update(dragged=set(owners)):
                 _pv["caches"].add(key)
         state.tag_redraw()
@@ -288,7 +353,22 @@ def end_preview():
     return True
 
 
+def _object_moves():
+    """The objects without animation moved by hand since the bake: their world change (the same on every frame)."""
+    import bpy
+    out = {}
+    for name, m0 in _objs.items():
+        ob = bpy.data.objects.get(name)
+        if ob is None:
+            continue
+        d = ob.matrix_world @ m0.inverted_safe()
+        if not _identity(d):
+            out[name] = d
+    return out
+
+
 def _update(dragged=()):
+    moves = _object_moves()
     deltas = {}         # ancestor owner -> (fs, [D per frame or None])
     for ka in sorted(_anc, key=lambda k: _depth.get(k, 0)):
         info = _anc[ka]
@@ -305,8 +385,11 @@ def _update(dragged=()):
         _moved_before.add(ka)
         if all(_identity(n @ o.inverted_safe()) for n, o in zip(basis, info["basis"])):
             continue
-        # its own parent space as the parents above it moved it
+        # its own parent space as the parents above it moved it (and an object carrying it moved by hand)
         B = info["B"]
+        if _carry.get(ka) in moves:
+            Dm = moves[_carry[ka]]
+            B = [Dm @ b for b in B]
         for kp in _chain.get(ka, ()):
             if kp in deltas:
                 B = _apply(deltas[kp][1], deltas[kp][0], B, info["fs"])
@@ -323,6 +406,9 @@ def _update(dragged=()):
         if c is None or (c.B is not B0 and c.B is not _live.get(key)) or c.fs != fs0:
             continue
         M = B0
+        if _carry.get(key[:2]) in moves:
+            Dm = moves[_carry[key[:2]]]
+            M = [Dm @ b for b in M]
         for ka in _chain.get(key[:2], ()):
             if ka in deltas:
                 M = _apply(deltas[ka][1], deltas[ka][0], M, fs0)

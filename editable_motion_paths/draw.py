@@ -364,8 +364,9 @@ def live_shift(cache):
     try:
         f = bpy.context.scene.frame_current
         from . import live
+        # (during Blender's own drag - and after it until the paths are baked again: no jump back meanwhile)
         if cache.local is None and cache.cam is None and cache.rel is None and cache.B and cache.fs <= f <= cache.fe and \
-                state.blender_edit_running() and not live.previewing(cache.key):
+                (state.blender_edit_running() or state.after_blender_edit[0]) and not live.previewing(cache.key):
             obj, owner = core.resolve(cache.obj_name, cache.bone_name)
             if owner is not None and not state._constrained(owner) and _parent_change_stays(obj, owner):
                 B, _ok = core.parent_space(obj, owner, cache.bone_name, cache.ptype == core.LOCATION)
