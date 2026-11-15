@@ -546,6 +546,96 @@ class EMP_OT_path_space(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class EMP_OT_path_mode(bpy.types.Operator):
+    """This path's own mode - it stays in it whatever mode is picked at the top (1 - 4) - or the top's again. """ \
+        """The highlighted paths all take it (Shift+1 - 4 in the view)"""
+    bl_idname = "emp.path_mode"
+    bl_label = "Path Mode"
+    bl_options = {'UNDO', 'INTERNAL'}
+
+    index: IntProperty(default=-1, options={'HIDDEN', 'SKIP_SAVE'})
+    mode: EnumProperty(items=[('HEADER', "As at the Top", ""), ('LOCATION', "Location", ""),
+                              ('ROTATION', "Rotation", ""), ('SCALE', "Scale", ""), ('VALUE', "Value", "")],
+                       options={'SKIP_SAVE'})
+    toggle: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'},
+                         description="The highlighted paths already in that mode: back to the top's")
+
+    @classmethod
+    def description(cls, context, props):
+        from .props import EMP_PathEntry
+        it = {i.identifier: i for i in EMP_PathEntry.bl_rna.properties["mode_pin"].enum_items}.get(props.mode)
+        return it.description if it is not None else cls.__doc__
+
+    def execute(self, context):
+        st = state.settings(context.scene)
+        if st is None:
+            return {'CANCELLED'}
+        # the row's path and the highlighted ones (being edited); from the view (index -1): the highlighted ones
+        picked = []
+        if 0 <= self.index < len(st.paths):
+            picked.append(st.paths[self.index])
+        row_lit = not picked or _row_highlighted(st.paths[self.index])
+        if row_lit:
+            for e in st.paths:
+                if e not in picked and e.object is not None and _row_highlighted(e):
+                    picked.append(e)
+        if not picked:
+            self.report({'INFO'}, "Select the bones / objects whose paths should keep a mode of their own")
+            return {'CANCELLED'}
+        mode = self.mode
+        if self.toggle and all(e.mode_pin == mode for e in picked):
+            mode = 'HEADER'
+        for e in picked:
+            if e.mode_pin != mode:
+                e.mode_pin = mode
+        state.flash_message("%d path%s: %s" % (len(picked), "" if len(picked) == 1 else "s",
+                                               "as at the top" if mode == 'HEADER' else "always " + mode.title()))
+        state.tag_redraw()
+        return {'FINISHED'}
+
+
+def _row_highlighted(e):
+    c = state.caches.get(state.entry_key(e)) if e.object is not None else None
+    return c is not None and c.owner_selected()
+
+
+class EMP_OT_path_mode_menu(bpy.types.Operator):
+    """This path's mode: as picked at the top (1 - 4), or one of its own - an arm in Rotation while the sword tip """ \
+        """it swings shows Location. The highlighted paths all take it (Shift+1 - 4 in the view)"""
+    bl_idname = "emp.path_mode_menu"
+    bl_label = "Path Mode"
+    bl_options = {'INTERNAL'}
+
+    index: IntProperty(options={'HIDDEN', 'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, context, props):
+        st = state.settings(context.scene)
+        e = st.paths[props.index] if st is not None and 0 <= props.index < len(st.paths) else None
+        if e is not None and e.mode_pin != 'HEADER':
+            return "Always %s (its own mode). %s" % (e.mode_pin.title(), cls.__doc__)
+        return cls.__doc__
+
+    def invoke(self, context, event):
+        st = state.settings(context.scene)
+        if not 0 <= self.index < len(st.paths):
+            return {'CANCELLED'}
+        index = self.index
+        cur = st.paths[index].mode_pin
+
+        def draw(menu, _context):
+            from .props import MODE_ICONS
+            lay = menu.layout
+            op = lay.operator("emp.path_mode", text="As at the Top (1 - 4)", icon='LINKED', depress=cur == 'HEADER')
+            op.index, op.mode = index, 'HEADER'
+            lay.separator()
+            for m in ('LOCATION', 'ROTATION', 'SCALE', 'VALUE'):
+                op = lay.operator("emp.path_mode", text="Always " + m.title(), icon=MODE_ICONS[m], depress=cur == m)
+                op.index, op.mode = index, m
+        context.window_manager.popup_menu(draw, title="Mode of this Path")
+        return {'FINISHED'}
+
+
 class EMP_OT_path_space_menu(bpy.types.Operator):
     """Global / Local / Camera / Relative To: the world, only the bone's / object's own motion, as the """ \
         """active camera sees it, or against an object / bone of your choice. The highlighted paths all take it"""
@@ -856,7 +946,7 @@ def _sel_keys(cache):
 
 def picked_channel(context):
     """Scale mode: the channel picked on the scale gizmo (0 / 1 / 2), else None."""
-    if state.edit_mode(context.scene) != core.SCALE:
+    if not state.mode_in_use(core.SCALE, context.scene):
         return None
     return {'X': 0, 'Y': 1, 'Z': 2}.get(state.settings(context.scene).scale_channel)
 
@@ -1387,7 +1477,9 @@ class EMP_OT_smooth(_AdjustOp, bpy.types.Operator):
         return False
 
     def invoke(self, context, event):
-        if state.edit_mode(context.scene) == core.SCALE:
+        if state.edit_mode(context.scene) == core.SCALE or (
+                state.editable_caches(context.scene) and
+                all(c.ptype == core.SCALE for c in state.editable_caches(context.scene))):
             # Alt+S on scale paths: longer / shorter handles (whiskers) of the picked channel
             bpy.ops.emp.scale_handles('INVOKE_DEFAULT')
             return {'CANCELLED'}
@@ -2066,7 +2158,7 @@ class _ScaleHandleOp(_AdjustOp):
 
     @classmethod
     def poll(cls, context):
-        return context.mode in {'POSE', 'OBJECT'} and state.edit_mode(context.scene) == core.SCALE
+        return context.mode in {'POSE', 'OBJECT'} and state.mode_in_use(core.SCALE, context.scene)
 
     def _channels(self, context):
         ch = self.channel
@@ -2245,7 +2337,8 @@ class EMP_OT_scale_handle_values(_ScaleHandleOp, bpy.types.Operator):
             touched.add(fc)
 
 
-classes = (EMP_OT_com_reset_all, EMP_OT_com_set_weights, EMP_OT_path_pick, EMP_OT_path_space, EMP_OT_path_space_menu, EMP_OT_path_relative, EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
+classes = (EMP_OT_com_reset_all, EMP_OT_com_set_weights, EMP_OT_path_pick, EMP_OT_path_mode, EMP_OT_path_mode_menu,
+           EMP_OT_path_space, EMP_OT_path_space_menu, EMP_OT_path_relative, EMP_OT_path_add, EMP_OT_path_remove, EMP_OT_graph_isolate, EMP_OT_lock_info, EMP_OT_reset_button,
            EMP_OT_reset_graph_look, EMP_OT_com_limb_reset, EMP_OT_edit_limb_weight,
            EMP_OT_smoothing_none, EMP_OT_set_view, EMP_OT_onion_mode, EMP_OT_onion_update, EMP_OT_path_update,
            EMP_OT_edit_tool,

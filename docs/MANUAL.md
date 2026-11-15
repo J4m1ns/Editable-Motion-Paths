@@ -48,6 +48,17 @@ there): drag a ring to turn around that axis only (it follows the mouse steadily
 | **3 Scale** | Two crossed **ribbons** along the bone's own X and Z axes, as wide as the X and Z scale, and a third green ribbon beside them for the Y scale (*outside* or *inside* the path's curves, like the Value track; on a circle always outside) that grows from a fixed inner edge like a graph, as wide as the Y scale, with one handle on its outer edge - or, in the preferences (*Scale Y: Color*), the Y scale as the color of the two ribbons (blue below 1, red above). A box at the current frame shows the current scale, its values written next to it (Display: *Box Values*; *Values at Keys* writes them at the keys) | Scale keys: a selected key shows a **scale gizmo** whose X and Z handles sit on the ribbon edges (drag an edge to make that ribbon wider; Y along the bone; the white one scales all). **Click** a gizmo handle to show that channel's handles as **whiskers** along the ribbon (time along the path, value across it) and pick both of them; drag a whisker to edit it. **V** and **T** (handle type, interpolation) work on the selected keys of that channel only, like on one curve in the Graph Editor. Clicking a whisker picks that handle (Shift: add another; undo brings the picking back). **Alt+S** makes the picked handles longer or shorter, **Alt+Shift+S** moves them up or down (both handles of a smooth key tilt together; one handle: the other one follows in line); with none picked, the channel's handles of the selected keys; I / O / B: before the key, after it, both. So the handles can be shaped from the keyboard alone. **S** scales all axes (X / Y / Z: one) |
 | **4 Value** | A **track** for one animated value (IK/FK switch, custom property, constraint influence…), *above the path* or *beside the path* (follows its shape in the plane of the motion, *outside* or *inside* its curves, and stays put when the view turns; on a circle a bigger value is always farther out) | That value: move its keys away from / toward the path. Pick the value in the sidebar or tool header |
 
+**A mode of its own**: each path in the path list has a mode icon - greyed while it follows the mode
+picked at the top (1 - 4); its menu pins one of its own (*Always Location / Rotation / ...*), or **Shift+1 -
+4** in the view pins it for the highlighted paths (again: back to the top's). An arm that turns stays in
+Rotation while the sword tip it swings shows Location; both are edited together like any paths.
+
+**Children follow at once**: when a bone / object with a path is edited (with the add-on, in the Graph
+Editor, or rotated with auto keying), the paths of what it carries by plain parenting - the sword in the
+hand, its tip, an object hung on a bone - move with it right away, during the drag, not after a re-bake. A
+chain with a constraint, a bone that doesn't inherit rotation / scale in full, is worked out once the edit
+is done, as before.
+
 Scale and Value paths of something that stays in place are drawn around a **circle** like a
 clock face, lying flat around the world Z axis (it stays put when the view turns): the frame
 range goes once around it and the current frame runs around (Display > Layout: Auto / Along the

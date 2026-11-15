@@ -77,6 +77,11 @@ TOOL_KEYMAP = (
     _k("emp.set_view", 'TWO', {"name": "edit_mode", "value": 'ROTATION'}),
     _k("emp.set_view", 'THREE', {"name": "edit_mode", "value": 'SCALE'}),
     _k("emp.set_view", 'FOUR', {"name": "edit_mode", "value": 'VALUE'}),
+    # (Shift: the highlighted paths keep that mode of their own; again: as at the top)
+    _k("emp.path_mode", 'ONE', {"mode": 'LOCATION', "toggle": True}, shift=True),
+    _k("emp.path_mode", 'TWO', {"mode": 'ROTATION', "toggle": True}, shift=True),
+    _k("emp.path_mode", 'THREE', {"mode": 'SCALE', "toggle": True}, shift=True),
+    _k("emp.path_mode", 'FOUR', {"mode": 'VALUE', "toggle": True}, shift=True),
     _k("wm.context_toggle", 'O', {"data_path": "tool_settings.use_proportional_edit"}),
     _k("wm.context_pie_enum", 'O', {"data_path": "tool_settings.proportional_edit_falloff"}, shift=True),
     _k("wm.context_toggle", 'O', {"data_path": "tool_settings.use_proportional_connected"}, alt=True),
@@ -616,6 +621,13 @@ class EMP_UL_paths(bpy.types.UIList):
         if item.object is not None:
             if cache is not None and cache.locked:
                 row.operator("emp.lock_info", text="", icon='LOCKED', emboss=False).reason = cache.lock_reason
+            # its mode: its own (pinned), or the one at the top (greyed) - the icon opens a menu
+            from .props import MODE_ICONS
+            pinned = item.mode_pin != 'HEADER'
+            sub = row.row(align=True)
+            sub.active = pinned
+            sub.operator("emp.path_mode_menu", text="", emboss=False,
+                         icon=MODE_ICONS[item.mode_pin if pinned else data.edit_mode]).index = index
             # Global / Local / Camera: the icon opens a menu of the three
             icon = {'GLOBAL': 'WORLD', 'LOCAL': 'ORIENTATION_LOCAL', 'CAMERA': 'CAMERA_DATA',
                     'RELATIVE': 'CON_CHILDOF'}[item.space]
@@ -651,7 +663,8 @@ class EMP_PT_main(_Panel, bpy.types.Panel):
             row = col.row(align=True)
             for m in pair:
                 row.prop_enum(st, "edit_mode", m)
-        if st.edit_mode == 'VALUE':
+        act = _active_entry(context)
+        if st.edit_mode == 'VALUE' or (act is not None and act.mode_pin == 'VALUE'):
             row = layout.row(align=True)
             _draw_value_picker(row, context)
             row.prop(st, "value_track", text="")

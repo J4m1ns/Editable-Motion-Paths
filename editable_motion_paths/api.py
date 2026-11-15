@@ -79,14 +79,20 @@ def _in_mode(mode):
     """The edit mode for one call, put back after it."""
     st = state.settings(_scene())
     before = st.edit_mode
-    if mode and mode != before:
-        st.edit_mode = mode
+    forced = state.mode_force[0]
+    if mode:
+        # (every path in the mode asked for - also one with its own mode in the path list)
+        state.mode_force[0] = mode
+        if mode != before:
+            st.edit_mode = mode
         state.sync_caches(_scene())
     try:
         yield
     finally:
+        state.mode_force[0] = forced
         if st.edit_mode != before:
             st.edit_mode = before
+        if mode:
             state.sync_caches(_scene())
 
 

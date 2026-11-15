@@ -243,9 +243,35 @@ class EMP_VertexPath(bpy.types.PropertyGroup):
     points: CollectionProperty(type=EMP_VertexPoint)
 
 
+def _mode_pin_changed(self, context):
+    """A path's own mode (or the header's again): its path in that mode made / taken at once."""
+    try:
+        state.sync_caches(context.scene if context else None)
+        state.schedule_rebake(0.05)
+        state.tag_redraw()
+    except Exception:
+        pass
+
+
+MODE_ICONS = {'LOCATION': 'CON_LOCLIKE', 'ROTATION': 'CON_ROTLIKE', 'SCALE': 'CON_SIZELIKE', 'VALUE': 'DRIVER'}
+
+
 class EMP_PathEntry(bpy.types.PropertyGroup):
     object: PointerProperty(type=bpy.types.Object)
     bone_name: StringProperty()
+    # the path's own mode, or the one picked at the top (1 - 4): an arm in Rotation while the sword tip it swings
+    # shows Location (issue #12)
+    mode_pin: EnumProperty(
+        name="Mode", default='HEADER', update=_mode_pin_changed,
+        items=[('HEADER', "As at the Top", "This path follows the mode picked at the top (1 - 4)", 'LINKED', 0),
+               ('LOCATION', "Location", "This path is always shown and edited in Location, whatever mode is picked "
+                                        "at the top", 'CON_LOCLIKE', 1),
+               ('ROTATION', "Rotation", "This path is always shown and edited in Rotation, whatever mode is picked "
+                                        "at the top", 'CON_ROTLIKE', 2),
+               ('SCALE', "Scale", "This path is always shown and edited in Scale, whatever mode is picked at the "
+                                  "top", 'CON_SIZELIKE', 3),
+               ('VALUE', "Value", "This path is always shown and edited in Value, whatever mode is picked at the "
+                                  "top", 'DRIVER', 4)])
     # kept for files saved with 1.0 (paths were per type then); the type now comes from
     # the global Location / Rotation edit mode
     path_type: EnumProperty(items=[('LOCATION', "Location", ""), ('ROTATION', "Rotation", "")],

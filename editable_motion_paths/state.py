@@ -88,10 +88,28 @@ def edit_mode(scene=None):
     return st.edit_mode if st is not None else 'LOCATION'
 
 
+mode_force = [None]     # (the Python API's mode for one call: every path in it, as before paths had their own)
+
+
+def entry_mode(entry):
+    """The mode a path is shown and edited in: its own (pinned in the path list) or the one picked at the top."""
+    if mode_force[0]:
+        return mode_force[0]
+    pin = getattr(entry, "mode_pin", 'HEADER')
+    return pin if pin != 'HEADER' else edit_mode(entry.id_data)
+
+
+def mode_in_use(mode, scene=None):
+    """Is this mode the one at the top, or the own mode of a path being edited?"""
+    if edit_mode(scene) == mode:
+        return True
+    return any(c.ptype == mode for c in editable_caches(scene))
+
+
 def entry_key(entry, mode=None):
     if entry.object is None:
         return None
-    return (entry.object.name, entry.bone_name, mode or edit_mode(entry.id_data))
+    return (entry.object.name, entry.bone_name, mode or entry_mode(entry))
 
 
 _bone_names = {}      # armature object name -> its bone names (in order) when last seen
@@ -130,11 +148,10 @@ def sync_caches(scene=None):
     if st is None:
         return []
     _follow_renamed_bones(st)
-    mode = st.edit_mode
     targets = set()
     wanted = []
     for e in st.paths:
-        k = entry_key(e, mode)
+        k = entry_key(e)        # (in its own mode, or the one at the top)
         if k is not None:
             targets.add(k[:2])
             wanted.append(k)
@@ -142,8 +159,8 @@ def sync_caches(scene=None):
         if k[:2] not in targets:
             del caches[k]
     need = []
-    refs = {entry_key(e, mode): (e.value_path, e.value_index) for e in st.paths if e.object is not None}
-    hidden = {entry_key(e, mode): parse_frames(e.hidden_keys) for e in st.paths if e.object is not None}
+    refs = {entry_key(e): (e.value_path, e.value_index) for e in st.paths if e.object is not None}
+    hidden = {entry_key(e): parse_frames(e.hidden_keys) for e in st.paths if e.object is not None}
     for k in wanted:
         c = caches.get(k)
         if c is None:
@@ -161,11 +178,11 @@ def sync_caches(scene=None):
         if h != c.hidden:
             c.hidden = h
             c.dirty = True
-        if mode == core.VALUE:
+        if k[2] == core.VALUE:
             ref = refs.get(k)
             if not (ref and ref[0]):
                 # nothing picked yet: the first animated value of the bone / object
-                e = next((e for e in st.paths if entry_key(e, mode) == k), None)
+                e = next((e for e in st.paths if entry_key(e) == k), None)
                 cands = core.value_candidates(e.object, e.bone_name) if e is not None else []
                 if cands and not baking:
                     e.value_path, e.value_index = cands[0][0], cands[0][1]
@@ -212,7 +229,7 @@ def visible_caches(scene=None):
     for e in st.paths:
         if not e.show or (st.only_selected and not _entry_selected(e)):
             continue
-        k = entry_key(e, st.edit_mode)
+        k = entry_key(e)
         if k is None or k in seen:
             continue        # (no object: its object was deleted - nothing to calculate)
         seen.add(k)
@@ -612,6 +629,8 @@ def _bake_from_memo(scene):
     if got is None:
         return False
     done = True
+    from . import live
+    live.clear()
     for k, c in caches.items():
         m = got.get(k)
         if m is None:
@@ -625,6 +644,7 @@ def _bake_from_memo(scene):
         c.failed = False
     if done:
         remember_action_hashes()
+        live.snapshot()
     return done
 
 
@@ -995,6 +1015,11 @@ def _job_step(job):
 def _job_done(job):
     global flash
     job.finish()
+    try:
+        from . import live
+        live.snapshot()         # (what the bake was made from: children follow an edited parent at once)
+    except Exception:
+        pass
     _aux_drop(_BAKE_SCENE)
     if flash is not None and flash[0].startswith("Calculating motion paths"):
         flash = None
@@ -1198,6 +1223,11 @@ def _on_depsgraph(scene, depsgraph):
             try:
                 from . import ops_fmods
                 ops_fmods.sync_active(bpy.context)     # modifier stack entries stay alike
+            except Exception:
+                pass
+            try:
+                from . import live
+                live.update()   # (the paths of the children of an edited bone / object follow it at once)
             except Exception:
                 pass
             tag_redraw()        # the path follows right away (e.g. a modifier's settings)
@@ -1752,6 +1782,8 @@ def _watch_active():
         _watch_last = key
         if not any(e.object == obj and e.bone_name == bone for e in st.paths):
             return 0.25
+        if any(e.object == obj and e.bone_name == bone and e.mode_pin != 'HEADER' for e in st.paths):
+            return 0.25     # (its path has its own mode: nothing to switch at the top for it)
         from . import core
         _o, owner = core.resolve(obj.name, bone)
         if owner is None:
