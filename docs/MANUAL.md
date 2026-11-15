@@ -586,8 +586,17 @@ Surface, are off meanwhile) - on a heavy mesh that takes a while, the header sho
 and **Esc** stops. The path is only to look at (the vertex has no keys to edit): it is in its own
 list under the paths (vertex icon; the eye shows / hides it, **-** removes the picked one, **+**
 tracks the active vertex in Edit Mode), drawn with a dot
-on every frame and the current frame brighter, and kept in the file. After changing the
-animation, track it again to bring it up to date.
+on every frame and the current frame brighter, and kept in the file. A vertex that only an
+Armature modifier moves (its vertex groups, no envelopes / Preserve Volume, no shape keys or other
+modifiers that move vertices) **follows the animation by itself**: its path is worked out from its
+bones - an edit of a bone shows at once, also while dragging (as the paths of children do, see above),
+and Blender's own G / R / S with auto keying shows it as it will be. Its row's refresh icon turns that
+off (the pin: kept as it was tracked). Any other vertex (a lattice, cloth, shape keys...) gets an
+**Update** button in its row: it tracks it again over its range, from any mode.
+
+**Blender's G / R / S with auto keying**: while you drag a bone / object that has a path, its path and
+those of what it carries are drawn as they will be once the drag is keyed (a key on this frame - the
+frames around it change with it), not shifted as a whole; Esc puts them back at once.
 
 The color button in the tool header (or **U**) opens the display settings you change while
 animating, only those of the current mode (1-4); the sidebar's *Display* panel has all of them.

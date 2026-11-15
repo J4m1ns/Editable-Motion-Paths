@@ -10,7 +10,7 @@ Where the chain isn't plain (a constraint on a bone between them, a bone that do
 full, a parent with constraints of its own) nothing is guessed: the child's path waits for the re-bake as before.
 After each full bake (and an undo that brings an older bake back) what the bake was made from is noted."""
 
-from . import core, state
+from . import compat, core, state
 
 _anc = {}       # owner (object, bone) -> {"c", "B", "fs", "basis"}: a parent with a path, as baked
 _kids = {}      # cache key -> (baked B list, fs): every path's parent space as baked
@@ -96,9 +96,10 @@ def snapshot():
     clear()
     try:
         owners = {}
-        for c in state.caches.values():
+        for c in state.all_caches():        # (the tracked vertices' bones follow too)
             if c.B:
                 owners.setdefault((c.obj_name, c.bone_name), []).append(c)
+        helpers = {k[:2] for k in state.helper_caches}
         if len(owners) < 2:
             return
         res = {}
@@ -108,8 +109,8 @@ def snapshot():
                 res[k] = (obj, owner)
                 _depth[k] = _owner_depth(obj, owner, k[1])
         for ka, cs in owners.items():
-            if ka not in res:
-                continue
+            if ka not in res or ka in helpers:
+                continue        # (a hidden one isn't edited with the add-on: its own curves are read anyway)
             a = next((c for c in cs if _full_space(c)), None)
             obj, owner = res[ka]
             if a is None or not _plain_parent(owner, obj if ka[1] else None):
@@ -151,6 +152,8 @@ def _apply(D, fsD, B, fsB):
 
 def update():
     """The edited parents' curves now against the bake: their children's paths moved with them. True if any."""
+    if _pv["tmp"] and not state.blender_edit_running():
+        end_preview()
     if not _anc:
         return False
     try:
@@ -160,7 +163,132 @@ def update():
         return False
 
 
-def _update():
+# ----------------------------------------------------------------------------
+# Blender's own G / R / S with auto keying: the paths as they will be once the drag is keyed
+# ----------------------------------------------------------------------------
+
+_pv = {"tmp": {}, "caches": set()}      # object name -> (copy of its action, its curves); caches drawn from them
+
+
+def previewing(key):
+    return key in _pv["caches"]
+
+
+def _copy_curves(ob):
+    """A copy of the object's action (never assigned: the real curves and the pose being dragged stay as they are)
+    and the curves of its slot in it."""
+    ad = ob.animation_data
+    tmp = ad.action.copy()
+    coll = None
+    slot = getattr(ad, "action_slot", None)
+    if compat._HAS_SLOTS and slot is not None:
+        from bpy_extras import anim_utils
+        s = tmp.slots.get(slot.identifier) if hasattr(tmp, "slots") else None
+        cb = anim_utils.action_get_channelbag_for_slot(tmp, s) if s is not None else None
+        coll = cb.fcurves if cb is not None else None
+    elif hasattr(tmp, "fcurves"):
+        coll = tmp.fcurves
+    return tmp, coll
+
+
+def _put(coll, fc, v, f):
+    c = coll.find(fc.data_path, index=fc.array_index)
+    if c is None:
+        return
+    kp = next((k for k in c.keyframe_points if abs(k.co[0] - f) < 1e-3), None)
+    if kp is None:
+        c.keyframe_points.insert(f, v, options={'FAST'})
+    else:
+        dv = v - kp.co[1]
+        if abs(dv) < 1e-12:
+            return
+        kp.co[1] = v
+        kp.handle_left[1] += dv
+        kp.handle_right[1] += dv
+    c.update()
+
+
+def preview(scene):
+    """During Blender's own G / R / S with auto keying: the dragged bones' / objects' own paths and those of what
+    they carry drawn as they will be once the drag is keyed (a key on this frame; the frames around it change with
+    it) - not shifted as a whole and set right only after the drag."""
+    if not scene.tool_settings.use_keyframe_insert_auto or not state.blender_edit_running():
+        return end_preview()
+    from . import onion
+    try:
+        pend = onion._pending_keys(scene)
+    except Exception:
+        pend = []
+    f = scene.frame_current
+    owners = {}
+    for ob, fc, v in pend:
+        m = state._BONE_PATH.match(fc.data_path)
+        bone = m.group(1).replace('\\"', '"').replace('\\\\', '\\') if m else ""
+        owners.setdefault((ob.name, bone), []).append((ob, fc, v))
+    if not owners:
+        return end_preview()
+    try:
+        for (oname, _b), items in owners.items():
+            ob = items[0][0]
+            if oname not in _pv["tmp"]:
+                if ob.animation_data is None or ob.animation_data.action is None:
+                    continue
+                _pv["tmp"][oname] = _copy_curves(ob)
+            tmp, coll = _pv["tmp"][oname]
+            if coll is None:
+                continue
+            for _ob, fc, v in items:
+                _put(coll, fc, v, f)
+        shown = set()
+        for c in state.all_caches():
+            got = _pv["tmp"].get(c.obj_name)
+            if got is not None and (c.obj_name, c.bone_name) in owners and got[1] is not None:
+                if c.preview_coll is not got[1]:
+                    c.preview_coll = got[1]
+                c.dirty = True
+                shown.add(c.key)
+        for key in _pv["caches"] - shown:
+            c = state.caches.get(key) or state.helper_caches.get(key)
+            if c is not None:
+                c.preview_coll = None
+                c.dirty = True
+        _pv["caches"] = shown
+        if _anc:
+            for key in _update(dragged=set(owners)):
+                _pv["caches"].add(key)
+        state.tag_redraw()
+        return True
+    except (ReferenceError, AttributeError, IndexError, RuntimeError):
+        end_preview()
+        return False
+
+
+def end_preview():
+    """The drag is over (keyed, or cancelled): the paths from the real curves again, the copies gone."""
+    if not _pv["tmp"] and not _pv["caches"]:
+        return False
+    for key in _pv["caches"]:
+        c = state.caches.get(key) or state.helper_caches.get(key)
+        if c is not None:
+            c.preview_coll = None
+            c.dirty = True
+    _pv["caches"] = set()
+    for tmp, _coll in _pv["tmp"].values():
+        try:
+            import bpy
+            bpy.data.actions.remove(tmp)
+        except Exception:
+            pass
+    _pv["tmp"] = {}
+    try:
+        _update()
+    except (ReferenceError, AttributeError, IndexError):
+        clear()
+    state.tag_redraw()
+    return True
+
+
+def _update(dragged=()):
     deltas = {}         # ancestor owner -> (fs, [D per frame or None])
     for ka in sorted(_anc, key=lambda k: _depth.get(k, 0)):
         info = _anc[ka]
@@ -168,7 +296,7 @@ def _update():
         if state.caches.get(a.key) is not a or (a.B is not info["B"] and a.B is not _live.get(a.key)):
             continue        # (baked again some other way meanwhile)
         a.refresh()
-        if a.sig == info["sig"] and ka not in _moved_before:
+        if a.sig == info["sig"] and ka not in _moved_before and ka not in dragged:
             continue        # (its curves as baked)
         tg = a.target()
         if tg is None:
@@ -189,8 +317,9 @@ def _update():
         if any(d is not None for d in D):
             deltas[ka] = (info["fs"], D)
     moved = False
+    touched = []
     for key, (B0, fs0) in list(_kids.items()):
-        c = state.caches.get(key)
+        c = state.caches.get(key) or state.helper_caches.get(key)
         if c is None or (c.B is not B0 and c.B is not _live.get(key)) or c.fs != fs0:
             continue
         M = B0
@@ -208,4 +337,6 @@ def _update():
         _live[key] = M
         c.dirty = True
         moved = True
-    return moved
+        if dragged:
+            touched.append(key)
+    return touched if dragged else moved

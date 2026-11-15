@@ -89,6 +89,12 @@ def edit_mode(scene=None):
 
 
 mode_force = [None]     # (the Python API's mode for one call: every path in it, as before paths had their own)
+helper_caches = {}      # (object, bone, ROTATION) -> PathCache: hidden ones, the bones tracked vertices follow
+
+
+def all_caches():
+    """The paths' caches and the hidden ones of the tracked vertices' bones (what a bake bakes)."""
+    return list(caches.values()) + list(helper_caches.values())
 
 
 def entry_mode(entry):
@@ -159,6 +165,19 @@ def sync_caches(scene=None):
         if k[:2] not in targets:
             del caches[k]
     need = []
+    # (the bones the tracked vertices follow: hidden caches - no path of their own needed)
+    try:
+        from . import ops_vertex
+        want = {(o, b, core.ROTATION) for o, b in ops_vertex.helper_keys(st)}
+    except Exception:
+        want = set()
+    for k in list(helper_caches):
+        if k not in want:
+            del helper_caches[k]
+    for k in want:
+        if k not in helper_caches and k not in caches:
+            hc = helper_caches[k] = core.PathCache(*k)
+            need.append(hc)
     refs = {entry_key(e): (e.value_path, e.value_index) for e in st.paths if e.object is not None}
     hidden = {entry_key(e): parse_frames(e.hidden_keys) for e in st.paths if e.object is not None}
     for k in wanted:
@@ -276,6 +295,8 @@ def paths_shown(scene=None):
                     return True
             except (RuntimeError, ReferenceError):
                 pass
+    if helper_caches and any(e.show and getattr(e, "auto_update", True) for e in st.vertex_paths):
+        return True     # (a tracked vertex that follows the animation)
     return False
 
 
@@ -575,7 +596,7 @@ def _depends_on(obj):
 
 def _tracked_objects():
     objs = {}
-    for name in {c.obj_name for c in caches.values()}:
+    for name in {c.obj_name for c in all_caches()}:
         obj = bpy.data.objects.get(name)
         if obj is not None:
             objs.update(_depends_on(obj))
@@ -685,7 +706,7 @@ def _harmless(obj, data_path, memo=None):
     That is the case for transform channels of a path target that moves no other path target
     (by the hierarchy or by a constraint) and has no constraint working on its own transform.
     """
-    targets = [c for c in caches.values() if c.obj_name == obj.name]
+    targets = [c for c in all_caches() if c.obj_name == obj.name]     # (the tracked vertices' bones too)
     if data_path.endswith('"]') and any(c.value_ref and c.value_ref[0] == data_path for c in targets) \
             and not _driven_by(obj, data_path):
         return True     # a custom property shown on a value track that moves nothing else
@@ -824,7 +845,7 @@ def _unbaked():
     baked every path again on each click."""
     from . import core
     sync_caches()
-    for c in caches.values():
+    for c in all_caches():
         if not c.B and (not c.failed or core.resolve(c.obj_name, c.bone_name)[1] is not None):
             return True
     return False
@@ -1016,6 +1037,11 @@ def _job_done(job):
     global flash
     job.finish()
     try:
+        from . import ops_vertex
+        ops_vertex.store_points(settings())     # (the tracked vertices as they follow the animation: in the file)
+    except Exception:
+        pass
+    try:
         from . import live
         live.snapshot()         # (what the bake was made from: children follow an edited parent at once)
     except Exception:
@@ -1047,7 +1073,7 @@ def bake_soon(scene=None, budget=0.15):
     from . import core
     scene = scene or bpy.context.scene
     sync_caches(scene)
-    _job = core.BakeJob(scene, list(caches.values()), near=scene.frame_current)
+    _job = core.BakeJob(scene, all_caches(), near=scene.frame_current)
     _job_started = time.time()
     if _job.step(budget):
         job, _job = _job, None
@@ -1086,14 +1112,14 @@ def _bake_timer():
         curves = _check_curves
         _check_curves = False
         st = settings()
-        if st is not None and st.paths:
+        if st is not None and (st.paths or helper_caches or len(st.vertex_paths)):
             why = 'force' if force else 'new' if _unbaked() else \
                 'range' if 'range' not in _ignored and _range_changed() else \
                 _why[0] if _needs_rebake(curves) else None
             if why is not None:
                 sync_caches()
                 scene = bpy.context.scene
-                _job = core.BakeJob(scene, list(caches.values()), near=scene.frame_current)
+                _job = core.BakeJob(scene, all_caches(), near=scene.frame_current)
                 _job.why = why
                 _job_started = time.time()
                 _job.gap = _job_started - _last_done[0]
@@ -1176,6 +1202,15 @@ def _on_depsgraph(scene, depsgraph):
             _watch_order(st)            # (and its place in the selection order, click by click)
         except Exception:
             pass
+    if st.paths and scene == bpy.context.scene and not modal_running:
+        try:
+            from . import live
+            if blender_edit_running():
+                live.preview(scene)     # (Blender's G / R / S with auto keying: the paths as they will be)
+            else:
+                live.end_preview()
+        except Exception:
+            pass
     if st.show_onion or st.show_com:
         global _dg_frame
         f = scene.frame_current
@@ -1210,7 +1245,7 @@ def _on_depsgraph(scene, depsgraph):
     if st.show_snapshots and len(st.snapshots) and             any(isinstance(u.id, bpy.types.Action) for u in depsgraph.updates):
         from . import snapshots
         snapshots.anim_changed()        # (the Live ones follow the animation)
-    if not caches or not st.auto_update:
+    if not (caches or helper_caches) or not st.auto_update:
         # no path: the ghosts and the center of mass still follow the animation
         if st.show_onion or st.show_com:
             if any(isinstance(u.id, bpy.types.Action) for u in depsgraph.updates):
@@ -1520,6 +1555,7 @@ def flash_message(text, seconds=3.0):
 
 _isolated_last = None
 _isolated_at = 0.0
+_vtx_store_at = 0.0
 
 
 def _isolation_shown():
@@ -1750,6 +1786,15 @@ def _watch_active():
                 _watch_order(st)        # (no path: the selection order still kept - Offset Cascade on bones)
             except Exception:
                 pass
+        global _vtx_store_at
+        if st is not None and helper_caches and not modal_running and not blender_edit_running() and \
+                time.time() - _vtx_store_at > 1.0:
+            _vtx_store_at = time.time()
+            try:
+                from . import ops_vertex
+                ops_vertex.store_points(st)     # (the tracked vertices as they follow the animation: in the file)
+            except Exception:
+                pass
         if st is None or not st.paths or modal_running:
             return 0.25
         global _isolated_at
@@ -1769,6 +1814,12 @@ def _watch_active():
             pass
         try:
             sync_list_active(st)
+        except Exception:
+            pass
+        try:
+            from . import live
+            if not blender_edit_running():
+                live.end_preview()      # (a drag that ended without an update after it)
         except Exception:
             pass
         if obj is None:

@@ -363,8 +363,9 @@ def live_shift(cache):
     D = None
     try:
         f = bpy.context.scene.frame_current
+        from . import live
         if cache.local is None and cache.cam is None and cache.rel is None and cache.B and cache.fs <= f <= cache.fe and \
-                state.blender_edit_running():
+                state.blender_edit_running() and not live.previewing(cache.key):
             obj, owner = core.resolve(cache.obj_name, cache.bone_name)
             if owner is not None and not state._constrained(owner) and _parent_change_stays(obj, owner):
                 B, _ok = core.parent_space(obj, owner, cache.bone_name, cache.ptype == core.LOCATION)
@@ -1014,10 +1015,17 @@ def _draw_vertex_paths(scene, st):
     base = tuple(st.color)
     gpu.state.blend_set('ALPHA')
     gpu.state.depth_test_set('NONE' if st.on_top else 'LESS_EQUAL')
+    from . import ops_vertex
     for e in st.vertex_paths:
         if not e.show or e.object is None or len(e.points) < 2:
             continue
-        pts = [tuple(p.co) for p in e.points]
+        # (following the animation: worked out from its bones now - else as it was tracked)
+        try:
+            pts = ops_vertex.current_points(e)
+        except Exception:
+            pts = None
+        if pts is None:
+            pts = [tuple(p.co) for p in e.points]
         cols = [base + (0.75,)] * len(pts)
         _lines(pts, cols, 1.5 * compat.ui_scale(), 'LINE_STRIP')
         sh = gpu.shader.from_builtin('UNIFORM_COLOR')

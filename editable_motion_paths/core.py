@@ -163,7 +163,7 @@ def value_candidates(obj, bone):
 class Target:
     """Resolved bone or object with its animation channels."""
 
-    def __init__(self, obj, owner, is_bone, value=None):
+    def __init__(self, obj, owner, is_bone, value=None, coll=None):
         self.obj = obj
         self.owner = owner
         self.is_bone = is_bone
@@ -173,7 +173,8 @@ class Target:
         else:
             self.prefix = ""
             self.group_name = "Object Transforms"
-        self.coll = compat.get_fcurves(obj)
+        # (coll: other curves to read - live.preview's copy with the key auto keying is about to set)
+        self.coll = coll if coll is not None else compat.get_fcurves(obj)
         self.rot_mode = owner.rotation_mode
         rp, rn = rotation_prop(self.rot_mode)
         self.loc = Channels(self.coll, self.prefix, owner, "location", 3)
@@ -527,6 +528,7 @@ class PathCache:
         self.cam = None         # Camera space: the frame whose camera view every frame is drawn in
         self.cam_obj = ""       # (the camera the matrices are of)
         self.cam_live = None    # Camera space: the camera's matrix right now (moved by hand meanwhile)
+        self.preview_coll = None    # (live.preview: its curves with the key Blender's drag is about to set)
         self._cam_B = None      # (what it was made from, the parent spaces as seen from the camera)
         self.Ref = []           # Relative To: the reference's (object / bone) matrix on every baked frame (from ref_fs)
         self.ref_fs = 0
@@ -586,7 +588,8 @@ class PathCache:
         obj, owner = resolve(self.obj_name, self.bone_name)
         if owner is None:
             return None
-        return Target(obj, owner, bool(self.bone_name), self.value_ref if self.ptype == VALUE else None)
+        return Target(obj, owner, bool(self.bone_name), self.value_ref if self.ptype == VALUE else None,
+                      self.preview_coll)
 
     def owner_selected(self):
         obj, owner = resolve(self.obj_name, self.bone_name)
@@ -2427,7 +2430,7 @@ class BakeJob:
         yet, or in place of those frames of the path drawn before."""
         a, b = self.window
         i, j = a - self.fs, b - self.fs + 1
-        alive = set(id(c) for c in state.caches.values())
+        alive = set(id(c) for c in state.all_caches())
         cams, cam_obj = self._cam(self.cams[i:j])
         for c, mats, ok in self.items:
             if id(c) not in alive:
@@ -2453,7 +2456,7 @@ class BakeJob:
         """The new parent spaces into the caches (those still in use)."""
         if not self.ok_start or not self.done:
             return
-        alive = set(id(c) for c in state.caches.values())
+        alive = set(id(c) for c in state.all_caches())
         cams, cam_obj = self._cam(self.cams)
         baked = {}
         self.moved = False
@@ -2464,7 +2467,8 @@ class BakeJob:
                 # (the same parent spaces again: the path stays as it is - not worked out anew)
                 self.moved = True
                 self._put(c, self.fs, mats, ok, cams, cam_obj)
-            baked[c.key] = (c.fs, c.B, c.Cam, c.cam_fs, c.cam_obj)
+            if state.caches.get(c.key) is c:
+                baked[c.key] = (c.fs, c.B, c.Cam, c.cam_fs, c.cam_obj)
         if baked:
             state.remember_bake(getattr(self, "memo_sig", None), baked)
 

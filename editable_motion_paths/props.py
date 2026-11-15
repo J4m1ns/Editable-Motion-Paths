@@ -230,6 +230,15 @@ class EMP_BrushSettings(bpy.types.PropertyGroup):
                     "the shape of the path counts, so more keys can go")
 
 
+def _vertex_auto_changed(self, context):
+    try:
+        state.sync_caches(context.scene if context else None)
+        state.schedule_rebake(0.05)
+        state.tag_redraw()
+    except Exception:
+        pass
+
+
 class EMP_VertexPoint(bpy.types.PropertyGroup):
     co: FloatVectorProperty(size=3)
 
@@ -241,6 +250,10 @@ class EMP_VertexPath(bpy.types.PropertyGroup):
     frame_start: IntProperty()
     show: BoolProperty(name="Show", default=True, update=_redraw)
     points: CollectionProperty(type=EMP_VertexPoint)
+    auto_update: BoolProperty(
+        name="Follow the Animation", default=True, update=_vertex_auto_changed,
+        description="The path follows the animation by itself (a vertex an Armature modifier moves: worked out "
+                    "from its bones - an edit of a bone shows at once). Off: kept as it was tracked")
 
 
 def _mode_pin_changed(self, context):
