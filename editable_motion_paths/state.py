@@ -772,12 +772,14 @@ def remember_action_hashes(parts=False):
 _PHYSICS_MODS = {'CLOTH', 'SOFT_BODY', 'DYNAMIC_PAINT', 'FLUID', 'COLLISION', 'PARTICLE_SYSTEM'}
 
 
-def changed_spans(scene=None):
+def changed_spans(scene=None, owners=None, only=None, memo=None):
     """The frames an edit of the curves changed since the last full bake: [(start, end)] (None ends: up to the
     range's own), [] when nothing changed but the last digits - or None when only a full bake will do: something
     else changed too (NLA, drivers, constraints, a pose without keys, the objects followed), a curve's
     modifiers or extrapolation, a curve came or went, an action is edited in the NLA (its time isn't the
-    scene's) or a simulation reads the frames before (a change goes on to every frame after it)."""
+    scene's) or a simulation reads the frames before (a change goes on to every frame after it).
+    owners: a set filled with the (object name, bone name or '') whose curves changed. only: such a set - only
+    their curves looked at (a drag going on: the rest is as its first look found it, see _drag_tick)."""
     from . import core
     base = partial_base[0]
     if base is None:
@@ -789,7 +791,7 @@ def changed_spans(scene=None):
             any(getattr(o, "rigid_body", None) is not None for o in objs.values()):
         return None
     spans = []
-    memo = {}
+    memo = {} if memo is None else memo
     for name, obj in objs.items():
         ad = obj.animation_data
         if ad is not None and ad.use_tweak_mode:
@@ -798,10 +800,20 @@ def changed_spans(scene=None):
             return None
         old_h, old_p = base[name]
         new_p = {}
-        new_h = _fcurve_hashes(obj, parts=new_p)
-        for k in set(old_h) | set(new_h):
+        if only is not None:
+            bones = {b for o, b in only if o == name}
+            if not bones:
+                continue
+            new_h = _owner_hashes(obj, bones, new_p, memo)
+            keys = [k for k in new_h if k in old_h]     # (one not looked at before: the bake after the drag)
+        else:
+            new_h = _fcurve_hashes(obj, parts=new_p)
+            keys = set(old_h) | set(new_h)
+        for k in keys:
             if old_h.get(k) == new_h.get(k):
                 continue
+            if owners is not None and not k[0].startswith("#"):
+                owners.add((name, _bone_of(k[0]) or ""))
             if not k[0].startswith("#") and ((name, k) in _ignored or _harmless(obj, k[0], memo)):
                 continue        # (a path's own channel - its parent space doesn't change - or one not checked)
             if k[0].startswith("#") or k not in old_p or k not in new_p:
@@ -815,6 +827,28 @@ def changed_spans(scene=None):
             if span:
                 spans.append(span)
     return spans
+
+
+def _owner_hashes(obj, bones, parts, memo):
+    """_fcurve_hashes of these bones' curves only ('': the object's own), without the '#' ones."""
+    from .core import _fmod_signature, fc_parts
+    coll = compat.get_fcurves(obj)
+    if coll is None:
+        return {}
+    key = ("curves of", obj.name, frozenset(bones))
+    paths = memo.get(key)
+    if paths is None:
+        paths = memo[key] = [(fc.data_path, fc.array_index) for fc in coll if (_bone_of(fc.data_path) or "") in bones]
+    out = {}
+    for dp, i in paths:
+        fc = coll.find(dp, index=i)
+        if fc is None:
+            continue
+        p = fc_parts(fc)
+        mods = tuple(_fmod_signature(m) for m in fc.modifiers)
+        out[(dp, i)] = hash((b"|".join(p), fc.mute, mods))
+        parts[(dp, i)] = (p, fc.mute, mods)
+    return out
 
 
 _TRANSFORM_PROPS = {"location", "rotation_quaternion", "rotation_euler", "rotation_axis_angle", "scale"}
@@ -1260,17 +1294,28 @@ def _bake_timer():
     """The automatic re-bake: when something else than a path's own channels changed, the paths
     are baked again - in steps of ~40 ms (a heavy scene doesn't freeze Blender meanwhile; the old
     paths stay drawn until the new ones are ready)."""
-    global _bake_timer_on, _force_bake, _job, _check_curves, _job_started
+    global _bake_timer_on, _force_bake, _job, _check_curves, _job_started, _drag_job, _drag_dirty
     remaining = _bake_due - time.time()
-    if remaining > 0.01 and _job is None:
+    # (a drag going on: not put off by each move of it - its frames are baked as it goes)
+    if remaining > 0.01 and _job is None and not (_drag_dirty or _drag_job is not None):
         return remaining
     reconcile_modal()
     ctx = bpy.context
     screen = getattr(ctx, "screen", None)
-    if modal_running or baking or (screen is not None and screen.is_animation_playing) or _any_modal() or \
-            render_running():
+    if baking or (screen is not None and screen.is_animation_playing) or render_running():
         return 0.3
-    from . import core
+    if modal_running or _any_modal():
+        try:
+            wait = _drag_tick()
+        except Exception as ex:
+            print("Editable Motion Paths: update during a drag failed:", ex)
+            _drag_job, _drag_dirty, wait = None, False, None
+        return 0.3 if wait is None else wait
+    from . import core, live
+    global _drag_used
+    # (a drag over: the bake after it sets its paths right - or back)
+    was_drag, _drag_job, _drag_dirty, _drag_used = _drag_used, None, False, False
+    _drag_look.clear()
     try:
         if _job is not None:
             wait = _job_step(_job)
@@ -1316,8 +1361,95 @@ def _bake_timer():
         print("Editable Motion Paths: auto update failed:", ex)
         _job = None
         _aux_drop(_BAKE_SCENE)
+    if _job is None and (was_drag or live._drag):
+        # (a drag's frames shown and nothing baked after it - cancelled, or back as it was: the paths as baked)
+        if live.drop_drag():
+            tag_redraw()
+        _aux_drop(_BAKE_SCENE)
     _bake_timer_on = False
     return None
+
+
+# A drag (the add-on's own, the Graph Editor's...) that changes curves: the frames it changed are baked again as it
+# goes, in the bake scene, a few at a time - the paths that don't follow an edit at once (live.py: an IK chain
+# under a dragged control, a constraint mixing in another bone...) follow it during the drag, not only after it
+DRAG_REBAKE = True
+DRAG_PACE = 0.03        # seconds between the steps meanwhile (at least as long as a step took: Blender keeps up)
+DRAG_STEP = 0.015       # how long a step goes on
+DRAG_LOOK = 1.0         # every so often all the curves are looked at again (else only those the drag edits)
+_drag_job = None        # the bake of the drag's frames going on (core.BakeJob, drag=True)
+_drag_dirty = False     # the curves changed during a drag since that job began
+_drag_skip = set()      # the owners whose curves the drag changes (their own paths are left as they are)
+_drag_used = False      # a drag baked frames (its end: the bake scene removed, the paths set right)
+# the drag's look at the curves: {"owners": what its edit changes, "at": when all were looked at, "off": nothing
+# to do in this drag (only a full bake will do), "memo"}
+_drag_look = {}
+
+
+def _drag_spans(scene):
+    """The frames the drag changed so far (see changed_spans), and the owners of the curves it edits. The first look
+    (and one every DRAG_LOOK) at every curve; the others only at the curves of what it edits - on a heavy rig the
+    whole look takes a few dozen milliseconds."""
+    look = _drag_look
+    if look.get("off"):
+        return None, set()
+    memo = look.setdefault("memo", {})
+    owners = look.get("owners")
+    if not owners or time.time() - look.get("at", 0.0) > DRAG_LOOK:
+        owners = set()
+        spans = changed_spans(scene, owners, memo=memo)
+        look["at"] = time.time()
+        if spans is None:
+            look["off"] = True      # (something else changed too: the bake after the drag, in full)
+            return None, set()
+        look["owners"] = owners
+        return spans, owners
+    return changed_spans(scene, only=owners, memo=memo), owners
+
+
+def _drag_tick():
+    """One step of the bake during a drag; how long until the next one (None: nothing to do - the usual wait)."""
+    global _drag_job, _drag_dirty, _drag_skip, _drag_used
+    from . import core, live
+    if not DRAG_REBAKE or _job is not None or live._pv["tmp"] or not paths_shown():
+        return None     # (a bake of all of them going on / Blender's G / R / S: no curve is edited)
+    t0 = time.time()
+    scene = bpy.context.scene
+    if _drag_dirty:
+        _drag_dirty = False
+        _drag_job = None
+        spans, owners = _drag_spans(scene)
+        if spans:
+            job = core.BakeJob(scene, all_caches(), near=scene.frame_current, spans=spans, drag=True)
+            if job.ok_start:
+                _drag_job, _drag_skip, _drag_used = job, owners, True
+    job = _drag_job
+    if job is None:
+        # (the drag's bake done: looked at often still - its end is baked right after it)
+        return DRAG_PACE if _drag_used else None
+    spent = time.time() - t0
+    if spent > DRAG_STEP:
+        return max(DRAG_PACE, spent)    # (a look at every curve took long: its frames on the next step)
+    done = job.step(DRAG_STEP)
+    if job.show_drag(_drag_skip):
+        tag_redraw()
+    if done:
+        _drag_job = None
+    return max(DRAG_PACE, time.time() - t0)
+
+
+def _drag_changed():
+    """The curves changed during a drag: its frames baked again soon (see _drag_tick)."""
+    global _drag_dirty, _bake_timer_on
+    fast = _drag_dirty or _drag_job is not None
+    _drag_dirty = True
+    schedule_rebake(DRAG_PACE)
+    if not fast:
+        # (the timer may wait for longer - a drag only just started: it comes at once)
+        if bpy.app.timers.is_registered(_bake_timer):
+            bpy.app.timers.unregister(_bake_timer)
+        _bake_timer_on = True
+        bpy.app.timers.register(_bake_timer, first_interval=DRAG_PACE)
 
 
 _dg_frame = None
@@ -1475,7 +1607,10 @@ def _rebake_if_shown(scene, curves=True):
     is shown; else that is noted and done when one shows."""
     global _hidden_changes
     if paths_shown(scene):
-        schedule_rebake(curves=curves)
+        if curves and DRAG_REBAKE and (modal_running or _any_modal()):
+            _drag_changed()
+        else:
+            schedule_rebake(curves=curves)
     else:
         _hidden_changes = True
 

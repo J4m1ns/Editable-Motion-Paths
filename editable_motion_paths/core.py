@@ -2261,13 +2261,16 @@ class BakeJob:
     after each step. The frames around the current one (near) come first and are shown as soon as
     they are done; the rest of the old parent spaces stays drawn until finish() puts the new ones in."""
 
-    def __init__(self, scene, caches, near=None, aux=None, spans=None):
+    def __init__(self, scene, caches, near=None, aux=None, spans=None, drag=False):
         """spans: [(start, end)] (None ends: the range's own) - only the frames an edit of the curves changed are
-        baked anew (see state.changed_spans), the others kept as baked; a full bake when that can't be."""
+        baked anew (see state.changed_spans), the others kept as baked; a full bake when that can't be.
+        drag: a bake during a drag (see state._drag_tick) - those frames only, in the bake scene only, spread over
+        them first (show_drag draws the frames between from the ones baked); nothing noted as baked."""
         # (by name: undo frees the scene, a job outlives it)
         self.scene_name = scene.name
         self.ok_start = False
         self.partial = False
+        self.drag = drag
         self.base = None
         self.refs = {}
         settings = state.settings(scene)
@@ -2325,12 +2328,21 @@ class BakeJob:
                 if win is None or not self.wlen or len(self.order) <= 2 * NEAR + 1:
                     self.window, self.wlen = None, 0
                 self.partial = True
+                if drag:
+                    self.order = drag_order(frames, near)
+                    self.window, self.wlen = None, 0
+        if drag and not self.partial:
+            self.items = []         # (a drag bakes some frames or none)
         self.i = 0
         self._stop = None
         self.aux = AUX if aux is None else aux
         self.aux_name = None
         self.ok_start = bool(self.items)
         self.t_spent = 0.0
+        self.hit = set()        # (a drag: the paths its frames changed so far, and the frames looked at for that)
+        self.seen = 0
+        if drag:
+            return
         # the hashes of now: what changes while this runs is seen as a change afterwards (and the curves
         # themselves: the next re-bake bakes only what changed after them - see state.changed_spans)
         self.base = state.remember_action_hashes(parts=True)
@@ -2407,6 +2419,8 @@ class BakeJob:
             aux = aux_scene(scene, objs.values()) if _aux_fits(objs.values()) else None
             if aux is None:
                 self.aux = False        # (from here on in the user's scene)
+        if aux is None and self.drag:
+            return self._abort()        # (never the user's scene while something is dragged in it)
         i0 = self.i
         t0 = time.time()
         # (a step in steps ends where the frames around the current one are done: shown right away)
@@ -2554,6 +2568,7 @@ class BakeJob:
     def _show_window(self):
         """The frames around the current one are done: shown now - on a path with nothing drawn
         yet, or in place of those frames of the path drawn before."""
+        from . import live
         a, b = self.window
         i, j = a - self.fs, b - self.fs + 1
         alive = set(id(c) for c in state.all_caches())
@@ -2572,7 +2587,7 @@ class BakeJob:
                 refs, key = self._refs_of(c, i, j)
                 if refs and c.Ref and c.ref_key == key and c.ref_fs == c.fs and len(c.Ref) == len(c.B):
                     c.Ref = c.Ref[:x] + refs + c.Ref[y:]
-                c.B = c.B[:x] + win + c.B[y:]
+                live.drag_swap(c, c.B[:x] + win + c.B[y:])
                 c.bake_id += 1
                 c.dirty = True
                 c.refresh(force=True)
@@ -2600,6 +2615,9 @@ class BakeJob:
     def _unchanged(self, c, mats, ok, cams, cam_obj):
         """The parent spaces just baked are the ones the path had before this bake (the camera's and the
         reference's matrices too)."""
+        from . import live
+        if live.drag_shown(c):
+            return False        # (it shows a drag's frames: this bake's go on it in any case)
         fs, B, Cam, was_cam, Ref = self.old.get(id(c), (None, None, None, None, None))
         if not B or fs != self.fs or c.fs != fs or len(B) != len(mats) or len(c.B or ()) != len(B) or \
                 bool(Cam) != bool(cams) or (cams and (was_cam != cam_obj or len(Cam) != len(cams))):
@@ -2610,6 +2628,100 @@ class BakeJob:
         mats = list(mats)
         _fill_singular(mats, list(ok))
         return _same_mats(B, mats) and (not cams or _same_mats(Cam, cams))
+
+    def show_drag(self, skip=()):
+        """A drag's frames baked so far shown on the paths they changed - not on those of `skip` (the dragged
+        parts' own: what the drag works from stays as it is) nor on one moved with its parent at once (exact,
+        live.following). A frame between them takes the change from the bake of the nearest ones baked on each
+        side, blended; the edit's frames with none baked yet stay as shown, the other frames as baked. True if a
+        path changed."""
+        from . import live
+        if not self.ok_start or not self.i:
+            return False
+        n = self.fe - self.fs + 1
+        done = self.order[:self.i]
+        new = done[self.seen:]
+        self.seen = len(done)
+        alive = set(id(c) for c in state.all_caches())
+        use = []
+        for c, mats, ok in self.items:
+            if id(c) not in alive or (c.obj_name, c.bone_name) in skip or live.following(c):
+                continue
+            base = live.baked(c)
+            if c.fs != self.fs or len(base) != n or len(c.B or ()) != n:
+                continue
+            if id(c) not in self.hit:
+                for f in new:
+                    k = f - self.fs
+                    if ok[k] and mats[k] is not None and base[k] is not None and _differ(mats[k], base[k]):
+                        self.hit.add(id(c))
+                        break
+            if id(c) in self.hit or live.drag_shown(c):
+                use.append((c, mats, ok, base))
+        if not use:
+            return False
+        got = set(done)
+        runs = _runs(sorted(self.order))
+        moved = False
+        for c, mats, ok, base in use:
+            shown = c.B
+            out = list(base)
+            for run in runs:
+                ks = [f - self.fs for f in run if f in got and ok[f - self.fs] and mats[f - self.fs] is not None]
+                D = {k: mats[k] @ base[k].inverted_safe() for k in ks}
+                for f in run:
+                    k = f - self.fs
+                    if k in D:
+                        out[k] = mats[k]
+                        continue
+                    j = bisect.bisect(ks, k)
+                    lo = ks[j - 1] if j > 0 else None
+                    hi = ks[j] if j < len(ks) else None
+                    if lo is None and hi is None:
+                        out[k] = shown[k]
+                    elif lo is None or hi is None:
+                        out[k] = D[lo if hi is None else hi] @ base[k]
+                    else:
+                        out[k] = D[lo].lerp(D[hi], (k - lo) / (hi - lo)) @ base[k]
+            if not _same_mats(out, shown):
+                live.drag_put(c, out)
+                moved = True
+        return moved
+
+
+def _differ(a, b, eps=1e-6):
+    return max(abs(v) for row in (a - b) for v in row) > eps
+
+
+def _runs(frames):
+    """Sorted whole frames in runs of ones that follow each other."""
+    out = []
+    for f in frames:
+        if out and f == out[-1][-1] + 1:
+            out[-1].append(f)
+        else:
+            out.append([f])
+    return out
+
+
+DRAG_PASSES = (8, 4, 2, 1)
+
+
+def drag_order(frames, near=None):
+    """The frames a drag changed in the order they are baked then: spread over each run of them first (its ends and
+    every 8th frame, then every 4th, 2nd, each - the paths are drawn between from the nearest ones baked), near the
+    current frame first on each pass."""
+    runs = _runs(sorted(frames))
+    taken = set()
+    out = []
+    for step in DRAG_PASSES:
+        level = [f for run in runs for i, f in enumerate(run)
+                 if f not in taken and (i % step == 0 or i == len(run) - 1)]
+        taken.update(level)
+        if near is not None:
+            level.sort(key=lambda f: abs(f - near))
+        out += level
+    return out
 
 
 def _same_mats(a, b, eps=1e-6):

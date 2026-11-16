@@ -17,7 +17,8 @@ The bones / objects on the way that are animated get hidden baked caches of thei
 no path: an edit of any of them is followed too.
 
 Where a link isn't rigid (IK, Stretch To, a constraint mixing in another bone, an influence that changes over time)
-nothing is guessed: the child's path waits for the re-bake as before. After each full bake (and an undo that brings
+nothing is guessed: the frames the edit changed are baked again - during a drag a few at a time (state._drag_tick,
+shown here with drag_put), then once it is done. After each full bake (and an undo that brings
 an older bake back) what the bake was made from is noted."""
 
 import bpy
@@ -36,6 +37,9 @@ _depth = {}
 _objs = {}      # object name -> its world matrix as baked: an object without animation that carries paths
 _carry = {}     # owner -> the nearest such object that carries it rigidly (constraints aiming inside it)
 _moved_before = set()    # ancestors edited since the bake (an edit undone back to the bake: worked out once more)
+# cache key -> (its B as baked, the B shown): a path the frames an edit changed were baked again for during a drag
+# (state._drag_tick) - what isn't followed here at once (an IK chain under a dragged control...)
+_drag = {}
 
 _OBJ_TF = {"location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "scale", "delta_location",
            "delta_rotation_euler", "delta_rotation_quaternion", "delta_scale"}
@@ -547,6 +551,7 @@ def _cache(key):
 
 
 def clear():
+    drop_drag()
     _anc.clear()
     _kids.clear()
     _chain.clear()
@@ -649,6 +654,9 @@ _pv = {"tmp": {}, "caches": set()}      # object name -> (copy of its action, it
 
 def baked(c):
     """The parent spaces this cache got from the last bake (a live one put on it here: the one it replaced)."""
+    d = _drag.get(c.key)
+    if d is not None and c.B is d[1]:
+        return d[0]
     got = _kids.get(c.key)
     if got is not None and c.B is not got[0] and c.B is _live.get(c.key):
         return got[0]
@@ -657,6 +665,53 @@ def baked(c):
 
 def previewing(key):
     return key in _pv["caches"]
+
+
+def following(c):
+    """This path is moved here with an edited parent now (exactly: a bake during the drag leaves it alone)."""
+    got = _live.get(c.key)
+    return got is not None and c.B is got
+
+
+def drag_shown(c):
+    """This path shows frames baked again during a drag (not yet the bake after it)."""
+    d = _drag.get(c.key)
+    return d is not None and c.B is d[1]
+
+
+def drag_put(c, B):
+    """During a drag: these parent spaces shown on the path (its bake kept to go back to, see drop_drag)."""
+    d = _drag.get(c.key)
+    base = d[0] if d is not None and c.B is d[1] else baked(c)
+    _drag[c.key] = (base, B)
+    c.B = B
+    c.dirty = True
+
+
+def drag_swap(c, B):
+    """A bake after the drag puts some of its frames on a path shown from the drag: still one to set right."""
+    d = _drag.get(c.key)
+    if d is not None and c.B is d[1]:
+        _drag[c.key] = (d[0], B)
+    c.B = B
+
+
+def dragging():
+    return any(drag_shown(c) for c in filter(None, (_cache(k) for k in _drag)))
+
+
+def drop_drag():
+    """The paths shown from a drag's bake back to their own bake (the drag was cancelled, nothing is baked after
+    it); True if any."""
+    back = False
+    for key, (base, B) in list(_drag.items()):
+        c = _cache(key)
+        if c is not None and c.B is B:
+            c.B = base
+            c.dirty = True
+            back = True
+    _drag.clear()
+    return back
 
 
 def _copy_curves(ob):
