@@ -23,8 +23,8 @@ _DIRS = (Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1)), Vector((-1, 0,
 _TRACK = {'TRACK_X': 0, 'TRACK_Y': 1, 'TRACK_Z': 2, 'TRACK_NEGATIVE_X': 3, 'TRACK_NEGATIVE_Y': 4,
           'TRACK_NEGATIVE_Z': 5}
 _UP = {'UP_X': 0, 'UP_Y': 1, 'UP_Z': 2}
-BONE_SPACES = {'WORLD', 'POSE', 'LOCAL_WITH_PARENT', 'LOCAL'}
-OBJECT_SPACES = {'WORLD', 'LOCAL'}
+BONE_SPACES = {'WORLD', 'POSE', 'LOCAL_WITH_PARENT', 'LOCAL', 'CUSTOM'}
+OBJECT_SPACES = {'WORLD', 'LOCAL', 'CUSTOM'}
 CHECK_EPS = 1e-4        # (a recipe's result against Blender's: relative to the size of what is placed)
 CHECK_FRAMES = 12
 
@@ -112,7 +112,7 @@ def _clamp_angle(a, lo, hi):
 class Con:
     """One constraint of a recipe: its type, spaces, targets [(node, head_tail, target's rotation order)] and
     settings; its influence: a number, a curve's data path (keyed), or a value baked on every frame (driven)."""
-    __slots__ = ("type", "name", "ob", "own", "tar", "targets", "s", "infl", "infl_path", "infl_baked")
+    __slots__ = ("type", "name", "ob", "own", "tar", "targets", "s", "infl", "infl_path", "infl_baked", "space")
 
     def __init__(self, c, idb, prefix):
         self.type = c.type
@@ -125,6 +125,15 @@ class Con:
         self.infl = c.influence
         self.infl_path = None
         self.infl_baked = None
+        self.space = None
+        if 'CUSTOM' in (self.own, self.tar):
+            so = getattr(c, "space_object", None)
+            if so is None:
+                raise Unsupported("custom space without an object")
+            sub = getattr(c, "space_subtarget", "") if so.type == 'ARMATURE' else ""
+            if sub and (so.pose is None or so.pose.bones.get(sub) is None):
+                raise Unsupported("custom space bone")
+            self.space = (so.name, sub)
         dp = prefix + 'constraints["%s"].influence' % bpy.utils.escape_identifier(c.name)
         ad = idb.animation_data
         if ad is not None:
@@ -161,7 +170,7 @@ def _con(c, idb, prefix):
     ht = getattr(c, "head_tail", 0.0)
     bb = getattr(c, "use_bbone_shape", False)
     if t in {'COPY_LOCATION', 'COPY_ROTATION', 'COPY_SCALE', 'COPY_TRANSFORMS', 'CHILD_OF', 'DAMPED_TRACK',
-             'TRACK_TO', 'STRETCH_TO', 'LIMIT_DISTANCE'}:
+             'TRACK_TO', 'STRETCH_TO', 'LIMIT_DISTANCE', 'TRANSFORM'}:
         k.targets.append(_target(c, c.target, c.subtarget if c.target is not None and
                                  c.target.type == 'ARMATURE' else "", ht, bb))
         if bb and ht > 0.0:
@@ -211,6 +220,19 @@ def _con(c, idb, prefix):
     elif t == 'LIMIT_ROTATION':
         s.update(lims=[(getattr(c, "use_limit_" + a), getattr(c, "min_" + a), getattr(c, "max_" + a))
                        for a in "xyz"], order=c.euler_order, legacy=getattr(c, "use_legacy_behavior", False))
+    elif t == 'TRANSFORM':
+        sf = {'LOCATION': "", 'ROTATION': "_rot", 'SCALE': "_scale"}
+        fr, to = c.map_from, c.map_to
+        if fr == 'ROTATION' and c.from_rotation_mode not in _EULER | {'AUTO'}:
+            raise Unsupported("rotation mode")
+
+        def trip(name, suffix):
+            return [getattr(c, "%s_%s%s" % (name, a, suffix)) for a in "xyz"]
+        s.update(fr=fr, to=to, fmin=trip("from_min", sf[fr]), fmax=trip("from_max", sf[fr]),
+                 tmin=trip("to_min", sf[to]), tmax=trip("to_max", sf[to]),
+                 map=["XYZ".index(getattr(c, "map_to_%s_from" % a)) for a in "xyz"], expo=c.use_motion_extrapolate,
+                 mix_loc=c.mix_mode, mix_rot=c.mix_mode_rot, mix_scale=c.mix_mode_scale, order=c.to_euler_order,
+                 from_order=c.from_rotation_mode)
     elif t == 'ARMATURE':
         if c.use_bone_envelopes or c.use_deform_preserve_volume:
             raise Unsupported("envelopes / volume")
@@ -331,6 +353,10 @@ def recipe(node):
             raise Unsupported("owner space")
         if k.own == 'LOCAL' and not node[1] and r.parent is None:
             raise Unsupported("object local space without a parent")
+        if k.space is not None:
+            r.need(k.space)
+            if k.space[1]:
+                r.need((k.space[0], ""))
         for tn, _h, _o in k.targets:
             r.need(tn)
             if tn[1]:
@@ -370,10 +396,12 @@ def _parent_pose(node, world):
     return arm.inverted_safe() @ world((node[0], b.parent.name)), b.parent.matrix_local
 
 
-def to_space(M, node, space, world, basis=None):
+def to_space(M, node, space, world, basis=None, k=None):
     """A world matrix of this bone / object into its constraint space."""
     if space == 'WORLD':
         return M
+    if space == 'CUSTOM':
+        return world(k.space).inverted_safe() @ M
     if node[1]:
         P = world((node[0], "")).inverted_safe() @ M
         if space == 'POSE':
@@ -387,9 +415,11 @@ def to_space(M, node, space, world, basis=None):
     return _object_local(node, world, basis).inverted_safe() @ M
 
 
-def from_space(M, node, space, world, basis=None):
+def from_space(M, node, space, world, basis=None, k=None):
     if space == 'WORLD':
         return M
+    if space == 'CUSTOM':
+        return world(k.space) @ M
     if node[1]:
         if space == 'POSE':
             P = M
@@ -417,7 +447,7 @@ def _object_local(node, world, basis):
     return D
 
 
-def target_matrix(node, head_tail, space, world):
+def target_matrix(node, head_tail, space, world, k=None):
     """A constraint target's matrix in the target space (a bone: at head_tail along it)."""
     M = world(node)
     if node[1] and head_tail > 1e-6:
@@ -431,6 +461,8 @@ def target_matrix(node, head_tail, space, world):
         M = arm @ P
     if space == 'WORLD':
         return M
+    if space == 'CUSTOM':
+        return world(k.space).inverted_safe() @ M
     if node[1]:
         P = world((node[0], "")).inverted_safe() @ M
         if space == 'POSE':
@@ -754,7 +786,49 @@ def _limit_rotation(M, _T, s, r):
     return Matrix.LocRotScale(loc, eul, size)
 
 
-_EVAL = {'COPY_LOCATION': _copy_location, 'COPY_ROTATION': _copy_rotation, 'COPY_SCALE': _copy_scale,
+def _transformation(M, T, s, r):
+    """Blender's Transformation constraint: a channel of the target mapped from one range to another onto a
+    channel of the owner."""
+    fr = s["fr"]
+    if fr == 'SCALE':
+        dvec = _size(T)
+        if T.to_3x3().determinant() < 0.0:
+            dvec = -dvec
+    elif fr == 'ROTATION':
+        dvec = Vector(T.to_3x3().to_euler(r.order if s["from_order"] == 'AUTO' else s["from_order"]))
+    else:
+        dvec = T.translation.copy()
+    sval = []
+    for i in range(3):
+        d, lo, hi = dvec[i], s["fmin"][i], s["fmax"][i]
+        if not s["expo"]:
+            d = lo if d < lo else (hi if d > hi else d)
+        sval.append((d - lo) / (hi - lo) if hi - lo else 0.0)
+    loc, _q, size = M.decompose()
+    rot = M.to_3x3().normalized()
+    new = [s["tmin"][i] + sval[s["map"][i]] * (s["tmax"][i] - s["tmin"][i]) for i in range(3)]
+    to = s["to"]
+    if to == 'SCALE':
+        size = Vector(new) if s["mix_scale"] == 'REPLACE' else Vector([a * b for a, b in zip(size, new)])
+    elif to == 'ROTATION':
+        order = r.order if s["order"] == 'AUTO' else s["order"]
+        mix = s["mix_rot"]
+        nr = Euler(new, order).to_matrix()
+        if mix == 'REPLACE':
+            rot = nr
+        elif mix == 'BEFORE':
+            rot = nr @ rot
+        elif mix == 'AFTER':
+            rot = rot @ nr
+        else:
+            old = rot.to_euler(order)
+            rot = Euler([a + b for a, b in zip(new, old)], order).to_matrix()
+    else:
+        loc = Vector(new) if s["mix_loc"] == 'REPLACE' else loc + Vector(new)
+    return Matrix.LocRotScale(loc, rot, size)
+
+
+_EVAL = {'TRANSFORM': _transformation, 'COPY_LOCATION': _copy_location, 'COPY_ROTATION': _copy_rotation, 'COPY_SCALE': _copy_scale,
          'COPY_TRANSFORMS': _copy_transforms, 'CHILD_OF': _child_of, 'DAMPED_TRACK': _damped_track,
          'TRACK_TO': _track_to, 'STRETCH_TO': _stretch_to, 'LIMIT_DISTANCE': _limit_distance,
          'LIMIT_LOCATION': _limit_location, 'LIMIT_SCALE': _limit_scale, 'LIMIT_ROTATION': _limit_rotation}
@@ -845,15 +919,15 @@ def evaluate(r, f, world, basis, values):
         if w <= 0.0:
             continue
         old = M
-        S = to_space(M, r.node, k.own, world, basis)
+        S = to_space(M, r.node, k.own, world, basis, k)
         if k.type == 'ARMATURE':
             S = _armature(S, k, world)
         else:
-            T = target_matrix(k.targets[0][0], k.targets[0][1], k.tar, world) if k.targets else None
+            T = target_matrix(k.targets[0][0], k.targets[0][1], k.tar, world, k) if k.targets else None
             S = _EVAL[k.type](S, T, k.s, k if k.type == 'CHILD_OF' else r)
         # (Child Of's result is taken as it is, not put back from the owner's space - measured, every pair of
         # spaces: Blender evaluates it "space once")
-        M = S if k.type == 'CHILD_OF' else from_space(S, r.node, k.own, world, basis)
+        M = S if k.type == 'CHILD_OF' else from_space(S, r.node, k.own, world, basis, k)
         if w < 1.0:
             M = old.lerp(M, w)
     if r.kind == 'BONE' and r.connected and r.cons:
