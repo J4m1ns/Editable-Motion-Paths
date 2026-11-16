@@ -523,6 +523,7 @@ MAX_F = 64
 _F = {}          # F-node -> {"r": its recipe, "basis": its own basis per frame as baked, "sig": its curves then}
 _F_order = []    # the F-nodes, the ones others read first
 _ichain = {}     # a node an F-node reads -> [(node, Q, Q^-1)] root first: what its world change is made of
+_opaque = set()  # the nodes F-nodes read whose change can't all be seen (see _opaque_input)
 _nodes = {"fs": None, "W": {}, "V": {}}    # as baked (core.BakeJob): world matrices per frame, driven values
 
 
@@ -637,6 +638,20 @@ def _driver_sig(r):
     return hash(tuple(out))
 
 
+def _opaque_input(i, memo):
+    """A node an F-node reads whose world change isn't all made of what is followed here: something on its rigid
+    chain is animated (or driven) with its edits not followed, or the chain's top is neither a node with nothing
+    above it nor an F-node (an IK chain, a constraint no formula does)."""
+    chain, _how = walk(i[0], i[1], memo)
+    nodes = [i] + [n for n, _Q in chain]
+    for n in nodes:
+        if n in _F:
+            return False        # (from there up: the formula's)
+        if (_animated_node(n, memo) and n not in _anc) or _driven_transform(n, memo):
+            return True
+    return not _true_root(nodes[-1])
+
+
 def _driven_transform(node, memo):
     o = bpy.data.objects.get(node[0])
     _curves, driven = _animated_paths(o, memo)
@@ -716,6 +731,10 @@ def _formula_delta(x, deltas, blocked, dragged, selfs):
             return None
         if wc:
             changes[i] = wc
+    # (what it reads may have moved in a way not seen here - an IK chain, an edited bone without a hidden cache: an
+    # edit that changes the rest of what it reads may change that too - worked out with half of it, it'd be wrong)
+    if (changes or own_frames) and any(i in _opaque for i in r.inputs):
+        return None
     # (a driven influence reading what the edit moved, or a value it reads edited: it can't be told here)
     if any(dn in changes for k in r.cons for dn in k.drv[0]) or             (any(k.drv[1] for k in r.cons) and _driver_sig(r) != info["drv"]):
         return None
@@ -826,6 +845,7 @@ def clear():
     _moved_before.clear()
     _F.clear()
     _ichain.clear()
+    _opaque.clear()
     _order.clear()
 
 
@@ -953,6 +973,8 @@ def snapshot():
                 if i in _anc and i not in _F:
                     es = [(i, None, None, -1)] + es
                 _ichain[i] = [(n, Q, Qi) for n, Q, Qi, _idx in es[::-1]]
+                if _opaque_input(i, memo):
+                    _opaque.add(i)
         for n in _anc:
             _depth[n] = len(walk(n[0], n[1], memo)[0])
         _order_nodes()
