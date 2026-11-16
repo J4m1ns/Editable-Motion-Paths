@@ -1130,6 +1130,8 @@ def register():
     bpy.types.VIEW3D_MT_pose_context_menu.append(_context_menu_entry)
     bpy.types.VIEW3D_MT_object_context_menu.append(_context_menu_entry)
     bpy.types.VIEW3D_MT_object_animation.append(ops_match.menu_entry)
+    bpy.types.VIEW3D_MT_pose_context_menu.append(ops_match.menu_entry)
+    bpy.types.VIEW3D_MT_object_context_menu.append(ops_match.menu_entry)
     from . import ops_vertex
     bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(ops_vertex.context_menu_entry)
     # right click on a setting in the U / J / P panels: a Reset to Default that works there
@@ -1164,6 +1166,8 @@ def unregister():
     bpy.types.VIEW3D_MT_pose_context_menu.remove(_context_menu_entry)
     bpy.types.VIEW3D_MT_object_context_menu.remove(_context_menu_entry)
     bpy.types.VIEW3D_MT_object_animation.remove(ops_match.menu_entry)
+    bpy.types.VIEW3D_MT_pose_context_menu.remove(ops_match.menu_entry)
+    bpy.types.VIEW3D_MT_object_context_menu.remove(ops_match.menu_entry)
     from . import ops_vertex
     bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(ops_vertex.context_menu_entry)
     if hasattr(bpy.types, "WM_MT_button_context"):

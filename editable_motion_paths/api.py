@@ -613,11 +613,12 @@ def follow_curve(obj, bone=None, curve=None, frames=None, timing='KEEP', mode=No
 
 def match_motion(obj, bone=None, leader=None, leader_bone=None, frames=None, reference=None, blend_in=0,
                  blend_out=0, influence=1.0, location=True, rotation=True, scale=True, tolerance=0.5,
-                 space='GLOBAL', mode=None):
+                 space='GLOBAL', leader_space='GLOBAL', mode=None):
     """The bone / object (no path needed) follows `leader` (an object; an armature's bone: `leader_bone`; None: it
     stays where it is - pinned) from the first to the last of `frames` (None: the scene's range), keeping where it
     is against it on `reference` (None: the first frame) - baked into its own keys there (as few as the motion
-    needs). space 'GLOBAL': in the world; 'LOCAL': it moves against its parent as the leader moves against its own.
+    needs). leader_space: the leader's motion in the world ('GLOBAL') or against its parent ('LOCAL'); space: put
+    on it in the world ('GLOBAL') or against its parent ('LOCAL'). A looped follower (a Cycles modifier) stays looped.
     blend_in / blend_out: frames before / after the range over which it goes over from / back to its own motion;
     influence 0..1; location / rotation / scale: which channels it takes. Several to follow: one call each, parents
     first."""
@@ -629,6 +630,7 @@ def match_motion(obj, bone=None, leader=None, leader_bone=None, frames=None, ref
     if leader_bone:
         _check_bone(lo, leader_bone)
     _one_of("space", space, ('GLOBAL', 'LOCAL'))
+    _one_of("leader_space", leader_space, ('GLOBAL', 'LOCAL'))
     sc = _scene()
     if frames:
         start, end = int(round(min(frames))), int(round(max(frames)))
@@ -636,7 +638,7 @@ def match_motion(obj, bone=None, leader=None, leader_bone=None, frames=None, ref
         start, end = sc.frame_start, sc.frame_end
     got = ops_match.match(sc, (o, bone or ""), (lo, leader_bone or ""), start, end,
                           int(start if reference is None else reference), int(blend_in), int(blend_out),
-                          float(influence), location, rotation, scale, float(tolerance), space)
+                          float(influence), location, rotation, scale, float(tolerance), space, leader_space)
     if isinstance(got, str):
         raise ValueError(got)
     for c in state.all_caches():

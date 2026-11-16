@@ -380,6 +380,11 @@ class EMP_Snapshot(bpy.types.PropertyGroup):
 
 
 class EMP_Settings(bpy.types.PropertyGroup):
+    # (Match Motion's dialog: what to follow - fields with an eyedropper, see ops_match)
+    match_leader: PointerProperty(type=bpy.types.Object, name="Follow",
+                                  description="The object to follow (an armature: with a bone). Empty: they stay "
+                                              "where they are (pinned)")
+    match_leader_bone: StringProperty(name="Bone", description="The bone of that armature to follow")
     snapshots: CollectionProperty(type=EMP_Snapshot)
     snapshot_index: IntProperty()
     show_snapshots: BoolProperty(name="Snapshots", default=True, update=_snapshots_toggled,

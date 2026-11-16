@@ -343,18 +343,25 @@ That is Blender's own behaviour. To keep edits local, turn it off:
 * **Curves**: *Path to Curve* makes a Curve object (a Bezier point per key, or a point per
   frame). *Follow Curve* makes the path follow any curve object: keep the timing, even speed,
   or one key per curve point. That way you can export, edit as a curve and bring it back.
-* **Match Motion...** (Object / Pose > Animation, the Shape panel, the right-click menu; no path
-  needed): the selected bones / objects follow the active one (like parenting: select them, the one
-  to follow last) over a range of frames (the selected path keys' range, else the preview / scene
-  range), keeping where they are against it on a *Reference Frame* - as if parented to it there.
-  * *Global*: they follow it in the world. *Local*: each one moves against its own parent as the
-    followed one moves against its parent (an arm's motion put on another arm, whatever their bodies do).
+* **Match Motion...** (Object / Pose > Animation, the right-click menu, the Shape panel; no path needed):
+  the selected bones / objects follow the active one (like parenting: select them, the one to follow
+  last) over a range of frames (the selected path keys' range, else the preview / scene range), keeping
+  where they are against it on a *Reference Frame* - as if parented to it there. *Follow* / *Bone* in the
+  dialog pick another one (with the eyedropper, or E over the field).
+  * In Pose Mode objects selected along (before going into it) count too: several bones and one
+    object - the bones follow the object; objects and one bone - the objects follow the bone.
+  * *Followed Space*: its motion in the world (*Global*) or against its parent (*Local*: what its parents
+    do left out). *Follower Space*: put on them in the world (*Global*) or against their parent (*Local*).
+    Both Local: an arm's motion put on another arm, whatever their bodies do.
   * With nothing to follow (only one selected, or *Follow* left empty) they are **pinned**: they stay
     where they were on the reference frame - in the world (*Global*), or against their parent (*Local*).
   * It is baked into their own keys - also on one that had none: the keys over the range are replaced by
     as few as follow it (*Tolerance*). *Blend In* / *Blend Out* go over from their own motion before the
     range and back after it (none: within a frame); *Influence* takes only part of the followed motion;
     *Location* / *Rotation* / *Scale* pick the channels. The frames outside stay exactly as they were.
+  * A looped one (a Cycles modifier on its curves) stays looped: everything is done inside the loop, a
+    blend before the range goes on from the loop's end and one after it into its start, and the loop's
+    end meets its start again.
   * Several selected: parents first, so their children follow on top. Something that moves with a
     follower (its child) can't be followed.
 
