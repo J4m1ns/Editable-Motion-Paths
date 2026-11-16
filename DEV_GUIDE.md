@@ -339,7 +339,7 @@ run()
   before == after), "the keys keep their frames", "undo restores the curves".
 * Don't keep RNA references across `undo` in a test either; look objects up by name again.
 * The author's own suite (about 90 scripts, a few thousand checks, synthetic scenes plus
-  Blender Studio's rigs, run on Blender 4.4 and 5.2) isn't in the repository; write tests for
+  production-size rigs, run on Blender 4.4 and 5.x) isn't in the repository; write tests for
   what you change.
 
 **Building and installing:**

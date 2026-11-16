@@ -1804,7 +1804,7 @@ SINGULAR = 1e-12       # |determinant| below this: a zero scale, the matrix can'
 
 def own_loc_space(bone):
     """A bone whose location moves it along other axes than its rotation and scale turn it: Local
-    Location off (IK controls of Rigify and others: along the parent's axes), no inherited rotation,
+    Location off (IK controls often are: along the parent's axes), no inherited rotation,
     or a scale inherited other than in full. Blender moves its head by its own matrix then."""
     return not bone.use_local_location or not bone.use_inherit_rotation or bone.inherit_scale != 'FULL'
 
@@ -1844,7 +1844,7 @@ def _child_of_matrix(c, arm=None):
 def location_frame(owner):
     """The bone / object has constraints that turn or scale it (a camera with Track To), and besides them at
     most full Child Ofs: its rotation is theirs, not its own channels' - the parent space world @ basis^-1
-    would hold that turn and send a location edit another way (issue #11). Its location still moves it
+    would hold that turn and send a location edit another way. Its location still moves it
     through its parents and those Child Ofs: their matrix (world, in the order they come), else None."""
     on = [c for c in owner.constraints if not c.mute and getattr(c, "enabled", True) and c.influence > 0.0]
     if not any(c.type in TURNING_CONSTRAINTS for c in on):

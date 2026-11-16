@@ -272,8 +272,8 @@ MODE_ICONS = {'LOCATION': 'CON_LOCLIKE', 'ROTATION': 'CON_ROTLIKE', 'SCALE': 'CO
 class EMP_PathEntry(bpy.types.PropertyGroup):
     object: PointerProperty(type=bpy.types.Object)
     bone_name: StringProperty()
-    # the path's own mode, or the one picked at the top (1 - 4): an arm in Rotation while the sword tip it swings
-    # shows Location (issue #12)
+    # the path's own mode, or the one picked at the top (1 - 4): a parent in Rotation while the end of a child it
+    # carries shows Location
     mode_pin: EnumProperty(
         name="Mode", default='HEADER', update=_mode_pin_changed,
         items=[('HEADER', "Auto", "This path follows the mode picked at the top (1 - 4)", 'LINKED', 0),

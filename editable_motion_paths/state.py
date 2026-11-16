@@ -460,8 +460,8 @@ def _pose_owners(obj):
     names |= {b for o, b in relative_refs() if o == obj and b}
     if not names:
         return None
-    # (and the bones other paths' objects hang on: a sword with a path on a bone of a rig that has a path of its
-    # own - before only that one's bones were looked at, an edit of the sword's bone went unseen)
+    # (and the bones other paths' objects hang on: an object with a path on a bone of a rig that has a path of its
+    # own - before only that one's bones were looked at, an edit of the object's bone went unseen)
     more = _bones_others_use(obj)
     if more is None:
         return None

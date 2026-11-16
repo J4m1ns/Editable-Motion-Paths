@@ -1,12 +1,12 @@
-"""The paths of children follow an edit of a parent at once (issue #12: a sword's tip while its arm turns; issue #14:
-the same on a production rig - the sword held by Child Of, the hand a copy of the FK hand, the tip a vertex parent).
+"""The paths of children follow an edit of a parent at once: the end of a child while its parent turns, also when
+the child hangs on it through a Child Of, a copy of another bone or a vertex parent.
 
 A path is its parent space B(f) - baked frame by frame - times its own channels. When a bone / object above it is
 edited (with the add-on, in the Graph Editor, with Blender's G / R / S), everything it carries rigidly moves with
 it: the world change of that parent on each frame, D(f) = B(f) @ basis_now(f) @ basis_baked(f)^-1 @ B(f)^-1, put
 in front of a child's baked parent space gives the child's new one exactly - no frames stepped through, a fraction
-of a millisecond for a long range. Parents edited one under the other (arm, then sword) are applied from the root
-down.
+of a millisecond for a long range. Parents edited one under the other (a parent, then its child) are applied from
+the root down.
 
 "Rigidly" is followed link by link up from each path's owner (walk()): a bone to its parent (rotation and scale
 inherited in full), an object to its parent / parent bone, a bone or object that is a copy of another (Copy
@@ -477,7 +477,7 @@ def helper_keys(st):
 def _moves_by_itself(ob):
     """Its own transform is animated (curves, drivers, NLA) or set by constraints, or it hangs on a bone / on
     vertices (the pose, the mesh move it): moved by hand, it isn't moved the same on every frame - and an edit of
-    that bone isn't a move by hand (issue #14: a sword's tip shifted as a whole)."""
+    that bone isn't a move by hand (else a child's path would shift as a whole)."""
     if _active(ob.constraints):
         return True
     if ob.parent is not None and ob.parent_type not in {'OBJECT', 'ARMATURE'}:

@@ -50,11 +50,11 @@ there): drag a ring to turn around that axis only (it follows the mouse steadily
 
 **A mode of its own**: each path in the path list has a mode icon - the chain while it is *Auto*
 (follows the mode picked at the top, 1 - 4); its menu pins one of its own (*Always Location / Rotation /
-...*), or **Shift+1 - 4** in the view pins it for the highlighted paths (again: back to Auto). An arm that turns stays in
-Rotation while the sword tip it swings shows Location; both are edited together like any paths.
+...*), or **Shift+1 - 4** in the view pins it for the highlighted paths (again: back to Auto). A bone that turns stays in
+Rotation while the end of a child it carries shows Location; both are edited together like any paths.
 
 **Children follow at once**: when a bone / object is edited (with the add-on, in the Graph Editor, or
-rotated with auto keying), the paths of what it carries rigidly - the sword in the hand, its tip, an object
+rotated with auto keying), the paths of what it carries rigidly - its child bones and their ends, an object
 hung on a bone - move with it right away, during the drag, not after a re-bake. The edited bone needs no
 path of its own. Rigidly means: parenting (also to a bone, or to one vertex of a mesh that doesn't bend), a
 Copy Transforms in full (an FK / IK switch set to one side) or Copy Location + Copy Rotation (+ Copy Scale)
@@ -598,7 +598,7 @@ and Blender's own G / R / S with auto keying shows it as it will be. That is its
 row's mode icon (like a path's space) switches to **Static**: kept as it was tracked, with an
 **Update Static Path** button next to it that tracks it again over its range, from any mode. A vertex
 that something else moves too (a lattice, cloth, shape keys...) is Static only. Where the bones under
-it follow the controls through constraints (Rigify's deform bones), its path follows an edit once it
+it follow the controls through constraints (deform bones copying control bones), its path follows an edit once it
 is done - right after it, without a click.
 
 **Blender's G / R / S with auto keying**: while you drag a bone / object that has a path, its path and

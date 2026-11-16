@@ -39,11 +39,11 @@ A production rig has thousands of bones; most of them are machinery hidden from 
 with:
 
 ```python
-print(emp.controls("RIG-rain"))   # {bone collection shown: [bones]}, plus 'keyed': bones with keys now
+print(emp.controls("Character_Rig"))   # {bone collection shown: [bones]}, plus 'keyed': bones with keys now
 ```
 
 `analyze()` says so in its summary when a bone is hidden machinery. A wrong name raises
-`ValueError` with the closest names ("Did you mean 'IK-Hand_Parent.L'?"); a frame without a key
+`ValueError` with the closest names ("Did you mean 'CTRL_Hand_IK_L'?"); a frame without a key
 raises `ValueError` listing the frames of the path's keys.
 
 ## Animate in world space
@@ -53,7 +53,7 @@ keys yet: the rig's parents and constraints are worked out, no bone-local axes t
 
 ```python
 for f, p in ((1, (0.5, 0.0, 1.2)), (12, (0.4, -0.3, 1.6)), (24, (0.5, -0.6, 1.2))):
-    emp.move_key("RIG-rain", "IK-Hand_Parent.L", f, target=p, mode='LOCATION')
+    emp.move_key("Character_Rig", "CTRL_Hand_IK_L", f, target=p, mode='LOCATION')
 ```
 
 Every edit works on the one path named (other paths and Blender's selection are left alone).
@@ -107,7 +107,7 @@ The speed graph alone, to judge the timing by eye (the speed over the frames, th
 lines with their frame numbers):
 
 ```python
-emp.render_speed_graph(r"C:\path\speed.png", "RIG-rain", "IK-Hand_Parent.L", frames=[12, 36])
+emp.render_speed_graph(r"C:\path\speed.png", "Character_Rig", "CTRL_Hand_IK_L", frames=[12, 36])
 emp.render_view(r"C:\path\shot.png", frame_numbers=True)   # every key's frame written next to it
 ```
 
@@ -187,9 +187,9 @@ how far each pass of `smooth_speed` evens the speed out.
 The character's balance and the ghosts:
 
 ```python
-c = emp.center_of_mass("RIG-rain")    # {"ready": False, ...} the first time: call again a moment later
+c = emp.center_of_mass("Character_Rig")    # {"ready": False, ...} the first time: call again a moment later
 # {"ready": True, "frames": {f: {"center": [x, y, z], "lowest": z}}, "now": {"balance": 'IN' / 'OUT' / 'AIR', ...}}
-emp.onion(True, before=3, after=3, obj="RIG-rain", bones=["IK-Hand.L"])   # ghosts of those bones' frames
+emp.onion(True, before=3, after=3, obj="Character_Rig", bones=["CTRL_Hand_IK_L"])   # ghosts of those bones' frames
 # -> {"ready": False, ...} while they are captured: call onion() again a moment later, then render_view
 ```
 
