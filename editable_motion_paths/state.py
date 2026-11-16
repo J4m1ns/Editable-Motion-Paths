@@ -792,10 +792,22 @@ def changed_spans(scene=None, owners=None, only=None, memo=None):
         return None
     spans = []
     memo = {} if memo is None else memo
+    rng = []
+
+    def frames():
+        if not rng:
+            st = settings(scene)
+            cs = list(caches.values())
+            rng.append(core.bake_range(scene, st, cs) if scene is not None and st is not None and cs else None)
+        return rng[0]
     for name, obj in objs.items():
         ad = obj.animation_data
+        strips = None
         if ad is not None and ad.use_tweak_mode:
-            return None
+            # (an action edited in the NLA: its frames are the strips' that play it)
+            strips = [s for t in ad.nla_tracks for s in t.strips if s.action == ad.action and not s.mute]
+            if ad.action is None or not strips:
+                return None
         if any(m.type in _PHYSICS_MODS for m in getattr(obj, "modifiers", ())):
             return None
         old_h, old_p = base[name]
@@ -819,13 +831,25 @@ def changed_spans(scene=None, owners=None, only=None, memo=None):
             if k[0].startswith("#") or k not in old_p or k not in new_p:
                 return None
             (op, om, omods), (np_, nm, nmods) = old_p[k], new_p[k]
-            if om != nm or omods != nmods or nmods:
+            if om != nm or omods != nmods:
                 return None
-            span = core.curve_change_span(op, np_)
-            if span is None:
+            cyc = ()
+            if nmods:
+                # (a Cycles modifier and nothing else: the change in every cycle - in the action's own time)
+                coll = compat.get_fcurves(obj)
+                fc = coll.find(k[0], index=k[1]) if coll is not None else None
+                cyc = core.cycles_of(fc) if fc is not None else None
+                if cyc is None:
+                    return None
+            got = core.curve_change_spans(op, np_, cyc, frames() if strips is None else (
+                min(s.action_frame_start for s in strips), max(s.action_frame_end for s in strips)))
+            if got is None:
                 return None
-            if span:
-                spans.append(span)
+            if got and strips is not None:
+                got = core.strip_spans(strips, got)
+                if got is None:
+                    return None
+            spans += got
     return spans
 
 

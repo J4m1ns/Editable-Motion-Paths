@@ -667,8 +667,11 @@ Paths are calculated over the Scene, Action or a Manual frame range (always incl
 key of the path) and update in real time. When other animation such as a parent changes, they
 recalculate on their own (*Auto Update*). After an edit of keys only the frames it changed are
 calculated again - from the keys around the edited ones (Blender works their handles out again too)
-- the rest stays as it was; a change of extrapolation, of a curve's modifiers, of the NLA, of a
-driver or a constraint calculates every frame. While keys are dragged those frames are calculated as
+- the rest stays as it was. A curve a Cycles modifier repeats is calculated again in every cycle
+(turned round in every other one with Mirror), an action edited in the NLA on the frames of the strips
+that play it (every repetition), a change of extrapolation on the frames outside the keys. A change
+of another curve modifier, of the NLA strips themselves, of a driver or a constraint calculates every
+frame. While keys are dragged those frames are calculated as
 you drag, in short steps: spread over them first (the frames between are drawn from the ones done),
 exact once the mouse stops; Esc puts the paths back as they were.
 

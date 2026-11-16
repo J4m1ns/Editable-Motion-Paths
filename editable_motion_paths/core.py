@@ -490,6 +490,103 @@ def curve_change_span(old, new):
     return start, end
 
 
+def cycles_of(fc):
+    """The curve's one Cycles modifier (that is all it has): (before mode, count, after mode, count) - None when
+    it has another modifier too; () when the Cycles one is off."""
+    mods = list(fc.modifiers)
+    if len(mods) != 1 or mods[0].type != 'CYCLES':
+        return None
+    m = mods[0]
+    if m.mute or (getattr(m, "use_influence", False) and m.influence <= 0.0):
+        return ()
+    return (m.mode_before, m.cycles_before, m.mode_after, m.cycles_after)
+
+
+def curve_change_spans(old, new, cyc=(), rng=None):
+    """curve_change_span as a list of spans ([] nothing changed, None it can't be told) - also when the extrapolation
+    changed (the frames before the first key and after the last), and on a curve a Cycles modifier repeats (cyc: see
+    cycles_of; rng: the frames looked at): the span in every cycle (Mirror: turned round in every other one). A
+    change at the first or the last key of a cycled curve changes every cycle: all of it."""
+    if old[-1] != new[-1]:
+        if cyc:
+            return None
+        a, b = _keys_of(old), _keys_of(new)
+        if not len(a) or not len(b):
+            return None
+        out = [(None, float(min(a[0][0], b[0][0]))), (float(max(a[-1][0], b[-1][0])), None)]
+        inner = curve_change_span(old[:-1] + (new[-1],), new)      # (the keys' own change)
+        if inner is None:
+            return None
+        return out + ([inner] if inner else [])
+    span = curve_change_span(old, new)
+    if span is None:
+        return None
+    if not span:
+        return []
+    if not cyc:
+        return [span]
+    s, e = span
+    if s is None or e is None or rng is None:
+        return [(None, None)]
+    a = _keys_of(new)
+    x0, x1 = float(a[0][0]), float(a[-1][0])
+    P = x1 - x0
+    if P < 1e-6:
+        return [(None, None)]
+    fs, fe = rng
+    out = [span]
+    mode_b, count_b, mode_a, count_a = cyc
+    for mode, count, sign in ((mode_b, count_b, -1), (mode_a, count_a, 1)):
+        if mode == 'NONE':
+            continue
+        k = sign
+        while True:
+            if count and abs(k) > count:
+                break
+            if mode == 'MIRROR' and k % 2:
+                lo, hi = x0 + x1 - e + k * P, x0 + x1 - s + k * P
+            else:
+                lo, hi = s + k * P, e + k * P
+            if (sign > 0 and lo > fe) or (sign < 0 and hi < fs) or abs(k) > 100000:
+                break
+            if hi >= fs and lo <= fe:
+                out.append((lo, hi))
+            k += sign
+    return out
+
+
+def strip_spans(strips, spans):
+    """Spans in an action's own time put through the NLA strips that play it (into the scene's time): every
+    repetition of each, turned round when it plays backwards; a change at the action's first / last frame goes on
+    where the strip holds it. None: a strip's time is animated - all of it."""
+    out = []
+    for st in strips:
+        if st.use_animated_time or st.use_animated_time_cyclic:
+            return None
+        afs, afe = st.action_frame_start, st.action_frame_end
+        L = afe - afs
+        sc = st.scale
+        reps = max(1, math.ceil(st.repeat - 1e-6))
+        hold_b = st.extrapolation == 'HOLD'
+        hold_a = st.extrapolation in {'HOLD', 'HOLD_FORWARD'}
+        for s, e in spans:
+            s0 = afs if s is None else max(afs, s)
+            e0 = afe if e is None else min(afe, e)
+            if s0 > e0:
+                continue
+            for r in range(reps):
+                u0, u1 = (s0 - afs + r * L) * sc, (e0 - afs + r * L) * sc
+                lo, hi = (st.frame_end - u1, st.frame_end - u0) if st.use_reverse else \
+                    (st.frame_start + u0, st.frame_start + u1)
+                lo, hi = max(lo, st.frame_start), min(hi, st.frame_end)
+                first = s0 <= afs and r == 0
+                last = e0 >= afe and r == reps - 1
+                if st.use_reverse:
+                    first, last = last, first
+                out.append((None if first and hold_b else lo, None if last and hold_a else hi))
+    return out
+
+
 def _fc_signature(fc):
     if fc is None:
         return None
