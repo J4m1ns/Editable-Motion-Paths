@@ -5,8 +5,8 @@ A recipe says how a bone / object is placed: its parent (a bone through Blender'
 Bone.convert_local_to_pose -, an object through its parent matrix), its own channels, then its constraints in their
 spaces with their influence (static, keyed, or driven: as baked), as Blender's constraint solver does them: Copy
 Location / Rotation / Scale / Transforms (any axes, mix, offset), Child Of, Armature (linear), Damped Track, Track
-To, Stretch To, Limit Location / Rotation / Scale / Distance - and a two-bone IK chain, an object hung on vertices
-of a mesh an armature bends.
+To, Stretch To, Limit Location / Rotation / Scale / Distance - and an object hung on a vertex of a mesh an armature
+bends. (An IK chain is Blender's iterative solver: not redone here - the bake during the drag follows it.)
 
 evaluate() takes the world matrices of what the recipe reads (the new ones where an edit changed them, else as
 baked) and gives the new world matrix. Nothing is trusted blindly: after each bake every recipe is checked against
@@ -241,15 +241,48 @@ class Recipe:
         self.order = 'XYZ'
         self.connected = False
         self.par_kind = None        # (an object: 'OBJECT', 'BONE', 'BONE_REL')
-        self.ik = None              # (an IK chain: see ik_recipe)
+        self.vert = None            # (an object hung on a vertex: see _vertex_parent)
 
     def need(self, node):
         if node is not None and node not in self.inputs and node != self.node:
             self.inputs.append(node)
 
 
+def _vertex_parent(r, o, p):
+    """An object hung on one vertex of a mesh an armature bends (its only modifier, linear, by vertex groups, no
+    shape keys): the vertex's rest place and the deform bones' weights on it."""
+    if p.type != 'MESH' or p.data is None or p.data.shape_keys is not None:
+        raise Unsupported("vertex parent")
+    mods = [m for m in p.modifiers if m.show_viewport]
+    if len(mods) != 1 or mods[0].type != 'ARMATURE':
+        raise Unsupported("vertex parent modifiers")
+    m = mods[0]
+    a = m.object
+    if a is None or a.type != 'ARMATURE' or a.pose is None or not m.use_vertex_groups or m.use_bone_envelopes or \
+            m.use_deform_preserve_volume or m.use_multi_modifier or m.vertex_group:
+        raise Unsupported("armature modifier settings")
+    if getattr(p.data, "animation_data", None) is not None:
+        raise Unsupported("animated mesh")
+    vi = o.parent_vertices[0]
+    if vi >= len(p.data.vertices):
+        raise Unsupported("vertex")
+    v = p.data.vertices[vi]
+    names = {g.index: g.name for g in p.vertex_groups}
+    weights = []
+    for g in v.groups:
+        b = a.data.bones.get(names.get(g.group, ""))
+        if b is not None and b.use_deform and g.weight > 0.0:
+            weights.append((b.name, g.weight))
+    r.par_kind = 'VERT'
+    r.parent = (p.name, "")
+    r.vert = (a.name, v.co.copy(), weights)
+    r.need((a.name, ""))
+    for b, _w in weights:
+        r.need((a.name, b))
+
+
 def recipe(node):
-    """The recipe of a bone / object (Unsupported: one it can't be done for). An IK chain's bones: ik_recipe."""
+    """The recipe of a bone / object (Unsupported: one it can't be done for)."""
     o = bpy.data.objects.get(node[0])
     if o is None:
         raise Unsupported("gone")
@@ -279,6 +312,8 @@ def recipe(node):
                 r.par_kind = 'BONE_REL' if p.pose.bones[o.parent_bone].bone.use_relative_parent else 'BONE'
                 r.parent = (p.name, o.parent_bone)
                 r.need((p.name, ""))
+            elif o.parent_type == 'VERTEX':
+                _vertex_parent(r, o, p)
             else:
                 raise Unsupported("parent type")
             r.need(r.parent)
@@ -287,7 +322,7 @@ def recipe(node):
         if c.mute or not getattr(c, "enabled", True) or not c.is_valid:
             continue
         if c.type == 'IK':
-            raise Unsupported("IK")     # (the chain's bones: ik_recipe)
+            raise Unsupported("IK")
         k = _con(c, o, prefix)
         k.s["own_order"] = r.order
         if k.infl <= 0.0 and k.infl_path is None and k.infl_baked is None:
@@ -773,6 +808,20 @@ def pre_matrix(r, world, basis):
     o = bpy.data.objects[r.node[0]]
     if r.parent is None:
         return basis.copy()
+    if r.par_kind == 'VERT':
+        # (the vertex where the armature bends it: its weighted deform matrices, linear - Blender's Armature
+        # modifier; the object's parent matrix is only that point)
+        arm_name, co, weights = r.vert
+        A = world((arm_name, ""))
+        Ai = A.inverted_safe()
+        co_a = Ai @ world(r.parent) @ co
+        acc, tot = Vector(), 0.0
+        for b, w in weights:
+            D = Ai @ world((arm_name, b)) @ bpy.data.objects[arm_name].data.bones[b].matrix_local.inverted_safe()
+            acc += (D @ co_a) * w
+            tot += w
+        v = A @ (acc / tot if tot > 1e-4 else co_a)
+        return Matrix.Translation(v) @ o.matrix_parent_inverse @ basis
     if r.par_kind == 'OBJECT':
         par = world(r.parent)
     else:
@@ -789,9 +838,6 @@ def pre_matrix(r, world, basis):
 def evaluate(r, f, world, basis, values):
     """The world matrix of the bone / object of recipe r on frame f: world(node) the matrices it reads, basis its
     own channels' matrix, values the driven influences baked."""
-    if r.ik is not None:
-        from . import formulas_ik
-        return formulas_ik.evaluate(r, f, world, basis, values)
     M = pre_matrix(r, world, basis)
     head = M.translation.copy()
     for k in r.cons:

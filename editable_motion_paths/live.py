@@ -322,6 +322,29 @@ def _constrained_up(cons, owner_arm, has_parent, memo):
     return (got[0], got[1], False) if got is not None else None
 
 
+def _ik_chains(o, memo):
+    """The bones of an armature an IK constraint turns above the bone it is on (its chain: Chain Length bones, all
+    of them with 0 - one more without Use Tail)."""
+    key = ("ik chains", o.name)
+    got = memo.get(key)
+    if got is None:
+        got = memo[key] = set()
+        for pb in o.pose.bones:
+            for c in _active(pb.constraints):
+                if c.type not in {'IK', 'SPLINE_IK'}:
+                    continue
+                n = c.chain_count if c.chain_count > 0 else 10000
+                if not getattr(c, "use_tail", True):
+                    n += 1
+                b = pb.parent
+                for _i in range(n - 1):
+                    if b is None:
+                        break
+                    got.add(b.name)
+                    b = b.parent
+    return got
+
+
 def _up(node, memo, first=False):
     """What this bone / object hangs on rigidly: (node above, M, how, strict) - M as in _copy_of, how 'RIGID' (its
     world change is that one's), 'VERTEX' (hung on one vertex: only that point's move reaches it), 'VERTEX3'
@@ -335,6 +358,8 @@ def _up(node, memo, first=False):
         pb = o.pose.bones.get(node[1])
         if pb is None:
             return None
+        if node[1] in _ik_chains(o, memo):
+            return None         # (a bone an IK constraint further down turns: not where its parent puts it)
         cons = _working(pb, o, 'pose.bones["%s"].' % bpy.utils.escape_identifier(node[1]), memo)
         if cons is None:
             return None
@@ -527,8 +552,8 @@ def formula_graph(starts, memo):
         for x in cands:
             if x in F or x in bad:
                 continue
-            if len(F) >= MAX_F:
-                bad.add(x)
+            if len(F) >= MAX_F or (x[1] and x[1] in _ik_chains(bpy.data.objects[x[0]], memo)):
+                bad.add(x)      # (an IK chain: Blender's solver - the bake during the drag, and after it)
                 continue
             try:
                 r = formulas.recipe(x)
