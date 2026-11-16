@@ -14,7 +14,7 @@ Requires Blender 4.4 or newer (tested on 5.2).
 ## Install
 
 Edit > Preferences > Get Extensions > **Install from Disk…** → choose
-`editable_motion_paths-2.0.6.zip`.
+`editable_motion_paths-2.0.7.zip`.
 
 To remove it: Edit > Preferences > **Get Extensions**, find *Editable Motion Paths* among the
 installed ones, and in the dropdown menu at the right of its row choose **Uninstall** (Blender shows no
@@ -53,10 +53,13 @@ there): drag a ring to turn around that axis only (it follows the mouse steadily
 ...*), or **Shift+1 - 4** in the view pins it for the highlighted paths (again: back to Auto). An arm that turns stays in
 Rotation while the sword tip it swings shows Location; both are edited together like any paths.
 
-**Children follow at once**: when a bone / object with a path is edited (with the add-on, in the Graph
-Editor, or rotated with auto keying), the paths of what it carries by plain parenting - the sword in the
-hand, its tip, an object hung on a bone - move with it right away, during the drag, not after a re-bake. A
-chain with a constraint, a bone that doesn't inherit rotation / scale in full, is worked out once the edit
+**Children follow at once**: when a bone / object is edited (with the add-on, in the Graph Editor, or
+rotated with auto keying), the paths of what it carries rigidly - the sword in the hand, its tip, an object
+hung on a bone - move with it right away, during the drag, not after a re-bake. The edited bone needs no
+path of its own. Rigidly means: parenting (also to a bone, or to one vertex of a mesh that doesn't bend), a
+Copy Transforms in full (an FK / IK switch set to one side), a full Child Of (a prop held by the hand), limits
+in a bone's own Local space. A chain with other constraints (IK, Stretch To, a mix of two targets, an FK / IK
+switch that is animated) or a bone that doesn't inherit rotation / scale in full is worked out once the edit
 is done, as before.
 
 Scale and Value paths of something that stays in place are drawn around a **circle** like a

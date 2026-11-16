@@ -171,6 +171,18 @@ def sync_caches(scene=None):
         want = {(o, b, core.ROTATION) for o, b in ops_vertex.helper_keys(st)}
     except Exception:
         want = set()
+    # (and the animated bones / objects the paths hang on rigidly, without a path of their own: an edit of them -
+    # in the Graph Editor too - moves the paths below at once, see live.py)
+    try:
+        from . import live
+        wanted_set = set(wanted)
+        for o, b in live.helper_keys(st):
+            if (o, b, core.ROTATION) in wanted_set or (o, b, core.SCALE) in wanted_set or \
+                    ((o, b, core.LOCATION) in wanted_set and not _own_loc_space(o, b)):
+                continue
+            want.add((o, b, core.ROTATION))
+    except Exception:
+        pass
     for k in list(helper_caches):
         if k not in want:
             del helper_caches[k]
@@ -1229,11 +1241,13 @@ def _on_depsgraph(scene, depsgraph):
             _watch_order(st)            # (and its place in the selection order, click by click)
         except Exception:
             pass
+    live_done = False       # (the children's paths already moved in this update: not worked out twice)
     if st.paths and scene == bpy.context.scene and not modal_running:
         try:
             from . import live
             if blender_edit_running():
                 after_blender_edit[0] = True
+                live_done = True
                 live.preview(scene)     # (Blender's G / R / S with auto keying: the paths as they will be)
             else:
                 live.end_preview()
@@ -1290,7 +1304,8 @@ def _on_depsgraph(scene, depsgraph):
                 pass
             try:
                 from . import live
-                live.update()   # (the paths of the children of an edited bone / object follow it at once)
+                if not live_done:
+                    live.update()   # (the paths of the children of an edited bone / object follow it at once)
             except Exception:
                 pass
             tag_redraw()        # the path follows right away (e.g. a modifier's settings)

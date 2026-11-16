@@ -2241,8 +2241,11 @@ class BakeJob:
                     c = it[0]
                     if c.obj_name == e.object.name and c.bone_name == e.bone_name:
                         self.refs[id(c)] = ((e.rel_object.name, e.rel_bone), [None] * n)
-        # (what each path had: a re-bake that changes none of it moved nothing - see finish())
-        self.old = {id(it[0]): (it[0].fs, it[0].B, it[0].Cam, it[0].cam_obj, it[0].Ref) for it in self.items}
+        # (what each path had: a re-bake that changes none of it moved nothing - see finish(); a path moved along
+        # with an edited parent at once (live.py) had the bake before that: this one moves it, it isn't idle)
+        from . import live
+        self.old = {id(it[0]): (it[0].fs, live.baked(it[0]), it[0].Cam, it[0].cam_obj, it[0].Ref)
+                    for it in self.items}
         self.moved = True
         self.first = any(not item[0].B for item in self.items)     # (a path not drawn yet)
         self.order = list(range(self.fs, self.fe + 1))
