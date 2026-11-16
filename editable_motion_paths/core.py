@@ -419,27 +419,75 @@ def _fmod_signature(m):
     return tuple(out)
 
 
-def fc_shape(fc):
-    """Everything about the keys that shapes the curve, as bytes: where the keys and handles
-    are, the interpolation and easing (Constant / Back / Elastic... with their settings), and the
+_SHAPE_PARTS = (("co", 'f', 2), ("handle_left", 'f', 2), ("handle_right", 'f', 2), ("interpolation", 'i', 1),
+                ("easing", 'i', 1), ("back", 'f', 1), ("amplitude", 'f', 1), ("period", 'f', 1))
+
+
+def fc_parts(fc):
+    """Everything about the keys that shapes the curve, part by part (bytes, see _SHAPE_PARTS): where the keys
+    and handles are, the interpolation and easing (Constant / Back / Elastic... with their settings), and the
     extrapolation. (A change of interpolation alone moves no key or handle.)"""
     kps = fc.keyframe_points
     n = len(kps)
     out = []
-    for name in ("co", "handle_left", "handle_right"):
-        a = array('f', bytes(8 * n))
-        kps.foreach_get(name, a)
-        out.append(a.tobytes())
-    for name in ("interpolation", "easing"):
-        a = array('i', bytes(4 * n))
-        kps.foreach_get(name, a)
-        out.append(a.tobytes())
-    for name in ("back", "amplitude", "period"):
-        a = array('f', bytes(4 * n))
+    for name, kind, per in _SHAPE_PARTS:
+        a = array(kind, bytes(4 * per * n))
         kps.foreach_get(name, a)
         out.append(a.tobytes())
     out.append(fc.extrapolation.encode())
-    return b"|".join(out)
+    return tuple(out)
+
+
+def fc_shape(fc):
+    """fc_parts as one value."""
+    return b"|".join(fc_parts(fc))
+
+
+SPAN_EPS = 2e-6         # (a key or handle moved less than this - relative - didn't move: the Graph Editor works out
+                        # every curve's handles again after a drag, the last digits change)
+
+
+def _keys_of(parts):
+    """The keys of a curve's fc_parts, one row each: x, y, handles, interpolation, easing and its settings."""
+    import numpy as np
+    n = len(parts[0]) // 8
+    cols = []
+    for (name, kind, per), raw in zip(_SHAPE_PARTS, parts):
+        a = np.frombuffer(raw, dtype=np.float32 if kind == 'f' else np.int32).astype(np.float64)
+        cols.append(a.reshape(n, per))
+    return np.hstack(cols) if n else np.zeros((0, 11))
+
+
+def curve_change_span(old, new):
+    """The frames on which a curve can differ, from its keys before and after (fc_parts): (start, end) - None for
+    start / end: from the very first / up to the very last frame - () when nothing changed but the last digits,
+    or None when it can't be told (the extrapolation changed). A piece between two keys is shaped by those keys
+    and their handles only: the frames from the key before the first changed one to the key after the last (the
+    handles Blender worked out again are compared too - with Continuous Acceleration smoothing an edit reaches a
+    few keys away); Linear extrapolation carries the first two / the last two keys' change on outwards."""
+    import numpy as np
+    if old[-1] != new[-1]:
+        return None
+    a, b = _keys_of(old), _keys_of(new)
+    if a.shape == b.shape and a.size and np.array_equal(a, b):
+        return ()
+
+    def same(x, y):
+        return bool(np.all(np.abs(x - y) <= SPAN_EPS * (1.0 + np.abs(x))))
+    na, nb = len(a), len(b)
+    m = min(na, nb)
+    i = 0
+    while i < m and same(a[i], b[i]):
+        i += 1
+    if i == m and na == nb:
+        return ()
+    j = 0           # (the keys alike from the end)
+    while j < m - i and same(a[na - 1 - j], b[nb - 1 - j]):
+        j += 1
+    linear = new[-1] == b"LINEAR"
+    start = None if i == 0 or (linear and i <= 1) else float(a[i - 1][0])
+    end = None if j == 0 or (linear and j <= 1) else float(a[na - j][0])
+    return start, end
 
 
 def _fc_signature(fc):
@@ -2213,10 +2261,14 @@ class BakeJob:
     after each step. The frames around the current one (near) come first and are shown as soon as
     they are done; the rest of the old parent spaces stays drawn until finish() puts the new ones in."""
 
-    def __init__(self, scene, caches, near=None, aux=None):
+    def __init__(self, scene, caches, near=None, aux=None, spans=None):
+        """spans: [(start, end)] (None ends: the range's own) - only the frames an edit of the curves changed are
+        baked anew (see state.changed_spans), the others kept as baked; a full bake when that can't be."""
         # (by name: undo frees the scene, a job outlives it)
         self.scene_name = scene.name
         self.ok_start = False
+        self.partial = False
+        self.base = None
         self.refs = {}
         settings = state.settings(scene)
         if not caches or settings is None:
@@ -2241,8 +2293,11 @@ class BakeJob:
                     c = it[0]
                     if c.obj_name == e.object.name and c.bone_name == e.bone_name:
                         self.refs[id(c)] = ((e.rel_object.name, e.rel_bone), [None] * n)
-        # (what each path had: a re-bake that changes none of it moved nothing - see finish())
-        self.old = {id(it[0]): (it[0].fs, it[0].B, it[0].Cam, it[0].cam_obj, it[0].Ref) for it in self.items}
+        # (what each path had: a re-bake that changes none of it moved nothing - see finish(); a path moved along
+        # with an edited parent at once (live.py) had the bake before that: this one moves it, it isn't idle)
+        from . import live
+        self.old = {id(it[0]): (it[0].fs, live.baked(it[0]), it[0].Cam, it[0].cam_obj, it[0].Ref)
+                    for it in self.items}
         self.moved = True
         self.first = any(not item[0].B for item in self.items)     # (a path not drawn yet)
         self.order = list(range(self.fs, self.fe + 1))
@@ -2254,15 +2309,65 @@ class BakeJob:
             if a <= b:
                 self.order = list(range(a, b + 1)) + list(range(self.fs, a)) + list(range(b + 1, self.fe + 1))
                 self.window = (a, b)
+        self.wlen = self.window[1] - self.window[0] + 1 if self.window is not None else 0
+        if spans is not None and self.items and not self.first:
+            frames = set()
+            for a, b in spans:
+                a = self.fs if a is None else max(self.fs, math.floor(a) - 1)
+                b = self.fe if b is None else min(self.fe, math.ceil(b) + 1)
+                frames.update(range(a, b + 1))
+            if self._seed(scene):
+                # (the frames around the current one first - shown as soon as they are done when many follow)
+                win = self.window
+                self.order = [f for f in range(win[0], win[1] + 1) if f in frames] if win is not None else []
+                self.wlen = len(self.order)
+                self.order += sorted(f for f in frames if win is None or not win[0] <= f <= win[1])
+                if win is None or not self.wlen or len(self.order) <= 2 * NEAR + 1:
+                    self.window, self.wlen = None, 0
+                self.partial = True
         self.i = 0
         self._stop = None
         self.aux = AUX if aux is None else aux
         self.aux_name = None
         self.ok_start = bool(self.items)
         self.t_spent = 0.0
-        # the hashes of now: what changes while this runs is seen as a change afterwards
-        state.remember_action_hashes()
+        # the hashes of now: what changes while this runs is seen as a change afterwards (and the curves
+        # themselves: the next re-bake bakes only what changed after them - see state.changed_spans)
+        self.base = state.remember_action_hashes(parts=True)
         self.memo_sig = state.anim_signature(scene, state._action_hashes)
+
+    def _seed(self, scene):
+        """A bake of some frames only: every path's matrices as last baked (all of them there, for this very range,
+        the camera's and the Relative To references' too) - else False, a full bake."""
+        from . import live
+        n = self.fe - self.fs + 1
+        olds = []
+        for c, _mats, _ok in self.items:
+            B = live.baked(c)
+            if not B or c.fs != self.fs or len(B) != n:
+                return False
+            olds.append(B)
+        cams = None
+        cam = scene.camera
+        if cam is not None or any(m.camera is not None for m in scene.timeline_markers):
+            src = next((c for c, _m, _o in self.items if c.Cam and c.cam_fs == self.fs and len(c.Cam) == n and
+                        c.cam_obj == (cam.name if cam is not None else "")), None)
+            if src is None:
+                return False
+            cams = list(src.Cam)
+        for c, _m, _o in self.items:
+            got = self.refs.get(id(c))
+            if got is not None and not (c.Ref and c.ref_fs == self.fs and len(c.Ref) == n and c.ref_key == got[0]):
+                return False
+        for (c, mats, ok), B in zip(self.items, olds):
+            mats[:] = list(B)
+            ok[:] = [True] * n
+            got = self.refs.get(id(c))
+            if got is not None:
+                got[1][:] = list(c.Ref)
+        if cams is not None:
+            self.cams[:] = cams
+        return True
 
     @property
     def done(self):
@@ -2305,18 +2410,18 @@ class BakeJob:
         i0 = self.i
         t0 = time.time()
         # (a step in steps ends where the frames around the current one are done: shown right away)
-        wlen = self.window[1] - self.window[0] + 1 if self.window is not None else None
+        wlen = self.wlen if self.window is not None else None
         self._stop = wlen if wlen is not None and i0 < wlen else None
         if aux is not None:
             self._step_aux(scene, aux, live, budget, t0)
         else:
             self._step_scene(scene, live, budget, t0)
         self.pace = (time.time() - t0) / max(self.i - i0, 1)
-        if self.done:
+        if self.done and not self.partial:
             # how long a whole bake takes here (steps: their frames; once: all of it, showing
             # meshes again too)
             state.bake_seconds = self.pace * len(self.order) if budget is not None else time.time() - t0
-        if self.window is not None and i0 < self.window[1] - self.window[0] + 1 <= self.i and not self.done:
+        if self.window is not None and i0 < self.wlen <= self.i and not self.done:
             self._show_window()
         return self.done
 
@@ -2529,3 +2634,4 @@ def bake(scene, caches):
     job = BakeJob(scene, caches)
     job.step(None)
     job.finish()
+    state.partial_base[0] = None    # (some paths may be baked from newer curves than others now: the next one in full)
