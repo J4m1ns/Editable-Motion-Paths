@@ -343,15 +343,20 @@ That is Blender's own behaviour. To keep edits local, turn it off:
 * **Curves**: *Path to Curve* makes a Curve object (a Bezier point per key, or a point per
   frame). *Follow Curve* makes the path follow any curve object: keep the timing, even speed,
   or one key per curve point. That way you can export, edit as a curve and bring it back.
-* **Match Motion...** (the Shape panel, the right-click menu): the selected paths' bones / objects
-  follow another bone / object over a range of frames (the selected keys' range, else the scene's),
-  keeping where they are against it on a *Reference Frame* - as if parented to it there. It is
-  baked into their own keys: the keys over the range are replaced by as few as follow it
-  (*Tolerance*); *Blend In* / *Blend Out* go over from their own motion before the range and back to
-  it after it; *Influence* takes only part of the followed motion; *Location* / *Rotation* / *Scale*
-  pick the channels. The frames outside the blends stay exactly as they were. What to follow is the
-  active bone / object when the ones with paths are selected too (like parenting), or picked in the
-  dialog; something that moves with the follower (its child) can't be followed.
+* **Match Motion...** (Object / Pose > Animation, the Shape panel, the right-click menu; no path
+  needed): the selected bones / objects follow the active one (like parenting: select them, the one
+  to follow last) over a range of frames (the selected path keys' range, else the preview / scene
+  range), keeping where they are against it on a *Reference Frame* - as if parented to it there.
+  * *Global*: they follow it in the world. *Local*: each one moves against its own parent as the
+    followed one moves against its parent (an arm's motion put on another arm, whatever their bodies do).
+  * With nothing to follow (only one selected, or *Follow* left empty) they are **pinned**: they stay
+    where they were on the reference frame - in the world (*Global*), or against their parent (*Local*).
+  * It is baked into their own keys - also on one that had none: the keys over the range are replaced by
+    as few as follow it (*Tolerance*). *Blend In* / *Blend Out* go over from their own motion before the
+    range and back after it (none: within a frame); *Influence* takes only part of the followed motion;
+    *Location* / *Rotation* / *Scale* pick the channels. The frames outside stay exactly as they were.
+  * Several selected: parents first, so their children follow on top. Something that moves with a
+    follower (its child) can't be followed.
 
 ## Modifiers
 

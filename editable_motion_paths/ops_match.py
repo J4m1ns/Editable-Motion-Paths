@@ -1,18 +1,23 @@
-"""Match Motion: a bone / object follows another one over a range of frames, keeping where it was against it on a
-reference frame (as if parented to it there) - baked into its own keys, only as many as the motion needs. Before
-the range it blends in from its own motion, after it back out; an influence for all of it.
+"""Match Motion: the selected bones / objects follow the active one over a range of frames, keeping where they were
+against it on a reference frame (as if parented to it there) - baked into their own keys, only as many as the motion
+needs. Before the range they blend in from their own motion, after it back out; an influence for all of it. No path
+is needed. With nothing to follow they are pinned: they stay where they were on the reference frame.
 
-Over the range its world matrix is the leader's times the offset on the reference frame,
-    W(f) = L(f) @ L(ref)^-1 @ W_own(ref),
-turned into its own channels through its parents on each frame (Blender's convert_space), blended with its own
+Global (in the world): over the range a follower's world matrix is the leader's times the offset on the reference
+frame,
+    W(f) = L(f) @ L(ref)^-1 @ W(ref).
+Local (each against its own parent): the leader's motion as its parent sees it, put on the follower as its parent
+sees it,
+    W(f) = P(f) @ (Lp(f)^-1 L(f)) @ (Lp(ref)^-1 L(ref))^-1 @ (P(ref)^-1 W(ref)).
+Turned into its own channels through its parents on each frame (Blender's convert_space), blended with its own
 channels where it blends in / out (location and scale mixed, rotation turned the shortest way) and fitted with the
 Clean Up fitter (fit.py): its keys there are replaced, the keys on either side keep their outer handles."""
 
 import math
 
 import bpy
-from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty
-from mathutils import Vector
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
+from mathutils import Matrix, Vector
 
 from . import core, fit, pick, state
 
@@ -24,6 +29,17 @@ def _world(obj, bone):
         pb = obj.pose.bones.get(bone) if obj.pose is not None else None
         return None if pb is None else obj.matrix_world @ pb.matrix
     return obj.matrix_world.copy()
+
+
+def _parent_world(obj, bone):
+    """What a bone / object is placed against: its parent bone's world matrix (a root bone: its armature's), an
+    object's parent matrix (the world: none)."""
+    if bone:
+        pb = obj.pose.bones.get(bone) if obj.pose is not None else None
+        if pb is None:
+            return None
+        return obj.matrix_world @ pb.parent.matrix if pb.parent is not None else obj.matrix_world.copy()
+    return core._object_parent_matrix(obj)
 
 
 def _basis(obj, bone, W):
@@ -110,24 +126,27 @@ class _Measure:
 
 
 def match(scene, follower, leader, start, end, reference, blend_in=0, blend_out=0, influence=1.0,
-          location=True, rotation=True, scale=True, tolerance=0.5):
-    """follower / leader: (object, bone name or ''). Returns the number of keys written per channel set, or a
-    string saying why nothing could be done."""
+          location=True, rotation=True, scale=True, tolerance=0.5, space='GLOBAL'):
+    """follower / leader: (object, bone name or ''); leader (None, ''): pinned - it stays where it was. space
+    'GLOBAL' / 'LOCAL' (see the module's notes). Returns the number of keys written per channel set, or a string
+    saying why nothing could be done."""
     fobj, fbone = follower
     lobj, lbone = leader
-    if fobj is None or lobj is None:
-        return "Pick the bone / object to follow"
-    if fobj == lobj and fbone == lbone:
+    if fobj is None:
+        return "Select the bones / objects that should follow"
+    if lobj is not None and fobj == lobj and fbone == lbone:
         return "A bone / object can't follow itself"
     owner = fobj.pose.bones.get(fbone) if fbone else fobj
-    if owner is None or (lbone and (lobj.pose is None or lobj.pose.bones.get(lbone) is None)):
+    if owner is None or (lobj is not None and lbone and (lobj.pose is None or lobj.pose.bones.get(lbone) is None)):
         return "The bone is gone"
-    if core.follows(fobj, fbone, lobj, lbone):
+    if lobj is not None and core.follows(fobj, fbone, lobj, lbone):
         return "%s moves with %s: it can't follow it" % (lbone or lobj.name, fbone or fobj.name)
+    local = space == 'LOCAL'
     if end < start:
         start, end = end, start
     blend_in, blend_out = max(0, int(blend_in)), max(0, int(blend_out))
-    r0, r1 = int(start) - blend_in, int(end) + blend_out
+    # (no blend: it goes over within a frame - its own motion on the frame before and after the range)
+    r0, r1 = int(start) - max(blend_in, 1), int(end) + max(blend_out, 1)
     sets = [p for p, on in ((core.LOCATION, location), (core.ROTATION, rotation), (core.SCALE, scale)) if on]
     if not sets:
         return "Pick Location, Rotation or Scale"
@@ -135,19 +154,32 @@ def match(scene, follower, leader, start, end, reference, blend_in=0, blend_out=
     # ---- the leader's motion over the range, the follower's own parents on each frame
     got = {}
     off = []
+    ident = Matrix.Identity(4)
+
+    def leader_now(dg):
+        """The leader's matrix on this frame - the world's, or against its parent (Local); nothing: the world."""
+        if lobj is None:
+            return ident
+        lo = lobj.evaluated_get(dg) if dg is not None else lobj
+        L = _world(lo, lbone)
+        if L is None or not local:
+            return L
+        P = _parent_world(lo, lbone)
+        return None if P is None else P.inverted_safe() @ L
+
+    def follower_parent(fo):
+        return _parent_world(fo, fbone) if local else ident
 
     def at_ref(_f, dg):
-        lo = lobj.evaluated_get(dg) if dg is not None else lobj
         fo = fobj.evaluated_get(dg) if dg is not None else fobj
-        L, W = _world(lo, lbone), _world(fo, fbone)
-        if L is not None and W is not None:
-            off.append(L.inverted_safe() @ W)
+        L, W, P = leader_now(dg), _world(fo, fbone), follower_parent(fo)
+        if L is not None and W is not None and P is not None:
+            off.append(L.inverted_safe() @ P.inverted_safe() @ W)
 
     def each(f, dg):
-        lo = lobj.evaluated_get(dg) if dg is not None else lobj
         fo = fobj.evaluated_get(dg) if dg is not None else fobj
-        L = _world(lo, lbone)
-        got[f] = _basis(fo, fbone, L @ off[0]) if L is not None else None
+        L, P = leader_now(dg), follower_parent(fo)
+        got[f] = _basis(fo, fbone, P @ L @ off[0]) if L is not None and P is not None else None
     step_frames(scene, [fobj, lobj], [int(reference)], at_ref)
     if not off:
         return "The bone is gone"
@@ -282,41 +314,62 @@ def _write(fobj, owner, fbone, ptype, r0, r1, frames, vals, tolerance):
     return len(knots)
 
 
-def _leader_default(context, followers):
-    """The active bone / object when something else is selected too (selected ones follow the active one, like
-    parenting), else none."""
-    ob = context.active_object
-    if ob is None:
-        return "", ""
-    if context.mode == 'POSE' and ob.type == 'ARMATURE':
-        pb = context.active_pose_bone
-        if pb is not None and (ob.name, pb.name) not in followers:
-            return ob.name, pb.name
-        return "", ""
-    if (ob.name, "") not in followers:
-        return ob.name, ""
-    return "", ""
+def selection(context):
+    """(the selected bones / objects that follow - parents first, the active bone / object or None): in Pose Mode
+    the bones, else the objects. Only the active one selected: it is the one that follows (pinned)."""
+    if context.mode == 'POSE':
+        act = context.active_pose_bone
+        active = (act.id_data.name, act.name) if act is not None else None
+        sel = [(pb.id_data.name, pb.name) for pb in (context.selected_pose_bones or ())]
+    else:
+        ob = context.active_object
+        active = (ob.name, "") if ob is not None else None
+        sel = [(o.name, "") for o in (context.selected_objects or ())]
+    followers = [n for n in sel if n != active]
+    if not followers:
+        return ([active] if active is not None else []), None
+    return sorted(followers, key=_depth), active
+
+
+def _depth(node):
+    """How deep it hangs (its parents first: their new motion is under the children's)."""
+    o = bpy.data.objects.get(node[0])
+    d = 0
+    p = o.parent if o is not None else None
+    while p is not None and d < 1000000:
+        d += 1000
+        p = p.parent
+    if node[1] and o is not None and o.pose is not None:
+        pb = o.pose.bones.get(node[1])
+        d += len(pb.parent_recursive) if pb is not None else 0
+    return d
 
 
 class EMP_OT_match_motion(bpy.types.Operator):
-    """The selected paths' bones / objects follow another bone / object over a range of frames, keeping where they
-    are against it on a reference frame - baked into their own keys, blended in before the range and out after it"""
+    """The selected bones / objects follow the active one over a range of frames, keeping where they are against it
+    on a reference frame - baked into their own keys, blended in before the range and out after it. Nothing to
+    follow: they stay where they are (pinned)"""
     bl_idname = "emp.match_motion"
     bl_label = "Match Motion"
     bl_options = {'REGISTER', 'UNDO'}
 
-    leader: StringProperty(name="Follow", description="The object (an armature: with a bone) to follow")
+    leader: StringProperty(name="Follow", description="The object (an armature: with a bone) to follow - the active "
+                                                       "one. Empty: the selected ones stay where they are (pinned)")
     leader_bone: StringProperty(name="Bone", description="The bone of that armature to follow")
-    start: IntProperty(name="Start", description="The first frame it follows on")
-    end: IntProperty(name="End", description="The last frame it follows on")
-    reference: IntProperty(name="Reference Frame", description="Where it is against the one it follows on this "
+    space: EnumProperty(name="Space", default='GLOBAL', items=[
+        ('GLOBAL', "Global", "Follow it in the world: where it goes, they go"),
+        ('LOCAL', "Local", "Each one moves against its own parent as the followed one moves against its parent"),
+    ])
+    start: IntProperty(name="Start", description="The first frame they follow on")
+    end: IntProperty(name="End", description="The last frame they follow on")
+    reference: IntProperty(name="Reference Frame", description="Where they are against the followed one on this "
                                                                "frame is kept over the range")
     blend_in: IntProperty(name="Blend In", min=0, soft_max=200,
-                          description="Frames before the range over which it goes over from its own motion")
+                          description="Frames before the range over which they go over from their own motion")
     blend_out: IntProperty(name="Blend Out", min=0, soft_max=200,
-                           description="Frames after the range over which it goes back to its own motion")
+                           description="Frames after the range over which they go back to their own motion")
     influence: FloatProperty(name="Influence", min=0.0, max=1.0, default=1.0, subtype='FACTOR',
-                             description="How much of the followed motion it takes")
+                             description="How much of the followed motion they take")
     use_location: BoolProperty(name="Location", default=True)
     use_rotation: BoolProperty(name="Rotation", default=True)
     use_scale: BoolProperty(name="Scale", default=True)
@@ -325,23 +378,23 @@ class EMP_OT_match_motion(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.mode in {'POSE', 'OBJECT'}
+        return context.mode in {'POSE', 'OBJECT'} and context.active_object is not None
 
     def _followers(self, context):
-        out = []
-        for c in state.editable_caches(context.scene):
-            k = (c.obj_name, c.bone_name)
-            if k not in out:
-                out.append(k)
-        return out
+        """The selected ones that follow (the one they follow left out)."""
+        followers, active = selection(context)
+        ob = bpy.data.objects.get(self.leader) if self.leader else None
+        lead = (self.leader, self.leader_bone if ob is not None and ob.type == 'ARMATURE' else "") if ob else None
+        if active is not None and active != lead and active not in followers:
+            followers = sorted(followers + [active], key=_depth)
+        return [n for n in followers if n != lead]
 
     def invoke(self, context, event):
-        followers = self._followers(context)
+        followers, active = selection(context)
         if not followers:
-            self.report({'WARNING'}, "Select a bone / object that has a path")
+            self.report({'WARNING'}, "Select what should follow, the one to follow last (active)")
             return {'CANCELLED'}
-        if not self.leader:
-            self.leader, self.leader_bone = _leader_default(context, followers)
+        self.leader, self.leader_bone = active if active is not None else ("", "")
         sc = context.scene
         sel = []
         for c in state.editable_caches(sc):
@@ -357,10 +410,15 @@ class EMP_OT_match_motion(bpy.types.Operator):
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = True
+        n = len(self._followers(context))
+        layout.label(text="%d selected %s" % (n, "follows" if n == 1 else "follow"), icon='CON_CHILDOF')
         layout.prop_search(self, "leader", context.scene, "objects")
         ob = bpy.data.objects.get(self.leader)
         if ob is not None and ob.type == 'ARMATURE' and ob.pose is not None:
             layout.prop_search(self, "leader_bone", ob.pose, "bones")
+        elif not self.leader:
+            layout.label(text="Nothing to follow: they stay where they are", icon='PINNED')
+        layout.prop(self, "space", expand=True)
         col = layout.column(align=True)
         col.prop(self, "start")
         col.prop(self, "end")
@@ -376,17 +434,20 @@ class EMP_OT_match_motion(bpy.types.Operator):
         layout.prop(self, "tolerance")
 
     def execute(self, context):
-        lobj = bpy.data.objects.get(self.leader)
-        if lobj is None:
-            self.report({'WARNING'}, "Pick the bone / object to follow")
+        lobj = bpy.data.objects.get(self.leader) if self.leader else None
+        if self.leader and lobj is None:
+            self.report({'WARNING'}, "No object %r to follow" % self.leader)
             return {'CANCELLED'}
-        lbone = self.leader_bone if lobj.type == 'ARMATURE' else ""
+        lbone = self.leader_bone if lobj is not None and lobj.type == 'ARMATURE' else ""
+        followers = self._followers(context)
+        if not followers:
+            self.report({'WARNING'}, "Select what should follow, the one to follow last (active)")
+            return {'CANCELLED'}
         done = 0
-        for name, bone in self._followers(context):
-            fobj = bpy.data.objects.get(name)
-            got = match(context.scene, (fobj, bone), (lobj, lbone), self.start, self.end, self.reference,
-                        self.blend_in, self.blend_out, self.influence, self.use_location, self.use_rotation,
-                        self.use_scale, self.tolerance)
+        for name, bone in followers:
+            got = match(context.scene, (bpy.data.objects.get(name), bone), (lobj, lbone), self.start, self.end,
+                        self.reference, self.blend_in, self.blend_out, self.influence, self.use_location,
+                        self.use_rotation, self.use_scale, self.tolerance, self.space)
             if isinstance(got, str):
                 self.report({'WARNING'}, got)
                 continue
@@ -398,6 +459,14 @@ class EMP_OT_match_motion(bpy.types.Operator):
         state.schedule_rebake(0.2)
         pick.tag_anim_editors()
         return {'FINISHED'}
+
+
+def menu_entry(self, context):
+    """In Object / Pose > Animation."""
+    if context.mode in {'POSE', 'OBJECT'}:
+        self.layout.separator()
+        self.layout.operator_context = 'INVOKE_DEFAULT'
+        self.layout.operator("emp.match_motion", text="Match Motion...", icon='CON_CHILDOF')
 
 
 classes = (EMP_OT_match_motion,)

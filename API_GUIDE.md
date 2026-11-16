@@ -151,6 +151,9 @@ emp.path_to_curve("Character_Rig", "CTRL_Foot_L")                           # ->
 emp.follow_curve("Character_Rig", "CTRL_Foot_L", curve="MyCurve", timing='KEEP')
 emp.match_motion("Character_Rig", "CTRL_Hand_L", leader="Target", frames=[40, 90], reference=60,
                  blend_in=8, blend_out=8)   # follows "Target" over 40-90, its offset on frame 60 kept
+emp.match_motion("Character_Rig", "CTRL_Foot_L", frames=[12, 30])      # no leader: pinned in place over 12-30
+emp.match_motion("Character_Rig", "CTRL_Hand_R", leader="Character_Rig", leader_bone="CTRL_Hand_L",
+                 frames=[40, 90], space='LOCAL')   # moves against its parent as the other one does against its
 print(max(emp.jitter("Character_Rig", "CTRL_Head"), key=lambda fv: fv[1]))  # roughest frame
 emp.set_mode('VALUE'); emp.set_value_channel("Character_Rig", "CTRL_Hand_L", '["ik_fk"]')
 ```
