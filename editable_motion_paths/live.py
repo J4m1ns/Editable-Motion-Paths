@@ -10,8 +10,9 @@ down.
 
 "Rigidly" is followed link by link up from each path's owner (walk()): a bone to its parent (rotation and scale
 inherited in full), an object to its parent / parent bone, a bone or object that is a copy of another (Copy
-Transforms in full, a full Child Of) to that one, an object hung on one vertex to that mesh (only the vertex's move
-reaches it - when the mesh is the same on every frame). Limits in a bone's own Local space change nothing above it.
+Transforms in full, Copy Location + Copy Rotation (+ Copy Scale) of one target, a full Child Of, an Armature
+constraint on one bone) to that one, an object hung on one vertex to that mesh (only the vertex's move reaches it -
+when the mesh is the same on every frame). Limits in a bone's own Local space change nothing above it.
 The bones / objects on the way that are animated get hidden baked caches of their own (helper_keys) when they have
 no path: an edit of any of them is followed too.
 
@@ -26,9 +27,10 @@ from . import compat, core, state
 
 _anc = {}       # owner (object, bone) -> {"c", "B", "fs", "basis", "sig", "limits"}: an edited parent, as baked
 _kids = {}      # cache key -> (baked B list, fs): every path's parent space as baked
-_chain = {}     # owner -> [(ancestor owner, Q, Q^-1)] that carry it rigidly, root first (Q: None or a constant
-                # matrix turning the ancestor's world change into this one's - a copy between spaces)
+_chain = {}     # owner -> [(ancestor owner, Q, Q^-1, index in its walk)] that carry it rigidly, root first (Q:
+                # None or a constant matrix turning the ancestor's world change into this one's - a copy between spaces)
 _how = {}       # owner -> ('RIGID' | 'VERTEX' | 'VERTEX3', its parent inverse inverted): how it hangs on the first
+_strict = {}    # owner -> the lowest link (index in its walk) that passes only a change without scale on
 _live = {}      # cache key -> the B list put on the cache here (a live one)
 _depth = {}
 _objs = {}      # object name -> its world matrix as baked: an object without animation that carries paths
@@ -178,6 +180,82 @@ def _copy_of(c, owner_arm, memo):
     return (t.name, sub), M.copy()
 
 
+_COPIES = {'COPY_LOCATION', 'COPY_ROTATION', 'COPY_SCALE'}
+
+
+def _all_axes(c):
+    return all(getattr(c, "use_" + a, True) for a in "xyz") and \
+        not any(getattr(c, "invert_" + a, False) for a in "xyz")
+
+
+def _plain_copy(c):
+    """A Copy Location / Rotation / Scale that puts the target's channel in place of the owner's: every axis,
+    full influence, nothing added or mixed."""
+    if c.influence < 1.0 - 1e-6 or getattr(c, "target", None) is None or not _all_axes(c):
+        return False
+    if c.type == 'COPY_LOCATION':
+        return not c.use_offset and not (getattr(c, "use_bbone_shape", False) and c.head_tail > 0.0)
+    if c.type == 'COPY_ROTATION':
+        return c.mix_mode == 'REPLACE'
+    if c.type == 'COPY_SCALE':
+        return not c.use_offset and abs(c.power - 1.0) < 1e-9 and not getattr(c, "use_make_uniform", False)
+    return False
+
+
+def _stack_of(cons, owner_arm, memo):
+    """Copy Location + Copy Rotation (+ Copy Scale) of one target, last on the stack: a copy of that target like
+    Copy Transforms (measured: the same spaces rule) - (node, M, True) or None. Only a world change without scale
+    passes on rigidly (the scale is the owner's own, or copied without its shear)."""
+    run = []
+    for c in reversed(cons):
+        if c.type not in _COPIES:
+            break
+        run.append(c)
+    kinds = {c.type for c in run}
+    if not {'COPY_LOCATION', 'COPY_ROTATION'} <= kinds or not all(_plain_copy(c) for c in run):
+        return None
+    c0 = run[0]
+    t, sub = c0.target, getattr(c0, "subtarget", "")
+    if any(c.target != t or getattr(c, "subtarget", "") != sub or c.owner_space != c0.owner_space or
+           c.target_space != c0.target_space for c in run):
+        return None
+    if c0.owner_space not in {'WORLD', 'POSE'} or c0.target_space not in {'WORLD', 'POSE'}:
+        return None
+    own_scale = 'COPY_SCALE' not in kinds
+    if own_scale and not all(_local_limit(c) for c in cons[:len(cons) - len(run)]):
+        return None             # (the scale it keeps would come from those)
+    sub = sub if t.type == 'ARMATURE' else ""
+    if sub and (t.pose is None or t.pose.bones.get(sub) is None):
+        return None
+    Ao = owner_arm if owner_arm is not None and c0.owner_space == 'POSE' else None
+    At = t if sub and c0.target_space == 'POSE' else None
+    if Ao is At:
+        return (t.name, sub), None, True
+    M = (Ao.matrix_world if Ao is not None else Matrix.Identity(4)) @ \
+        (At.matrix_world.inverted_safe() if At is not None else Matrix.Identity(4))
+    if _identity(M, 1e-6):
+        return (t.name, sub), None, True
+    if any(a is not None and not _still(a, memo) for a in (Ao, At)):
+        return None
+    return (t.name, sub), M.copy(), True
+
+
+def _armature_of(c):
+    """An Armature constraint on one bone in full (weight 1, no envelopes): its owner moves as that bone does
+    (measured: the bone's world change, whatever the armatures) - (the bone's node, strict) or None; strict:
+    Preserve Volume - only a world change without scale is sure to pass on as it is."""
+    if c.type != 'ARMATURE' or c.influence < 1.0 - 1e-6 or getattr(c, "use_bone_envelopes", False):
+        return None
+    on = [t for t in c.targets if t.weight > 1e-6]
+    if len(on) != 1 or abs(on[0].weight - 1.0) > 1e-6:
+        return None
+    t = on[0]
+    arm = t.target
+    if arm is None or arm.type != 'ARMATURE' or arm.pose is None or arm.pose.bones.get(t.subtarget) is None:
+        return None
+    return (arm.name, t.subtarget), bool(getattr(c, "use_deform_preserve_volume", False))
+
+
 def _quiet_nodes(tree, seen):
     if tree is None or tree.name in seen:
         return True
@@ -223,10 +301,27 @@ def _fixed_shape(ob, memo):
     return True
 
 
+def _constrained_up(cons, owner_arm, has_parent, memo):
+    """What a bone's / object's constraints make it a copy of: (node, M, strict) or None. A Copy Transforms (or
+    Copy Location + Rotation (+ Scale) of one target) replaces what came before; a Child Of and an Armature
+    constraint work on the owner's own matrix: only limits before them and no parent of its own - else the
+    parent's edits reach it another way too. strict: only a world change without scale passes on rigidly."""
+    last = cons[-1]
+    if last.type in {'CHILD_OF', 'ARMATURE'} and (has_parent or not all(_local_limit(c) for c in cons[:-1])):
+        return None
+    if last.type == 'ARMATURE':
+        got = _armature_of(last)
+        return (got[0], None, got[1]) if got is not None else None
+    if last.type in _COPIES:
+        return _stack_of(cons, owner_arm, memo)
+    got = _copy_of(last, owner_arm, memo)
+    return (got[0], got[1], False) if got is not None else None
+
+
 def _up(node, memo, first=False):
-    """What this bone / object hangs on rigidly: (node above, M, how) - M as in _copy_of, how 'RIGID' (its world
-    change is that one's), 'VERTEX' (hung on one vertex: only that point's move reaches it), 'VERTEX3' (three:
-    rigid while the change is) - or None."""
+    """What this bone / object hangs on rigidly: (node above, M, how, strict) - M as in _copy_of, how 'RIGID' (its
+    world change is that one's), 'VERTEX' (hung on one vertex: only that point's move reaches it), 'VERTEX3'
+    (three: rigid while the change is), strict: the link passes only a change without scale on - or None."""
     o = bpy.data.objects.get(node[0])
     if o is None:
         return None
@@ -240,36 +335,35 @@ def _up(node, memo, first=False):
         if cons is None:
             return None
         if cons and not all(_local_limit(c) for c in cons):
-            last = cons[-1]
-            # (a Copy Transforms replaces what came before; a Child Of works on the bone's own matrix: only limits
-            # before it and no parent of its own - else the parent's edits reach it another way too)
-            if last.type == 'CHILD_OF' and (pb.parent is not None or not all(_local_limit(c) for c in cons[:-1])):
-                return None
-            got = _copy_of(last, o, memo)
-            return (got[0], got[1], 'RIGID') if got is not None else None
+            got = _constrained_up(cons, o, pb.parent is not None, memo)
+            return (got[0], got[1], 'RIGID', got[2]) if got is not None else None
         if not pb.bone.use_inherit_rotation or pb.bone.inherit_scale != 'FULL':
             return None
-        return ((o.name, pb.parent.name) if pb.parent is not None else (o.name, "")), None, 'RIGID'
+        return ((o.name, pb.parent.name) if pb.parent is not None else (o.name, "")), None, 'RIGID', False
     cons = _working(o, o, "", memo)
     if cons is None:
         return None
     if cons:
-        if len(cons) > 1 or o.parent is not None:
+        if len(cons) == 1 and o.parent is None and cons[0].type in {'COPY_TRANSFORMS', 'CHILD_OF'}:
+            got = _copy_of(cons[0], None, memo)
+            return (got[0], got[1], 'RIGID', False) if got is not None else None
+        if o.parent is not None or all(_local_limit(c) for c in cons) or \
+                cons[-1].type not in _COPIES | {'ARMATURE'}:
             return None
-        got = _copy_of(cons[0], None, memo)
-        return (got[0], got[1], 'RIGID') if got is not None else None
+        got = _constrained_up(cons, None, False, memo)
+        return (got[0], got[1], 'RIGID', got[2]) if got is not None else None
     p = o.parent
     if p is None:
         return None
     t = o.parent_type
     if t in {'OBJECT', 'ARMATURE'}:
-        return (p.name, ""), None, 'RIGID'
+        return (p.name, ""), None, 'RIGID', False
     if t == 'BONE':
         if p.type != 'ARMATURE' or p.pose is None or p.pose.bones.get(o.parent_bone) is None:
             return None
-        return (p.name, o.parent_bone), None, 'RIGID'
+        return (p.name, o.parent_bone), None, 'RIGID', False
     if t in {'VERTEX', 'VERTEX_3'} and first and _fixed_shape(p, memo):
-        return (p.name, ""), None, ('VERTEX' if t == 'VERTEX' else 'VERTEX3')
+        return (p.name, ""), None, ('VERTEX' if t == 'VERTEX' else 'VERTEX3'), False
     return None
 
 
@@ -284,11 +378,12 @@ def walk(obj_name, bone, memo):
     node = (obj_name, bone)
     seen = {node}
     first = True
+    strict = []         # (the links passing only a change without scale on: (index in out of the node above))
     for _i in range(2000):
         got = _up(node, memo, first)
         if got is None:
             break
-        nxt, M, h = got
+        nxt, M, h, s = got
         if first:
             how = h
         first = False
@@ -297,10 +392,19 @@ def walk(obj_name, bone, memo):
         seen.add(nxt)
         if M is not None:
             Q = M if Q is None else Q @ M
+        if s:
+            strict.append(len(out))
         out.append((nxt, Q))
         node = nxt
     memo[key] = (out, how)
+    memo[("strict",) + key[1:]] = strict
     return memo[key]
+
+
+def strict_links(obj_name, bone, memo):
+    """After walk(): the indices (in its chain) of the nodes whose change reaches this one only without scale."""
+    walk(obj_name, bone, memo)
+    return memo.get(("strict", obj_name, bone), [])
 
 
 def rigidly_carried(a_obj, a_bone, c_obj, c_bone):
@@ -447,6 +551,7 @@ def clear():
     _kids.clear()
     _chain.clear()
     _how.clear()
+    _strict.clear()
     _live.clear()
     _depth.clear()
     _objs.clear()
@@ -480,8 +585,11 @@ def snapshot():
                 _objs.setdefault(x.name, x.matrix_world.copy())
             chain, how = walk(k[0], k[1], memo)
             _depth[k] = len(chain)
+            strict = strict_links(k[0], k[1], memo)
+            if strict:
+                _strict[k] = min(strict)
             ancs = []
-            for n, Q in chain:
+            for idx, (n, Q) in enumerate(chain):
                 if n not in full:
                     continue
                 if n not in _anc:
@@ -495,7 +603,7 @@ def snapshot():
                     a.refresh()
                     _anc[n] = {"c": a, "B": a.B, "fs": a.fs, "basis": _basis_list(tg, a.fs, len(a.B)), "sig": a.sig,
                                "limits": lims}
-                ancs.append((n, Q, Q.inverted_safe() if Q is not None else None))
+                ancs.append((n, Q, Q.inverted_safe() if Q is not None else None, idx))
             if ancs:
                 _chain[k] = ancs[::-1]          # (root first)
                 _how[k] = (how, obj.matrix_parent_inverse.inverted_safe() if how == 'VERTEX' else None)
@@ -719,10 +827,12 @@ def _moved(k, B0, fs0, deltas, moves):
     if not chain:
         return M
     how, pinv = _how.get(k, ('RIGID', None))
+    thr = _strict.get(k)
     out = []
     for i, b in enumerate(M):
         tot = None          # (the whole world change of what it hangs on, on this frame)
-        for ka, Q, Qi in chain:
+        hi = None           # (the part of it passing a link that takes only a change without scale)
+        for ka, Q, Qi, idx in chain:
             fsD, D = deltas[ka]
             d = D[min(max(fs0 + i - fsD, 0), len(D) - 1)]
             if d is None:
@@ -730,6 +840,10 @@ def _moved(k, B0, fs0, deltas, moves):
             if Q is not None:
                 d = Q @ d @ Qi
             tot = d if tot is None else d @ tot
+            if thr is not None and idx >= thr:
+                hi = tot
+        if hi is not None and not _rigid(hi):
+            return None         # (a copy keeping its own scale, its target scaled: not followed - the re-bake)
         if tot is None:
             out.append(b)
         elif how == 'VERTEX':

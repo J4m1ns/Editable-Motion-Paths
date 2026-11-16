@@ -57,10 +57,11 @@ Rotation while the sword tip it swings shows Location; both are edited together 
 rotated with auto keying), the paths of what it carries rigidly - the sword in the hand, its tip, an object
 hung on a bone - move with it right away, during the drag, not after a re-bake. The edited bone needs no
 path of its own. Rigidly means: parenting (also to a bone, or to one vertex of a mesh that doesn't bend), a
-Copy Transforms in full (an FK / IK switch set to one side), a full Child Of (a prop held by the hand), limits
-in a bone's own Local space. A chain with other constraints (IK, Stretch To, a mix of two targets, an FK / IK
-switch that is animated) or a bone that doesn't inherit rotation / scale in full is worked out once the edit
-is done, as before.
+Copy Transforms in full (an FK / IK switch set to one side) or Copy Location + Copy Rotation (+ Copy Scale)
+of one bone, a full Child Of (a prop held by the hand), an Armature constraint on one bone, limits in a bone's
+own Local space. A chain with other constraints (IK, Stretch To, a mix of two targets, an FK / IK switch that
+is animated) or a bone that doesn't inherit rotation / scale in full is worked out once the edit is done -
+and then only on the frames the edit changed (see Range and updates).
 
 Scale and Value paths of something that stays in place are drawn around a **circle** like a
 clock face, lying flat around the world Z axis (it stays put when the view turns): the frame
@@ -663,7 +664,10 @@ only its own settings (stored with the scene) are then unused.
 
 Paths are calculated over the Scene, Action or a Manual frame range (always including every
 key of the path) and update in real time. When other animation such as a parent changes, they
-recalculate on their own (*Auto Update*).
+recalculate on their own (*Auto Update*). After an edit of keys only the frames it changed are
+calculated again - from the keys around the edited ones (Blender works their handles out again too)
+- the rest stays as it was; a change of extrapolation, of a curve's modifiers, of the NLA, of a
+driver or a constraint calculates every frame.
 
 On a heavy rig or a long range (thousands of frames) the calculation runs in the background:
 Blender stays responsive, the frames around the current one come first (a new path shows there at

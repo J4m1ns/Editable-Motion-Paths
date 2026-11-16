@@ -44,6 +44,9 @@ _watch_last = None
 force_numbers = False  # show key frame numbers (while sliding)
 ghosts = {}          # path key -> list of world points shown while dragging
 _action_hashes = {}  # action name -> {(data_path, index): hash}
+# what every path's parent spaces were last baked from in full: {object name: (its hashes, {(data_path, index):
+# (fc_parts, mute, modifiers)})} - an edit of curves is baked again only on the frames it changed (None: in full)
+partial_base = [None]
 _bake_memo = []      # [(animation signature, {path key: its parent spaces...})] - the last bakes
 _bake_due = 0.0
 _bake_timer_on = False
@@ -352,10 +355,11 @@ def bake_all(scene=None, only=None):
 # Auto update: re-bake when animation other than a path's own channels changed
 # ----------------------------------------------------------------------------
 
-def _fcurve_hashes(obj, curves=True):
+def _fcurve_hashes(obj, curves=True, parts=None):
     """{(data path, index): hash} of what moves obj on the frames: its F-Curves (curves=False:
     left out, they are what costs), and under special keys ('#...') its NLA, drivers (with the
-    values they read now) and constraints."""
+    values they read now) and constraints. parts: a dict filled with each curve's keys (see
+    changed_spans)."""
     out = {}
     # an armature's bones the paths don't depend on are left out: on a big rig with a dense animation
     # going through all of them took a tenth of a second after every click
@@ -368,13 +372,16 @@ def _fcurve_hashes(obj, curves=True):
         b = _bone_of(dp)
         return b is None or b in names
     coll = compat.get_fcurves(obj) if curves else None
-    from .core import _fmod_signature, fc_shape
+    from .core import _fmod_signature, fc_parts, fc_shape
     for fc in coll if coll is not None else ():
         if not relevant(fc.data_path):
             continue
         # (the interpolation and the modifiers' settings too: they change the curve as much)
-        out[(fc.data_path, fc.array_index)] = hash((fc_shape(fc), fc.mute,
-                                                    tuple(_fmod_signature(m) for m in fc.modifiers)))
+        p = fc_parts(fc)
+        mods = tuple(_fmod_signature(m) for m in fc.modifiers)
+        out[(fc.data_path, fc.array_index)] = hash((b"|".join(p), fc.mute, mods))
+        if parts is not None:
+            parts[(fc.data_path, fc.array_index)] = (p, fc.mute, mods)
     ad = obj.animation_data
     if ad is not None:
         out[("#nla", 0)] = hash((ad.action_blend_type, round(ad.action_influence, 6), ad.action_extrapolation,
@@ -448,11 +455,17 @@ def _pose_owners(obj):
     of them (no path is on one of its bones, but something else hangs on it)."""
     if obj.type != 'ARMATURE' or obj.pose is None:
         return []
-    names = {c.bone_name for c in caches.values() if c.obj_name == obj.name and c.bone_name}
+    names = {c.bone_name for c in all_caches() if c.obj_name == obj.name and c.bone_name}
     # (a bone some path is drawn Relative To: its motion is in that path)
     names |= {b for o, b in relative_refs() if o == obj and b}
     if not names:
         return None
+    # (and the bones other paths' objects hang on: a sword with a path on a bone of a rig that has a path of its
+    # own - before only that one's bones were looked at, an edit of the sword's bone went unseen)
+    more = _bones_others_use(obj)
+    if more is None:
+        return None
+    names |= more
     bones = obj.pose.bones
     reads = {}      # bone -> the bones its drivers read
     ad = obj.animation_data
@@ -487,6 +500,63 @@ def _pose_owners(obj):
                     todo.append(bones.get(name))
         todo += [bones.get(n) for n in reads.get(pb.name, ())]
     return list(out.values())
+
+
+def _bones_others_use(arm):
+    """The bones of this armature that the other paths' objects (their parents, constraints' targets, drivers'
+    variables, all the way up), a Relative To reference object or the camera of Camera space hang on - None: it
+    may be any of them (a mesh it bends, an object it parents as a whole by its bones)."""
+    starts = [bpy.data.objects.get(n) for n in {c.obj_name for c in all_caches()} if n != arm.name]
+    starts += [o for o, _b in relative_refs() if o != arm]
+    cam = bpy.context.scene.camera if bpy.context.scene is not None else None
+    if cam is not None and any(c.cam is not None for c in caches.values()):
+        starts.append(cam)
+    out, seen = set(), set()
+    todo = [o for o in starts if o is not None]
+    while todo:
+        o = todo.pop()
+        if o is None or o == arm or o.name in seen:
+            continue
+        seen.add(o.name)
+        if o.parent is not None:
+            if o.parent == arm:
+                if o.parent_type == 'BONE':
+                    out.add(o.parent_bone)
+                elif o.parent_type == 'ARMATURE':
+                    return None
+            else:
+                todo.append(o.parent)
+        owners = [o] + (list(o.pose.bones) if o.type == 'ARMATURE' and o.pose is not None else [])
+        for ow in owners:
+            for con in ow.constraints:
+                pairs = [(getattr(con, "target", None), getattr(con, "subtarget", "")),
+                         (getattr(con, "pole_target", None), getattr(con, "pole_subtarget", ""))]
+                pairs += [(t.target, t.subtarget) for t in getattr(con, "targets", ())]
+                for t, sub in pairs:
+                    if t == arm:
+                        if sub:
+                            out.add(sub)
+                    elif isinstance(t, bpy.types.Object):
+                        todo.append(t)
+        for m in getattr(o, "modifiers", ()):
+            if m.type == 'ARMATURE' and m.object == arm:
+                return None
+            if m.type == 'HOOK' and m.object == arm and m.subtarget:
+                out.add(m.subtarget)
+        for idb in (o, getattr(o, "data", None)):
+            ad = getattr(idb, "animation_data", None)
+            for d in ad.drivers if ad is not None else ():
+                for v in d.driver.variables:
+                    for t in v.targets:
+                        if t.id == arm:
+                            if t.bone_target:
+                                out.add(t.bone_target)
+                            b = _bone_of(t.data_path or "")
+                            if b is not None:
+                                out.add(b)
+                        elif isinstance(t.id, bpy.types.Object):
+                            todo.append(t.id)
+    return {b for b in out if b in arm.pose.bones}
 
 
 def _strip_sig(s):
@@ -676,15 +746,75 @@ def _bake_from_memo(scene):
         c.dirty = True
         c.failed = False
     if done:
-        remember_action_hashes()
+        base = remember_action_hashes(parts=True)
+        # (the paths are this animation's bake again - but the memo has no Relative To references: those
+        # could be another one's)
+        partial_base[0] = base if not relative_refs() else None
         live.snapshot()
+    else:
+        partial_base[0] = None
     return done
 
 
-def remember_action_hashes():
+def remember_action_hashes(parts=False):
+    """The hashes of what moves the paths now (see _needs_rebake). parts: also returned with each curve's keys,
+    by object - what the bake starting now is made from (see changed_spans)."""
     _action_hashes.clear()
+    base = {} if parts else None
     for name, obj in _tracked_objects().items():
-        _action_hashes[name] = _fcurve_hashes(obj)
+        p = {} if parts else None
+        _action_hashes[name] = _fcurve_hashes(obj, parts=p)
+        if parts:
+            base[name] = (_action_hashes[name], p)
+    return base
+
+
+_PHYSICS_MODS = {'CLOTH', 'SOFT_BODY', 'DYNAMIC_PAINT', 'FLUID', 'COLLISION', 'PARTICLE_SYSTEM'}
+
+
+def changed_spans(scene=None):
+    """The frames an edit of the curves changed since the last full bake: [(start, end)] (None ends: up to the
+    range's own), [] when nothing changed but the last digits - or None when only a full bake will do: something
+    else changed too (NLA, drivers, constraints, a pose without keys, the objects followed), a curve's
+    modifiers or extrapolation, a curve came or went, an action is edited in the NLA (its time isn't the
+    scene's) or a simulation reads the frames before (a change goes on to every frame after it)."""
+    from . import core
+    base = partial_base[0]
+    if base is None:
+        return None
+    objs = _tracked_objects()
+    if set(objs) != set(base):
+        return None
+    if scene is not None and getattr(scene, "rigidbody_world", None) is not None and \
+            any(getattr(o, "rigid_body", None) is not None for o in objs.values()):
+        return None
+    spans = []
+    memo = {}
+    for name, obj in objs.items():
+        ad = obj.animation_data
+        if ad is not None and ad.use_tweak_mode:
+            return None
+        if any(m.type in _PHYSICS_MODS for m in getattr(obj, "modifiers", ())):
+            return None
+        old_h, old_p = base[name]
+        new_p = {}
+        new_h = _fcurve_hashes(obj, parts=new_p)
+        for k in set(old_h) | set(new_h):
+            if old_h.get(k) == new_h.get(k):
+                continue
+            if not k[0].startswith("#") and ((name, k) in _ignored or _harmless(obj, k[0], memo)):
+                continue        # (a path's own channel - its parent space doesn't change - or one not checked)
+            if k[0].startswith("#") or k not in old_p or k not in new_p:
+                return None
+            (op, om, omods), (np_, nm, nmods) = old_p[k], new_p[k]
+            if om != nm or omods != nmods or nmods:
+                return None
+            span = core.curve_change_span(op, np_)
+            if span is None:
+                return None
+            if span:
+                spans.append(span)
+    return spans
 
 
 _TRANSFORM_PROPS = {"location", "rotation_quaternion", "rotation_euler", "rotation_axis_angle", "scale"}
@@ -1016,6 +1146,7 @@ _job = None        # the automatic re-bake running in steps (core.BakeJob), or N
 STEP = 0.08        # how long a step of the background re-bake goes on (seconds)
 STEP_AUX = 0.04    # the same in the bake scene (nothing to put back after it: shorter steps)
 QUICK_BAKE = 0.15  # a whole re-bake quicker than this is done at once (else in steps: no hitch)
+QUICK_PART = 0.3   # the frames an edit changed: baked again at once when that takes no longer than this
 bake_seconds = 0.0  # how long the last whole bake took (a quick one is done at once)
 _job_started = 0.0  # when the job began (a long one shows how far it got)
 SHOW_PROGRESS = 1.0  # a first bake going on longer than this says how far it got
@@ -1031,7 +1162,7 @@ def _job_step(job):
     as the step took: the interface keeps up while a long range is baked), or None when done."""
     t = time.time()
     budget = STEP_AUX if job.aux else max(0.02, STEP - 2.0 * getattr(job, "pace", 0.0))
-    if job.window is not None and job.i <= job.window[1] - job.window[0]:
+    if job.window is not None and job.i < getattr(job, "wlen", 0):
         budget = max(budget, QUICK_BAKE)    # (the frames around the current one in one go: shown at once)
     if job.step(budget):
         return None
@@ -1051,6 +1182,8 @@ after_blender_edit = [False]    # (Blender's own G / R / S ran since the last ba
 def _job_done(job):
     global flash
     job.finish()
+    # (every path now baked from the curves of the job's start: the next edit is baked on its frames only)
+    partial_base[0] = job.base if job.ok_start and job.done else None
     after_blender_edit[0] = False
     try:
         from . import ops_vertex
@@ -1158,14 +1291,22 @@ def _bake_timer():
             if why is not None:
                 sync_caches()
                 scene = bpy.context.scene
-                _job = core.BakeJob(scene, all_caches(), near=scene.frame_current)
+                # an edit of curves: only the frames it changed (none - the last digits only: nothing to bake)
+                spans = changed_spans(scene) if isinstance(why, tuple) and why[1] is not None and \
+                    not why[1][0].startswith("#") else None
+                if spans == []:
+                    partial_base[0] = remember_action_hashes(parts=True)
+                    why = None
+            if why is not None:
+                _job = core.BakeJob(scene, all_caches(), near=scene.frame_current, spans=spans)
                 _job.why = why
                 _job_started = time.time()
                 _job.gap = _job_started - _last_done[0]
                 # quick scenes at once (as before); heavy ones and long ranges in steps, without a
                 # freeze - the first of them on the next tick (this one checked what changed: on a
-                # big rig that takes a moment already)
-                if bake_seconds >= QUICK_BAKE or not _job.step(QUICK_BAKE):
+                # big rig that takes a moment already). A few frames baked again: at once too
+                if (bake_seconds >= QUICK_BAKE and not _job.partial) or \
+                        not _job.step(QUICK_PART if _job.partial else QUICK_BAKE):
                     return 0.02
                 job, _job = _job, None
                 _job_done(job)
@@ -1459,6 +1600,7 @@ def _on_load(*_args):
     caches.clear()
     ghosts.clear()
     _action_hashes.clear()
+    partial_base[0] = None
     _bake_memo.clear()
     _ignored.clear()
     _useless.clear()
