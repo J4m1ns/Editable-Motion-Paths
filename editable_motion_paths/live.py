@@ -625,6 +625,18 @@ def _influences(node, r, fs, n):
             for fc in _influence_curves(node, r)]
 
 
+def _driver_sig(r):
+    """The curves of the values the driven influences read (an edit of them: those influences can't be told)."""
+    out = []
+    for k in r.cons:
+        for on, dp in k.drv[1]:
+            o = bpy.data.objects.get(on)
+            coll = compat.get_fcurves(o) if o is not None else None
+            fc = coll.find(dp) if coll is not None else None
+            out.append(core.fc_shape(fc) if fc is not None else None)
+    return hash(tuple(out))
+
+
 def _driven_transform(node, memo):
     o = bpy.data.objects.get(node[0])
     _curves, driven = _animated_paths(o, memo)
@@ -704,6 +716,9 @@ def _formula_delta(x, deltas, blocked, dragged, selfs):
             return None
         if wc:
             changes[i] = wc
+    # (a driven influence reading what the edit moved, or a value it reads edited: it can't be told here)
+    if any(dn in changes for k in r.cons for dn in k.drv[0]) or             (any(k.drv[1] for k in r.cons) and _driver_sig(r) != info["drv"]):
+        return None
     frames = set(own_frames)
     for wc in changes.values():
         frames.update(wc)
@@ -827,7 +842,8 @@ def _formulas(owners, full, memo):
             continue
         basis = _check(x, r, fs, n)
         if basis is not None:
-            _F[x] = {"r": r, "basis": basis, "sig": _own_sig(x, r), "infl": _influences(x, r, fs, n)}
+            _F[x] = {"r": r, "basis": basis, "sig": _own_sig(x, r), "infl": _influences(x, r, fs, n),
+                     "drv": _driver_sig(r)}
 
 
 def _order_nodes():

@@ -112,7 +112,8 @@ def _clamp_angle(a, lo, hi):
 class Con:
     """One constraint of a recipe: its type, spaces, targets [(node, head_tail, target's rotation order)] and
     settings; its influence: a number, a curve's data path (keyed), or a value baked on every frame (driven)."""
-    __slots__ = ("type", "name", "ob", "own", "tar", "targets", "s", "infl", "infl_path", "infl_baked", "space")
+    __slots__ = ("type", "name", "ob", "own", "tar", "targets", "s", "infl", "infl_path", "infl_baked", "space",
+                 "drv")
 
     def __init__(self, c, idb, prefix):
         self.type = c.type
@@ -125,6 +126,7 @@ class Con:
         self.infl = c.influence
         self.infl_path = None
         self.infl_baked = None
+        self.drv = ([], [])         # (a driven influence: the bones / objects and the animated values it reads)
         self.space = None
         if 'CUSTOM' in (self.own, self.tar):
             so = getattr(c, "space_object", None)
@@ -137,13 +139,35 @@ class Con:
         dp = prefix + 'constraints["%s"].influence' % bpy.utils.escape_identifier(c.name)
         ad = idb.animation_data
         if ad is not None:
-            if any(d.data_path == dp for d in ad.drivers):
+            drv = next((d for d in ad.drivers if d.data_path == dp), None)
+            if drv is not None:
                 self.infl_baked = (idb.name, dp)
+                self.drv = _driver_reads(drv)
             else:
                 from . import compat
                 coll = compat.get_fcurves(idb)
                 if coll is not None and coll.find(dp) is not None:
                     self.infl_path = dp
+
+
+def _driver_reads(d):
+    """What a driver reads: ([bone / object nodes whose transforms it reads], [(object name, data path) of values it
+    reads]) - Unsupported for a Python expression reading more than its variables."""
+    if d.driver.type == 'SCRIPTED' and "bpy" in d.driver.expression:
+        raise Unsupported("python driver")
+    nodes, props = [], []
+    for v in d.driver.variables:
+        for t in v.targets:
+            if t.id is None:
+                continue
+            if v.type == 'SINGLE_PROP':
+                if isinstance(t.id, bpy.types.Object):
+                    props.append((t.id.name, t.data_path))
+                else:
+                    raise Unsupported("driver reads another kind of data")
+            elif isinstance(t.id, bpy.types.Object):
+                nodes.append((t.id.name, t.bone_target if t.id.type == 'ARMATURE' else ""))
+    return nodes, props
 
 
 def _target(c, ob, sub, head_tail=0.0, bbone=False):
@@ -353,6 +377,10 @@ def recipe(node):
             raise Unsupported("owner space")
         if k.own == 'LOCAL' and not node[1] and r.parent is None:
             raise Unsupported("object local space without a parent")
+        for dn in k.drv[0]:
+            r.need(dn)
+            if dn[1]:
+                r.need((dn[0], ""))
         if k.space is not None:
             r.need(k.space)
             if k.space[1]:

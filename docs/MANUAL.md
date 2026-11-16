@@ -54,15 +54,23 @@ there): drag a ring to turn around that axis only (it follows the mouse steadily
 Rotation while the end of a child it carries shows Location; both are edited together like any paths.
 
 **Children follow at once**: when a bone / object is edited (with the add-on, in the Graph Editor, or
-rotated with auto keying), the paths of what it carries rigidly - its child bones and their ends, an object
-hung on a bone - move with it right away, during the drag, not after a re-bake. The edited bone needs no
-path of its own. Rigidly means: parenting (also to a bone, or to one vertex of a mesh that doesn't bend), a
-Copy Transforms in full (an FK / IK switch set to one side) or Copy Location + Copy Rotation (+ Copy Scale)
-of one bone, a full Child Of (a prop held by the hand), an Armature constraint on one bone, limits in a bone's
-own Local space. A chain with other constraints (IK, Stretch To, a mix of two targets, an FK / IK switch that
-is animated) or a bone that doesn't inherit rotation / scale in full is worked out again while keys are
-dragged (with the add-on or in the Graph Editor), a few frames at a time - only the frames the edit changed
-(see Range and updates); after Blender's own G / R / S in the view, once it is done.
+rotated with auto keying), the paths of what hangs on it move with it right away, during the drag, not after
+a re-bake. The edited bone needs no path of its own. That goes through:
+
+* parenting (also to a bone, a bone that doesn't inherit rotation / scale in full);
+* Copy Location / Rotation / Scale / Transforms - alone or together, from one bone or several, any axes,
+  mixes, offsets and influences (an FK / IK switch, also animated), in any space (custom ones too);
+* Child Of (all channels), an Armature constraint on one bone or several, the Transformation constraint;
+* Damped Track, Track To, Stretch To;
+* Limit Location / Rotation / Scale / Distance - also a bone edited past its limit;
+* an object hung on one vertex of a mesh, also of one an armature bends (an Armature modifier alone).
+
+Where a bone isn't simply carried by what is above it, the add-on works out what Blender does for it and
+checks that against what Blender worked out on frames spread over the range; one that doesn't come out the
+same isn't used. Everything else - an IK chain (Blender's solver), an Action constraint, Locked Track,
+drivers reading the edited bone, a sheared bone - is worked out again while keys are dragged (with the add-on
+or in the Graph Editor), a few frames at a time - only the frames the edit changed (see Range and updates);
+after Blender's own G / R / S in the view, once it is done.
 
 Scale and Value paths of something that stays in place are drawn around a **circle** like a
 clock face, lying flat around the world Z axis (it stays put when the view turns): the frame
