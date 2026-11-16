@@ -23,7 +23,7 @@ body:
     attributes:
       label: Rig
       description: Its name and where it comes from (a link, if it's published)
-      placeholder: "Rain by Blender Studio - https://studio.blender.org/characters/rain/"
+      placeholder: "The character's name, its author, and a link to where it's published"
     validations:
       required: true
 
