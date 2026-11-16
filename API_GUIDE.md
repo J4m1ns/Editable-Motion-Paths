@@ -149,6 +149,8 @@ emp.extrude("Character_Rig", "CTRL_Foot_L", frame=97, frames_later=6)      # con
 emp.loop_tool("Character_Rig", "CTRL_Hand_L", frames=[8, 12, 16, 20], tool='CIRCLE')  # clean arc
 emp.path_to_curve("Character_Rig", "CTRL_Foot_L")                           # -> object "Path CTRL_Foot_L"
 emp.follow_curve("Character_Rig", "CTRL_Foot_L", curve="MyCurve", timing='KEEP')
+emp.match_motion("Character_Rig", "CTRL_Hand_L", leader="Target", frames=[40, 90], reference=60,
+                 blend_in=8, blend_out=8)   # follows "Target" over 40-90, its offset on frame 60 kept
 print(max(emp.jitter("Character_Rig", "CTRL_Head"), key=lambda fv: fv[1]))  # roughest frame
 emp.set_mode('VALUE'); emp.set_value_channel("Character_Rig", "CTRL_Hand_L", '["ik_fk"]')
 ```

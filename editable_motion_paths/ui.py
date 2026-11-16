@@ -570,6 +570,7 @@ class EMP_MT_context(bpy.types.Menu):
         layout.menu("EMP_MT_loop", icon='FILE_REFRESH')
         layout.menu("EMP_MT_snap", icon='SNAP_ON')
         layout.menu("EMP_MT_curves", icon='CURVE_DATA')
+        layout.operator("emp.match_motion", text="Match Motion...", icon='CON_CHILDOF')
         layout.separator()
         layout.menu("EMP_MT_delete", icon='X')
 
@@ -717,6 +718,7 @@ class EMP_PT_shape(_Panel, bpy.types.Panel):
         row = col.row(align=True)
         row.menu("EMP_MT_looptools", text="LoopTools", icon='MESH_CIRCLE')
         row.menu("EMP_MT_curves", text="Curves", icon='CURVE_DATA')
+        col.operator("emp.match_motion", text="Match Motion...", icon='CON_CHILDOF')
 
 
 class EMP_PT_timing(_Panel, bpy.types.Panel):

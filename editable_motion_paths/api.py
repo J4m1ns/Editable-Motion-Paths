@@ -611,6 +611,27 @@ def follow_curve(obj, bone=None, curve=None, frames=None, timing='KEEP', mode=No
                    curve=curve, timing=timing)
 
 
+def match_motion(obj, bone=None, leader=None, leader_bone=None, frames=None, reference=None, blend_in=0,
+                 blend_out=0, influence=1.0, location=True, rotation=True, scale=True, tolerance=0.5, mode=None):
+    """The path's bone / object follows `leader` (an object; an armature's bone: `leader_bone`) from the first to
+    the last of `frames` (None: the scene's range), keeping where it is against it on `reference` (None: the first
+    frame) - baked into its own keys there (as few as the motion needs). blend_in / blend_out: frames before / after
+    the range over which it goes over from / back to its own motion; influence 0..1; location / rotation / scale:
+    which channels it takes."""
+    lo = _object(leader)
+    if leader_bone:
+        _check_bone(lo, leader_bone)
+    sc = _scene()
+    if frames:
+        start, end = int(round(min(frames))), int(round(max(frames)))
+    else:
+        start, end = sc.frame_start, sc.frame_end
+    return _run_op(bpy.ops.emp.match_motion, [], obj, bone, mode, leader=lo.name, leader_bone=leader_bone or "",
+                   start=start, end=end, reference=int(start if reference is None else reference),
+                   blend_in=int(blend_in), blend_out=int(blend_out), influence=float(influence),
+                   use_location=location, use_rotation=rotation, use_scale=scale, tolerance=float(tolerance))
+
+
 def set_value_channel(obj, bone=None, data_path='', index=0):
     """Which animated value Value mode (4) shows, e.g. '["ik_fk"]' or
     'pose.bones["Hand"].constraints["IK"].influence'."""

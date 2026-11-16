@@ -71,6 +71,7 @@ API_GUIDE.md, DEV_GUIDE.md, LICENSE (GPL-3.0-or-later)
 | `ops_sculpt.py` | Sculpt Motion Path tool: timing and shape brushes, Dissolve brush, brush strip |
 | `ops_fmods.py` | F-Curve modifiers as a modifier stack for the active path |
 | `ops_io.py` | path to Curve object, path follows a curve |
+| `ops_match.py` | Match Motion: follow another bone / object over a range, baked into keys (split_at, fit.py) |
 | `ops_value.py` | Edit Value popup (type exact values) |
 | `ops_vertex.py` | Track Motion Path of a mesh vertex (Edit Mode: right-click menu), its own list; only to look at |
 | `snap.py`, `space.py` | Blender's snapping and transform pivot / orientation applied to path keys; `space.py` also has the rotation rings and the move gizmo's geometry (`rot_rings`, `move_gizmo`), shared by drawing and picking |

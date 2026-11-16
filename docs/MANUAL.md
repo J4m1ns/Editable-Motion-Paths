@@ -335,6 +335,15 @@ That is Blender's own behaviour. To keep edits local, turn it off:
 * **Curves**: *Path to Curve* makes a Curve object (a Bezier point per key, or a point per
   frame). *Follow Curve* makes the path follow any curve object: keep the timing, even speed,
   or one key per curve point. That way you can export, edit as a curve and bring it back.
+* **Match Motion...** (the Shape panel, the right-click menu): the selected paths' bones / objects
+  follow another bone / object over a range of frames (the selected keys' range, else the scene's),
+  keeping where they are against it on a *Reference Frame* - as if parented to it there. It is
+  baked into their own keys: the keys over the range are replaced by as few as follow it
+  (*Tolerance*); *Blend In* / *Blend Out* go over from their own motion before the range and back to
+  it after it; *Influence* takes only part of the followed motion; *Location* / *Rotation* / *Scale*
+  pick the channels. The frames outside the blends stay exactly as they were. What to follow is the
+  active bone / object when the ones with paths are selected too (like parenting), or picked in the
+  dialog; something that moves with the follower (its child) can't be followed.
 
 ## Modifiers
 
@@ -688,7 +697,7 @@ it down and your scene, frame and pose are left as they are.
 gives a Python API: find a rig's animator `controls()`, add paths, read and `analyze()`
 trajectories, key controls in world space, `jitter()`, move keys in world space, smooth, exaggerate, ease, slide, `space`,
 `subdivide`, `dissolve_keys`, `bevel`, `extrude`, `loop_tool`, `path_to_curve`,
-`follow_curve`, Clean Up, easing presets (`apply_easing`), the Timing menu's tools
+`follow_curve`, `match_motion`, Clean Up, easing presets (`apply_easing`), the Timing menu's tools
 (`breakdown`, `scale_time`, `add_frames`, `moving_hold`, `offset_cascade`), the speed graph's
 `change_speed` / `smooth_speed`, `onion` and `center_of_mass`. Each call is one undo step.
 `render_view()` renders the view with the overlay for an assistant that can read images;
