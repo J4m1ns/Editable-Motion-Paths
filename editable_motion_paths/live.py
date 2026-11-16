@@ -24,7 +24,7 @@ an older bake back) what the bake was made from is noted."""
 import bpy
 from mathutils import Matrix
 
-from . import compat, core, state
+from . import compat, core, formulas, state
 
 _anc = {}       # owner (object, bone) -> {"c", "B", "fs", "basis", "sig", "limits"}: an edited parent, as baked
 _kids = {}      # cache key -> (baked B list, fs): every path's parent space as baked
@@ -466,16 +466,238 @@ def helper_keys(st):
         return out
     memo = {}
     try:
+        starts = []
         for e in st.paths:
             if e.object is None:
                 continue
+            starts.append((e.object.name, e.bone_name))
             chain, _how = walk(e.object.name, e.bone_name, memo)
             for node, _Q in chain:
                 if node not in out and _animated_node(node, memo) and _limits(node, memo) is not None:
                     out.add(node)
+        # (and those carrying rigidly what the formulas read: their edits reach the paths through them)
+        F = formula_graph(starts, memo)
+        for r in F.values():
+            for i in r.inputs:
+                for node in [i] + [n for n, _Q in walk(i[0], i[1], memo)[0]]:
+                    if node not in out and node not in F and _animated_node(node, memo) and \
+                            _limits(node, memo) is not None:
+                        out.add(node)
     except Exception:      # (no hidden caches then: nothing followed, the re-bake as before)
         return set()
     return out
+
+
+# ----------------------------------------------------------------------------
+# Formulas (formulas.py): a bone / object whose place isn't a rigid copy of another one's (constraints mixing,
+# aiming, stretching, limits, a parent it doesn't inherit everything from) is worked out again from what it reads -
+# the paths below it follow at once as well
+# ----------------------------------------------------------------------------
+
+MAX_F = 64
+_F = {}          # F-node -> {"r": its recipe, "basis": its own basis per frame as baked, "sig": its curves then}
+_F_order = []    # the F-nodes, the ones others read first
+_ichain = {}     # a node an F-node reads -> [(node, Q, Q^-1)] root first: what its world change is made of
+_nodes = {"fs": None, "W": {}, "V": {}}    # as baked (core.BakeJob): world matrices per frame, driven values
+
+
+def _true_root(node):
+    """Nothing above it: an object without parent or constraints (a bone always has its armature)."""
+    o = bpy.data.objects.get(node[0])
+    return o is None or (not node[1] and o.parent is None and not _active(o.constraints))
+
+
+def formula_graph(starts, memo):
+    """{F-node: recipe} for these bones / objects: the top of each one's rigid chain when something is above it
+    (it isn't carried rigidly: a recipe works it out) and the animated ones with limits on the way (an edit may go
+    past them) - then the same for everything those read. Ones no recipe can do are left out (they wait for the
+    re-bake)."""
+    F, bad, seen = {}, set(), set()
+    todo = list(starts)
+    while todo:
+        n = todo.pop()
+        if n in seen:
+            continue
+        seen.add(n)
+        chain, _how = walk(n[0], n[1], memo)
+        nodes = [n] + [x for x, _Q in chain]
+        cands = [x for x in nodes if _animated_node(x, memo) and (_limits(x, memo) or [])]
+        if not _true_root(nodes[-1]):
+            cands.append(nodes[-1])
+        for x in cands:
+            if x in F or x in bad:
+                continue
+            if len(F) >= MAX_F:
+                bad.add(x)
+                continue
+            try:
+                r = formulas.recipe(x)
+            except (formulas.Unsupported, KeyError, AttributeError, ReferenceError):
+                bad.add(x)
+                continue
+            F[x] = r
+            todo += r.inputs
+    return F
+
+
+def bake_plan():
+    """What a bake reads besides the parent spaces: the world matrices of the bones / objects the formulas read and
+    the influences drivers set - ([nodes], [(object name, data path)])."""
+    try:
+        starts = sorted({(c.obj_name, c.bone_name) for c in state.all_caches()})
+        F = formula_graph(starts, {})
+    except Exception:
+        return [], []
+    nodes, vals = set(F), set()
+    for r in F.values():
+        nodes.update(r.inputs)
+        vals.update(k.infl_baked for k in r.cons if k.infl_baked is not None)
+    return sorted(nodes), sorted(vals)
+
+
+def take_nodes(fs, W, V):
+    """A bake's world matrices of the nodes (and driven values): what the formulas work from."""
+    _nodes["fs"], _nodes["W"], _nodes["V"] = fs, dict(W or {}), dict(V or {})
+
+
+def _values():
+    fs = _nodes["fs"]
+    return {k: (lambda f, v=v: v[min(max(int(round(f)) - fs, 0), len(v) - 1)]) for k, v in _nodes["V"].items()}
+
+
+def _own_target(node):
+    obj, owner = core.resolve(*node)
+    if owner is None:
+        return None
+    return core.Target(obj, owner, bool(node[1]))
+
+
+def _own_sig(node, r=None):
+    """The node's own transform curves - and its constraints' keyed influences - as they are (a cheap look at
+    whether they changed)."""
+    tg = _own_target(node)
+    if tg is None:
+        return None
+    out = []
+    for ch in (tg.loc, tg.rot, tg.scale):
+        for fc in ch.fcurves:
+            out.append(core.fc_shape(fc) if fc is not None else None)
+    for fc in _influence_curves(node, r):
+        out.append(core.fc_shape(fc) if fc is not None else None)
+    return hash(tuple(out))
+
+
+def _influence_curves(node, r):
+    if r is None:
+        return []
+    coll = compat.get_fcurves(bpy.data.objects[node[0]])
+    return [coll.find(k.infl_path) if coll is not None else None for k in r.cons if k.infl_path is not None]
+
+
+def _influences(node, r, fs, n):
+    """The keyed influences of its constraints on every frame: [[value per frame] per keyed constraint]."""
+    return [[fc.evaluate(fs + i) if fc is not None else 0.0 for i in range(n)]
+            for fc in _influence_curves(node, r)]
+
+
+def _driven_transform(node, memo):
+    o = bpy.data.objects.get(node[0])
+    _curves, driven = _animated_paths(o, memo)
+    if node[1]:
+        pre = 'pose.bones["%s"].' % bpy.utils.escape_identifier(node[1])
+        return any(pre + p in driven for p in _BONE_TF)
+    return any(p in driven for p in _OBJ_TF)
+
+
+def _check(x, r, fs, n):
+    """The recipe gives what Blender baked, on frames spread over the range (with what it read as baked)."""
+    W = _nodes["W"]
+    if any(W.get(i) is None or len(W[i]) != n for i in [x] + r.inputs):
+        return None
+    tg = _own_target(x)
+    if tg is None:
+        return None
+    basis = _basis_list(tg, fs, n)
+    values = _values()
+    for j in sorted({round(k * (n - 1) / (formulas.CHECK_FRAMES - 1)) for k in range(formulas.CHECK_FRAMES)}):
+        if any(W[i][j] is None for i in [x] + r.inputs):
+            return None
+        try:
+            got = formulas.evaluate(r, fs + j, lambda node, j=j: W[node][j], basis[j], values)
+        except (formulas.Unsupported, KeyError, AttributeError, ValueError, ZeroDivisionError):
+            return None
+        want = W[x][j]
+        if not formulas.close(got, want, max(1.0, want.translation.length)):
+            return None
+    return basis
+
+
+def _world_change(node, deltas, blocked):
+    """The world change of a node an F-node reads, from the changes its rigid chain is made of: {frame index:
+    matrix} ({} none), None when one of them can't be worked out."""
+    out = {}
+    for n, Q, Qi in _ichain.get(node, ()):
+        if n in blocked:
+            return None
+        got = deltas.get(n)
+        if got is None:
+            continue
+        for i, d in enumerate(got[1]):
+            if d is None:
+                continue
+            if Q is not None:
+                d = Q @ d @ Qi
+            prev = out.get(i)
+            out[i] = d if prev is None else d @ prev
+    return out
+
+
+def _formula_delta(x, deltas, blocked, dragged, selfs):
+    """An F-node's world change on each frame (fs, [matrix or None]) - {} none, None it can't be worked out."""
+    info = _F[x]
+    r = info["r"]
+    fs = _nodes["fs"]
+    W = _nodes["W"]
+    n = len(W[x])
+    own, own_frames = None, set()
+    if info["sig"] is not None and (x in dragged or _own_sig(x, r) != info["sig"]):
+        tg = _own_target(x)
+        if tg is None:
+            return None
+        own = _basis_list(tg, fs, n)
+        own_frames = {i for i, (a, b) in enumerate(zip(own, info["basis"]))
+                      if not _identity(a @ b.inverted_safe(), 1e-7)}
+        if own_frames:
+            selfs.add(x)
+        # (a keyed influence edited: the frames it changed - like a change of what it reads)
+        for now, was in zip(_influences(x, r, fs, n), info["infl"]):
+            own_frames.update(i for i, (a, b) in enumerate(zip(now, was)) if abs(a - b) > 1e-7)
+    changes = {}
+    for i in r.inputs:
+        wc = _world_change(i, deltas, blocked)
+        if wc is None:
+            return None
+        if wc:
+            changes[i] = wc
+    frames = set(own_frames)
+    for wc in changes.values():
+        frames.update(wc)
+    if not frames:
+        return {}
+    values = _values()
+    D = [None] * n
+    for j in frames:
+        def world(node, j=j):
+            m = W[node][j]
+            d = changes.get(node, {}).get(j)
+            return d @ m if d is not None else m
+        try:
+            Wn = formulas.evaluate(r, fs + j, world, (own or info["basis"])[j], values)
+        except (formulas.Unsupported, KeyError, AttributeError, ValueError, ZeroDivisionError):
+            return None
+        d = Wn @ W[x][j].inverted_safe()
+        D[j] = None if _identity(d, 1e-8) else d
+    return (fs, D)
 
 
 def _moves_by_itself(ob):
@@ -562,6 +784,53 @@ def clear():
     _objs.clear()
     _carry.clear()
     _moved_before.clear()
+    _F.clear()
+    _ichain.clear()
+    _order.clear()
+
+
+def _formulas(owners, full, memo):
+    """The F-nodes over this bake: each recipe checked against what Blender baked (else not used)."""
+    fs = _nodes["fs"]
+    if fs is None or not _nodes["W"]:
+        return
+    n = next((len(c.B) for cs in owners.values() for c in cs if c.fs == fs and c.B), None)
+    if n is None:
+        return
+    for x, r in formula_graph(list(owners), memo).items():
+        if _driven_transform(x, memo):
+            continue
+        basis = _check(x, r, fs, n)
+        if basis is not None:
+            _F[x] = {"r": r, "basis": basis, "sig": _own_sig(x, r), "infl": _influences(x, r, fs, n)}
+
+
+def _order_nodes():
+    """The nodes with a change of their own (edited ancestors, F-nodes), each after what it is worked out from."""
+    deps = {}
+    for a in _anc:
+        deps[a] = [n for n, _Q, _Qi, _i in _chain.get(a, ()) if n != a]
+    for x, info in _F.items():
+        deps[x] = [n for i in info["r"].inputs for n, _Q, _Qi in _ichain.get(i, ()) if n != x]
+    out, state_ = [], {}
+
+    def visit(n, depth=0):
+        if state_.get(n) == 2 or depth > 200:
+            return
+        if state_.get(n) == 1:
+            raise ValueError("loop")
+        state_[n] = 1
+        for d in deps.get(n, ()):
+            if d in deps:
+                visit(d, depth + 1)
+        state_[n] = 2
+        out.append(n)
+    for n in sorted(deps, key=lambda n: _depth.get(n, 0)):
+        visit(n)
+    _order[:] = out
+
+
+_order = []      # (see _order_nodes)
 
 
 def snapshot():
@@ -580,21 +849,20 @@ def snapshot():
             a = next((c for c in cs if _full_space(c)), None)
             if a is not None:
                 full[k] = a
-        for k in owners:
-            obj, owner = core.resolve(*k)
-            if owner is None:
-                continue
-            x = _static_carrier(obj, owner, k[1])
-            if x is not None:
-                _carry[k] = x.name
-                _objs.setdefault(x.name, x.matrix_world.copy())
-            chain, how = walk(k[0], k[1], memo)
-            _depth[k] = len(chain)
-            strict = strict_links(k[0], k[1], memo)
-            if strict:
-                _strict[k] = min(strict)
-            ancs = []
+        _formulas(owners, full, memo)
+
+        def entries(k):
+            """[(node, Q, Q^-1, index in its walk)] nearest first: the rigid ancestors with an edit of their own,
+            up to the nearest F-node (its change is all of what is above it) - itself included if it is one."""
+            chain, _how = walk(k[0], k[1], memo)
+            if k in _F:
+                return [(k, None, None, -1)]
+            out = []
             for idx, (n, Q) in enumerate(chain):
+                Qi = Q.inverted_safe() if Q is not None else None
+                if n in _F:
+                    out.append((n, Q, Qi, idx))
+                    break
                 if n not in full:
                     continue
                 if n not in _anc:
@@ -608,12 +876,45 @@ def snapshot():
                     a.refresh()
                     _anc[n] = {"c": a, "B": a.B, "fs": a.fs, "basis": _basis_list(tg, a.fs, len(a.B)), "sig": a.sig,
                                "limits": lims}
-                ancs.append((n, Q, Q.inverted_safe() if Q is not None else None, idx))
+                out.append((n, Q, Qi, idx))
+            return out
+        for k in owners:
+            obj, owner = core.resolve(*k)
+            if owner is None:
+                continue
+            x = _static_carrier(obj, owner, k[1])
+            if x is not None:
+                _carry[k] = x.name
+                _objs.setdefault(x.name, x.matrix_world.copy())
+            chain, how = walk(k[0], k[1], memo)
+            _depth[k] = len(chain)
+            strict = strict_links(k[0], k[1], memo)
+            if strict:
+                _strict[k] = min(strict)
+            ancs = entries(k)
             if ancs:
                 _chain[k] = ancs[::-1]          # (root first)
                 _how[k] = (how, obj.matrix_parent_inverse.inverted_safe() if how == 'VERTEX' else None)
+        # (what the formulas read: its world change from its own rigid chain - and its own edit)
+        for x in list(_F):
+            for i in _F[x]["r"].inputs:
+                if i in _ichain:
+                    continue
+                es = entries(i)
+                if i not in _F and i in full and i not in _anc:
+                    lims = _limits(i, memo) if _animated_node(i, memo) else None
+                    a = full[i]
+                    tg = a.target() if lims is not None else None
+                    if tg is not None:
+                        a.refresh()
+                        _anc[i] = {"c": a, "B": a.B, "fs": a.fs, "basis": _basis_list(tg, a.fs, len(a.B)),
+                                   "sig": a.sig, "limits": lims}
+                if i in _anc and i not in _F:
+                    es = [(i, None, None, -1)] + es
+                _ichain[i] = [(n, Q, Qi) for n, Q, Qi, _idx in es[::-1]]
         for n in _anc:
             _depth[n] = len(walk(n[0], n[1], memo)[0])
+        _order_nodes()
         for kb, cs in owners.items():
             if kb in _chain or kb in _carry:
                 for c in cs:
@@ -636,7 +937,7 @@ def update():
     """The edited parents' curves now against the bake: their children's paths moved with them. True if any."""
     if _pv["tmp"] and not state.blender_edit_running():
         end_preview()
-    if not _anc and not _objs:
+    if not _anc and not _objs and not _F:
         return False
     try:
         return _update()
@@ -795,7 +1096,7 @@ def preview(scene):
                 c.preview_coll = None
                 c.dirty = True
         _pv["caches"] = shown
-        if _anc or _objs:
+        if _anc or _objs or _F:
             for key in _update(dragged=set(owners)):
                 _pv["caches"].add(key)
         state.tag_redraw()
@@ -915,8 +1216,18 @@ def _update(dragged=()):
     moves = _object_moves()
     deltas = {}         # ancestor owner -> (fs, [D per frame or None])
     blocked = set()     # ancestors edited in a way not followed here: what they carry waits for the re-bake
-    for ka in sorted(_anc, key=lambda k: _depth.get(k, 0)):
-        info = _anc[ka]
+    selfs = set()       # F-nodes whose own curves were edited (their own paths are drawn from those)
+    for ka in _order:
+        if ka in _F:
+            got = _formula_delta(ka, deltas, blocked, dragged, selfs)
+            if got is None:
+                blocked.add(ka)
+            elif got:
+                deltas[ka] = got
+            continue
+        info = _anc.get(ka)
+        if info is None:
+            continue
         a = info["c"]
         if _cache(a.key) is not a or (a.B is not info["B"] and a.B is not _live.get(a.key)):
             continue        # (baked again some other way meanwhile)
@@ -957,7 +1268,7 @@ def _update(dragged=()):
         if c is None or (c.B is not B0 and c.B is not _live.get(key)) or c.fs != fs0:
             continue
         M = None
-        if not any(x[0] in blocked for x in _chain.get(key[:2], ())):
+        if not any(x[0] in blocked for x in _chain.get(key[:2], ())) and key[:2] not in selfs:
             M = _moved(key[:2], B0, fs0, deltas, moves)
         if M is None or M is B0:
             if c.B is not B0:            # (the parents back as baked - an undo of the edit; or not followed)

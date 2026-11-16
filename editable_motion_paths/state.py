@@ -745,6 +745,9 @@ def _bake_from_memo(scene):
         c.bake_id += 1
         c.dirty = True
         c.failed = False
+    from .core import NODES_KEY
+    nd = got.get(NODES_KEY)
+    live.take_nodes(*(nd if nd is not None else (None, {}, {})))
     if done:
         base = remember_action_hashes(parts=True)
         # (the paths are this animation's bake again - but the memo has no Relative To references: those

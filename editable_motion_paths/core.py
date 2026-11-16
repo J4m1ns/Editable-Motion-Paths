@@ -2227,6 +2227,7 @@ def scene_by_name(name):
 # ----------------------------------------------------------------------------
 
 AUX_NAME = ".Motion Paths Bake"     # (a dot: Blender's scene menus leave it out)
+NODES_KEY = ("#nodes",)  # (a bake's memo: the world matrices the formulas read - see live.take_nodes)
 AUX_TAG = "emp_bake_scene"
 AUX = True              # bake in the bake scene when it can be (False: in the user's scene)
 NEAR = 60               # a first bake: the frames this far around the current one first
@@ -2438,8 +2439,21 @@ class BakeJob:
         self.t_spent = 0.0
         self.hit = set()        # (a drag: the paths its frames changed so far, and the frames looked at for that)
         self.seen = 0
+        self.plan = ([], [])
+        self.nodeW, self.nodeV = {}, {}
         if drag:
             return
+        # the world matrices the formulas read (live.py), and the influences drivers set - a bake of some frames
+        # keeps the others' from the last bake
+        from . import live
+        self.plan = live.bake_plan() if self.items else ([], [])
+        old = live._nodes if self.partial and live._nodes["fs"] == self.fs else None
+        for node in self.plan[0]:
+            got = old["W"].get(node) if old is not None else None
+            self.nodeW[node] = list(got) if got is not None and len(got) == n else [None] * n
+        for key in self.plan[1]:
+            got = old["V"].get(key) if old is not None else None
+            self.nodeV[key] = list(got) if got is not None and len(got) == n else [0.0] * n
         # the hashes of now: what changes while this runs is seen as a change afterwards (and the curves
         # themselves: the next re-bake bakes only what changed after them - see state.changed_spans)
         self.base = state.remember_action_hashes(parts=True)
@@ -2551,6 +2565,37 @@ class BakeJob:
         for (name, bone), rm in self.refs.values():
             # (Relative To: the reference's matrix on this frame - None if it is gone: the frames around)
             rm[k] = reference_matrix(bpy.data.objects.get(name), bone, dg)
+        if self.plan[0] or self.plan[1]:
+            self._read_nodes(k, dg)
+
+    def _read_nodes(self, k, dg):
+        """Frame fs + k: the world matrices of the nodes the formulas read, the driven influences."""
+        obs = {}
+
+        def ob_of(name):
+            o = obs.get(name)
+            if o is None:
+                o = bpy.data.objects.get(name)
+                if o is not None and dg is not None:
+                    o = o.evaluated_get(dg)
+                obs[name] = o
+            return o
+        for node in self.plan[0]:
+            o = ob_of(node[0])
+            if o is None:
+                continue
+            if node[1]:
+                pb = o.pose.bones.get(node[1]) if o.pose is not None else None
+                if pb is not None:
+                    self.nodeW[node][k] = o.matrix_world @ pb.matrix
+            else:
+                self.nodeW[node][k] = o.matrix_world.copy()
+        for key in self.plan[1]:
+            o = ob_of(key[0])
+            try:
+                self.nodeV[key][k] = float(o.path_resolve(key[1]))
+            except (ValueError, TypeError, AttributeError):
+                pass
 
     def _refs_of(self, c, i=None, j=None):
         """The reference's matrices baked for this cache ([] when it isn't drawn Relative To, or one is missing),
@@ -2706,6 +2751,10 @@ class BakeJob:
                 self.moved = True
                 self._put(c, self.fs, mats, ok, cams, cam_obj)
             baked[c.key] = (c.fs, c.B, c.Cam, c.cam_fs, c.cam_obj)     # (the hidden ones too: undo takes them)
+        if not self.drag:
+            from . import live
+            live.take_nodes(self.fs, self.nodeW, self.nodeV)
+            baked[NODES_KEY] = (self.fs, self.nodeW, self.nodeV)
         if baked:
             state.remember_bake(getattr(self, "memo_sig", None), baked)
 
