@@ -359,11 +359,22 @@ That is Blender's own behaviour. To keep edits local, turn it off:
     as few as follow it (*Tolerance*). *Blend In* / *Blend Out* go over from their own motion before the
     range and back after it (none: within a frame); *Influence* takes only part of the followed motion;
     *Location* / *Rotation* / *Scale* pick the channels. The frames outside stay exactly as they were.
-  * A looped one (a Cycles modifier on its curves) stays looped: everything is done inside the loop, a
-    blend before the range goes on from the loop's end and one after it into its start, and the loop's
-    end meets its start again.
+  * A looped one (a Cycles modifier on its curves) stays looped: each frame of the loop takes the followed
+    motion from the turn of the loop that falls in the range, a blend before the range goes on from the
+    loop's end and one after it into its start, and the loop's end meets its start again. Only the part
+    of the loop that changes is rewritten - its other keys stay. Repeat with Offset keeps its step,
+    Mirror its turns played back; with a set number of turns, frames past the last one can't follow (it
+    says so). Location, rotation and scale may each loop over their own frames; a curve that holds one
+    value goes along with the others.
+  * A range past its keys: the extrapolation up to it and after it stays as it was (Constant or Linear).
   * Several selected: parents first, so their children follow on top. Something that moves with a
     follower (its child) can't be followed.
+  * The status bar says what was done (who follows what, the frames, how many keys) - on the reference
+    frame itself nothing moves, scrub to see it. It says too what couldn't be done exactly: frames past
+    a loop's turns, a range longer than the loop, a follower's own constraints or drivers that keep it
+    elsewhere. Animation that plays only from NLA strips is refused (Tab into the strip to match it).
+  * The Adjust Last Operation panel changes it afterwards: the same ones follow, whatever is selected
+    then.
 
 ## Modifiers
 

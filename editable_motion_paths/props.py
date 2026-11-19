@@ -379,9 +379,16 @@ class EMP_Snapshot(bpy.types.PropertyGroup):
     data: PointerProperty(type=bpy.types.Mesh)     # Static: its shape and values (a mesh no object uses)
 
 
+def _match_leader_changed(self, context):
+    """A bone the newly picked object doesn't have: the Bone field emptied."""
+    ob = self.match_leader
+    if self.match_leader_bone and (ob is None or ob.pose is None or ob.pose.bones.get(self.match_leader_bone) is None):
+        self.match_leader_bone = ""
+
+
 class EMP_Settings(bpy.types.PropertyGroup):
     # (Match Motion's dialog: what to follow - fields with an eyedropper, see ops_match)
-    match_leader: PointerProperty(type=bpy.types.Object, name="Follow",
+    match_leader: PointerProperty(type=bpy.types.Object, name="Follow", update=_match_leader_changed,
                                   description="The object to follow (an armature: with a bone). Empty: they stay "
                                               "where they are (pinned)")
     match_leader_bone: StringProperty(name="Bone", description="The bone of that armature to follow")

@@ -7,11 +7,14 @@ The leader's motion is taken in the world (Global: L its world matrix) or agains
 Lp^-1 @ its world matrix), and put on the follower in the world (Global: P = I) or against its parent (Local: P its
 parent's world matrix):
     W(f) = P(f) @ L(f) @ L(ref)^-1 @ P(ref)^-1 @ W(ref).
-In a loop (the follower's curves repeated by a Cycles modifier) all of it stays inside the loop: a blend before
-the range goes on from the loop's end, one after it into its start, and the loop is closed again.
+In a loop (the follower's curves repeated by a Cycles modifier) all of it stays inside the loop: each frame of the
+loop takes the leader on the frame of the turn that falls in the range (a blend before the range goes on from the
+loop's end, one after it into its start; Repeat with Offset: its step taken off; Mirror: the turns played back),
+only the spans of the loop that change are written - the other keys stay - and the loop stays closed.
 Turned into its own channels through its parents on each frame (Blender's convert_space), blended with its own
 channels where it blends in / out (location and scale mixed, rotation turned the shortest way) and fitted with the
-Clean Up fitter (fit.py): its keys there are replaced, the keys on either side keep their outer handles."""
+Clean Up fitter (fit.py): its keys there are replaced, the curves split at the ends first without changing their
+shape (also past its keys: on the extrapolation), so the frames outside stay exactly as they were."""
 
 import math
 
@@ -22,6 +25,7 @@ from mathutils import Matrix, Vector
 from . import core, fit, pick, state
 
 MATCH_SCENE = ".Motion Paths Match"     # (the scene the frames are stepped through in - see core.aux_scene)
+_TRANSFORMS = {"location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "scale"}
 
 
 def _world(obj, bone):
@@ -32,22 +36,29 @@ def _world(obj, bone):
 
 
 def _parent_world(obj, bone):
-    """What a bone / object is placed against: its parent bone's world matrix (a root bone: its armature's), an
-    object's parent matrix (the world: none)."""
+    """What a bone / object is placed against: its parent bone's world matrix (a root bone: its armature's); for an
+    object what comes before its own channels - its parent (a bone, a vertex) with the parent inverse, worked out
+    from where it is (world @ basis^-1) unless constraints of its own are in that too (then from its parent);
+    without a parent the world (identity)."""
     if bone:
         pb = obj.pose.bones.get(bone) if obj.pose is not None else None
         if pb is None:
             return None
         return obj.matrix_world @ pb.parent.matrix if pb.parent is not None else obj.matrix_world.copy()
+    if obj.parent is None:
+        return Matrix.Identity(4)
+    if not any(not c.mute and getattr(c, "enabled", True) and c.influence > 0.0 for c in obj.constraints):
+        return obj.matrix_world @ obj.matrix_basis.inverted_safe()
     return core._object_parent_matrix(obj)
 
 
 def _basis(obj, bone, W):
     """The basis (channels before constraints, with an object's deltas) that puts this bone / object at world
-    matrix W, its parents as they are now."""
+    matrix W, its parents as they are now. (Not convert_space's Local for an object: without a parent Blender
+    takes the object's own rotation off there, and with a bone or a vertex for a parent it leaves those out.)"""
     if bone:
         return obj.convert_space(pose_bone=obj.pose.bones[bone], matrix=W, from_space='WORLD', to_space='LOCAL')
-    return obj.convert_space(matrix=W, from_space='WORLD', to_space='LOCAL')
+    return _parent_world(obj, "").inverted_safe() @ W
 
 
 def step_frames(scene, objs, frames, fn):
@@ -125,32 +136,219 @@ class _Measure:
         return Vector(v[:3])
 
 
-def _cycle(tg):
-    """(first, last) key frame of the follower's own curves when a Cycles modifier repeats them - its keys then
-    stay inside that loop and the loop stays closed - else None."""
-    lo = hi = None
-    looped = False
-    for ch in (tg.loc, tg.rot, tg.scale):
-        for fc in ch.fcurves:
-            if fc is None or not len(fc.keyframe_points):
+# ----------------------------------------------------------------------------
+# Loops (a Cycles modifier on the follower's curves)
+# ----------------------------------------------------------------------------
+
+def _kind(mode):
+    return 'REPEAT' if mode == 'REPEAT_OFFSET' else mode
+
+
+def _flat(fc):
+    """A curve that holds one value: every key and handle on it (a leftover key or two of a constant channel)."""
+    kps = fc.keyframe_points
+    v = kps[0].co[1]
+    return all(abs(k.co[1] - v) < 1e-9 and abs(k.handle_left[1] - v) < 1e-9 and abs(k.handle_right[1] - v) < 1e-9
+               for k in kps)
+
+
+def _free(tg, ptype):
+    """Has this channel set nothing of its own to loop (no curves, a key, one value)?"""
+    return all(fc is None or len(fc.keyframe_points) < 2 or _flat(fc) for fc in tg.channels(ptype).fcurves)
+
+
+def _cycle(tg, sets):
+    """The follower's loop, when a Cycles modifier repeats the curves of these channel sets: {"c0", "c1": its first
+    / last key, "modes": (before, count, after, count) with Repeat with Offset as Repeat, "raw": one curve's
+    cycles_of, "mirror": (before, after) played back and forth, "tie": its last key is the next turn's first,
+    "steps": {(path, index): (what a turn adds, on the turns before, on the turns after)}}. None: no loop. A
+    string: why it can't be matched in it (its curves loop in different ways, or only some of them). Curves that
+    hold one value don't count (they get the loop's keys and modifier - see _loop_keys)."""
+    sig = span = raw = None
+    steps = {}
+    plain = False
+    for p in sets:
+        for fc in tg.channels(p).fcurves:
+            if fc is None or len(fc.keyframe_points) < 2 or _flat(fc):
+                continue        # (no key, one, one value: it gets the loop's keys - see _loop_keys)
+            m = core.cycles_of(fc)
+            if m is None and any(md.type == 'CYCLES' for md in fc.modifiers):
+                return "A Cycles modifier together with other modifiers on one curve: its loop can't be kept"
+            if not m or (m[0] == 'NONE' and m[2] == 'NONE'):
+                plain = True
                 continue
-            cyc = core.cycles_of(fc)
-            if cyc and 'NONE' not in (cyc[0], cyc[2]):
-                looped = True
-            a, b = fc.keyframe_points[0].co[0], fc.keyframe_points[-1].co[0]
-            lo = a if lo is None else min(lo, a)
-            hi = b if hi is None else max(hi, b)
-    if not looped or lo is None or hi - lo < 2.0:
+            kps = fc.keyframe_points
+            s = (_kind(m[0]), m[1] if m[0] != 'NONE' else 0, _kind(m[2]), m[3] if m[2] != 'NONE' else 0)
+            a, b = kps[0].co[0], kps[-1].co[0]
+            if sig is None:
+                sig, span, raw = s, (a, b), m
+            elif s != sig or abs(a - span[0]) > 1e-3 or abs(b - span[1]) > 1e-3:
+                return "Its curves loop in different ways (their Cycles modifiers or their first / last keys differ)"
+            steps[(fc.data_path, fc.array_index)] = (kps[-1].co[1] - kps[0].co[1], m[0] == 'REPEAT_OFFSET',
+                                                     m[2] == 'REPEAT_OFFSET')
+    if sig is None:
         return None
-    return int(round(lo)), int(round(hi))
+    if plain:
+        return "Some of its curves loop (a Cycles modifier) and some don't: loop all of them or none"
+    c0, c1 = span
+    if abs(c0 - round(c0)) > 1e-3 or abs(c1 - round(c1)) > 1e-3 or c1 - c0 < 2.0:
+        return "Its loop's first and last keys must be on whole frames, two or more apart"
+    mirror = (sig[0] == 'MIRROR', sig[2] == 'MIRROR')
+    return {"c0": int(round(c0)), "c1": int(round(c1)), "modes": sig, "raw": raw, "mirror": mirror,
+            "tie": not any(mirror), "steps": steps}
+
+
+def _turns(cyc, lo, hi):
+    """The loop's turns k (0: its keys, k > 0 after them, k < 0 before) frames lo - hi can fall in - only the ones
+    its Cycles modifier plays (a count: that many)."""
+    c0, c1 = cyc["c0"], cyc["c1"]
+    P = c1 - c0
+    mb, cb, ma, ca = cyc["modes"]
+    out = []
+    for k in range(int(math.floor((lo - c1) / P)) - 1, int(math.ceil((hi - c0) / P)) + 2):
+        if k < 0 and (mb == 'NONE' or (cb > 0 and -k > cb)):
+            continue
+        if k > 0 and (ma == 'NONE' or (ca > 0 and k > ca)):
+            continue
+        out.append(k)
+    return out
+
+
+def _windows(changed, c0, c1):
+    """The spans of the loop written: each run of changed frames with a frame of its own motion on either side
+    (the curve split there, the keys outside kept), inside the loop's keys; spans that meet made one."""
+    out = []
+    for t in changed:
+        a, b = max(c0, t - 1), min(c1, t + 1)
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def _loop_keys(fobj, owner, fbone, ptype, cyc):
+    """Every curve of the set in the loop like the others: keys on its first and last frame (a curve without keys:
+    its value as it is; one that holds one value: that value, its keys outside the loop taken off) and the same
+    Cycles modifier."""
+    _ensure_curves(owner, fbone, ptype, cyc["c0"])
+    tg = core.Target(fobj, owner, bool(fbone))
+    c0, c1 = cyc["c0"], cyc["c1"]
+    for fc in tg.channels(ptype).fcurves:
+        if fc is None:
+            continue
+        kps = fc.keyframe_points
+        flat = len(kps) < 2 or _flat(fc)
+        if flat:
+            v = kps[0].co[1]
+            for x in (c0, c1):
+                if not any(abs(k.co[0] - x) < 1e-3 for k in kps):
+                    k = kps.insert(x, v, options={'FAST'})
+                    k.co = (x, v)
+            for i in reversed(range(len(kps))):
+                if not c0 - 1e-3 <= kps[i].co[0] <= c1 + 1e-3:
+                    kps.remove(kps[i], fast=True)
+            for k in kps:
+                k.handle_left_type = k.handle_right_type = 'FREE'
+                k.handle_left = (k.handle_left[0], v)
+                k.handle_right = (k.handle_right[0], v)
+        m = next((m for m in fc.modifiers if m.type == 'CYCLES'), None)
+        if m is None or flat:
+            if m is None:
+                m = fc.modifiers.new('CYCLES')
+            m.mode_before, m.cycles_before, m.mode_after, m.cycles_after = cyc["raw"]
+        fc.update()
+
+
+def _from_nla(fobj):
+    """Why its keys can't be matched: it plays its animation from NLA strips only (no action of its own to key) -
+    else ''."""
+    ad = fobj.animation_data
+    if ad is None or ad.action is not None or getattr(ad, "use_tweak_mode", False):
+        return ""
+    if any(not t.mute and any(not s.mute for s in t.strips) for t in ad.nla_tracks):
+        return ("%s plays its animation from NLA strips: edit the strip's action (Tab: Tweak Mode) to match it" %
+                fobj.name)
+    return ""
+
+
+def _overridden(fobj, owner, fbone):
+    """Do its own constraints or drivers decide where it ends up, whatever its keys say?"""
+    for c in getattr(owner, "constraints", ()):
+        if not c.mute and getattr(c, "enabled", True) and c.influence > 0.0:
+            return True
+    ad = fobj.animation_data
+    if ad is not None:
+        prefix = 'pose.bones["%s"].' % bpy.utils.escape_identifier(fbone) if fbone else ""
+        for d in ad.drivers:
+            dp = d.data_path
+            if dp.startswith(prefix) and dp[len(prefix):] in _TRANSFORMS and not d.mute:
+                return True
+    return False
+
+
+def _verify(scene, fobj, fbone, lobj, D, frames):
+    """(how far off, how much turned off) it is on these frames from where it should be (D: world matrices)."""
+    worst = [0.0, 0.0]
+
+    def at(f, dg):
+        fo = fobj.evaluated_get(dg) if dg is not None else fobj
+        W = _world(fo, fbone)
+        if W is None:
+            return
+        d = D[f]
+        worst[0] = max(worst[0], (W.translation - d.translation).length)
+        worst[1] = max(worst[1], W.to_quaternion().rotation_difference(d.to_quaternion()).angle)
+    step_frames(scene, [fobj, lobj], frames, at)
+    return worst
+
+
+# ----------------------------------------------------------------------------
+# Match
+# ----------------------------------------------------------------------------
+
+def _plan(cyc, start, end, blend_in, blend_out, influence, notes):
+    """Which frames of a channel set are written: {"cyc": its loop (or None), "when": {frame of its keys: (frame the
+    leader is taken on, how much of it, the loop's turn it is seen in)}, "windows": the spans written} - or a
+    string: why nothing can be done. What doesn't come out exactly goes into notes."""
+    if cyc is None:
+        # (no blend: it goes over within a frame - its own motion on the frame before and after the range)
+        r0, r1 = int(start) - max(blend_in, 1), int(end) + max(blend_out, 1)
+        return {"cyc": None, "windows": [(r0, r1)],
+                "when": {f: (f, influence * _ramp(f, start, end, blend_in, blend_out), 0) for f in range(r0, r1 + 1)}}
+    c0, c1 = cyc["c0"], cyc["c1"]
+    P = c1 - c0
+    ks = _turns(cyc, start - blend_in, end + blend_out)
+    when = {}
+    for t in range(c0, (c1 - 1 if cyc["tie"] else c1) + 1):
+        best = (0.0, t, 0)
+        for k in ks:
+            s = c0 + c1 - t + k * P if k % 2 and cyc["mirror"][k > 0] else t + k * P
+            w = _ramp(s, start, end, blend_in, blend_out)
+            if w > best[0] + 1e-12:
+                best = (w, s, k)
+        when[t] = (best[1], influence * best[0], best[2])
+    if cyc["tie"]:
+        when[c1] = when[c0]     # (its last key is the first one of the next turn)
+    changed = [t for t in sorted(when) if when[t][1] > 0.0]
+    if not changed:
+        return "The range is outside the turns of its loop (keys %d - %d)" % (c0, c1)
+    said = []
+    if (end + blend_out) - (start - blend_in) > P:
+        said.append("the range is longer than its loop (%d frames): it follows one turn of it" % P)
+    past = [s for s in range(int(start), int(end) + 1) if not any(c0 + k * P <= s <= c1 + k * P for k in ks)]
+    if past:
+        said.append("frames %d - %d are past its loop's last turn: they don't follow" % (past[0], past[-1]))
+    notes += [n for n in said if n not in notes]
+    return {"cyc": cyc, "when": when, "windows": _windows(changed, c0, c1)}
 
 
 def match(scene, follower, leader, start, end, reference, blend_in=0, blend_out=0, influence=1.0,
           location=True, rotation=True, scale=True, tolerance=0.5, space='GLOBAL', leader_space='GLOBAL'):
     """follower / leader: (object, bone name or ''); leader (None, ''): pinned - it stays where it was. space: where
     the motion is put on the follower, leader_space: what of the leader's motion is taken - 'GLOBAL' (the world) /
-    'LOCAL' (against its parent; see the module's notes). Returns the number of keys written per channel set, or a
-    string saying why nothing could be done."""
+    'LOCAL' (against its parent; see the module's notes). Returns {channel set: keys written, "notes": [what didn't
+    come out exactly, in words]}, or a string saying why nothing could be done."""
     fobj, fbone = follower
     lobj, lbone = leader
     if fobj is None:
@@ -162,6 +360,8 @@ def match(scene, follower, leader, start, end, reference, blend_in=0, blend_out=
         return "The bone is gone"
     if lobj is not None and core.follows(fobj, fbone, lobj, lbone):
         return "%s moves with %s: it can't follow it" % (lbone or lobj.name, fbone or fobj.name)
+    if influence <= 0.0:
+        return "Influence 0: nothing would change"
     local_f, local_l = space == 'LOCAL', leader_space == 'LOCAL'
     if end < start:
         start, end = end, start
@@ -170,37 +370,31 @@ def match(scene, follower, leader, start, end, reference, blend_in=0, blend_out=
     if not sets:
         return "Pick Location, Rotation or Scale"
     tg = core.Target(fobj, owner, bool(fbone))
-    cyc = _cycle(tg)
-    # ---- which frames, and on each: the frame the leader is taken on and how much of it
-    seam = None
-    if cyc is not None:
-        # (a loop: everything inside it - a blend before the range goes on from the loop's end, one after it from
-        # its start; the frame of the leader taken is the one in the loop's turn the range is in)
-        c0, c1 = cyc
-        P = c1 - c0
-        when = {}
-        for t in range(c0, c1 + 1):
-            best = (0.0, t)
-            for k in range(-4, 5):
-                w = _ramp(t + k * P, start, end, blend_in, blend_out)
-                if w > best[0] + 1e-12:
-                    best = (w, t + k * P)
-            when[t] = (best[1], influence * best[0])
-        touched = [t for t in when if when[t][1] > 0.0]
-        if not touched:
-            return "The range is outside the loop of its keys (%d - %d)" % (c0, c1)
-        if min(touched) > c0 and max(touched) < c1:
-            r0, r1 = min(touched) - 1, max(touched) + 1
-        else:
-            r0, r1, seam = c0, c1, (c0, c1)      # (across the loop's end: all of it, the loop kept closed)
-    else:
-        # (no blend: it goes over within a frame - its own motion on the frame before and after the range)
-        r0, r1 = int(start) - max(blend_in, 1), int(end) + max(blend_out, 1)
-        when = {f: (f, influence * _ramp(f, start, end, blend_in, blend_out)) for f in range(r0, r1 + 1)}
-    frames = list(range(r0, r1 + 1))
+    locked, why = core._anim_lock(tg)
+    if locked:
+        return why
+    why = _from_nla(fobj)
+    if why:
+        return why
+    notes = []
+    # ---- which frames, set by set (each may loop on its own): on each, the frame the leader is taken on, how much
+    # of it, the loop's turn it is seen in
+    loops = {}
+    for p in sets:
+        loops[p] = _cycle(tg, [p])
+        if isinstance(loops[p], str):
+            return loops[p]
+    shared = next((c for c in loops.values() if c is not None), None)
+    plans = {}
+    for p in sets:
+        cyc = loops[p]
+        if cyc is None and shared is not None and _free(tg, p):
+            cyc = shared        # (nothing of its own to loop - no curves, one value: it loops with the others)
+        plans[p] = _plan(cyc, start, end, blend_in, blend_out, influence, notes)
+        if isinstance(plans[p], str):
+            return plans[p]
     # ---- the leader's motion, the follower's own parents, on those frames
-    got = {}
-    off = []
+    got, D, off = {}, {}, []
     ident = Matrix.Identity(4)
 
     def leader_now(dg):
@@ -226,54 +420,101 @@ def match(scene, follower, leader, start, end, reference, blend_in=0, blend_out=
     def each(f, dg):
         fo = fobj.evaluated_get(dg) if dg is not None else fobj
         L, Pf = leader_now(dg), follower_parent(fo)
-        got[f] = _basis(fo, fbone, Pf @ L @ off[0]) if L is not None and Pf is not None else None
+        if L is None or Pf is None:
+            got[f] = None
+            return
+        D[f] = Pf @ L @ off[0]
+        got[f] = _basis(fo, fbone, D[f])
     step_frames(scene, [fobj, lobj], [int(reference)], at_ref)
     if not off:
         return "The bone is gone"
-    step_frames(scene, [fobj, lobj], sorted({when[t][0] for t in frames if when[t][1] > 0.0}), each)
-    if any(got.get(when[t][0]) is None for t in frames if when[t][1] > 0.0):
+    need = sorted({w[0] for pl in plans.values() for w in pl["when"].values() if w[1] > 0.0})
+    step_frames(scene, [fobj, lobj], need, each)
+    if any(got.get(s) is None for s in need):
         return "The bone is gone"
-    # ---- its own channels blended with what it takes from the leader, on every frame
+    # ---- its own channels blended with what it takes from the leader, on every frame written - set by set
     dl = tg.dloc
     dq = tg.drot.inverted() if tg.drot is not None else None
     ds = tg.dscale
-    want = {p: [] for p in sets}
-    prev = list(tg.rot.values(r0 - 1))
-    for t in frames:
-        s, w = when[t]
-        o_loc = Vector(tg.loc.values(t))
-        o_rot = tg.rot.values(t)
-        o_q = core.vals_to_quat(o_rot, tg.rot_mode)
-        o_s = Vector(tg.scale.values(t))
-        if w > 0.0:
-            loc, q, sc = got[s].decompose()
-            if dl is not None:
-                loc = loc - dl
-                q = dq @ q
-                sc = Vector([x / d if abs(d) > 1e-12 else x for x, d in zip(sc, ds)])
-        else:
-            loc, q, sc = o_loc, o_q, o_s
-        if core.LOCATION in want:
-            want[core.LOCATION].append(list(o_loc.lerp(loc, w)))
-        if core.ROTATION in want:
-            if o_q.dot(q) < 0.0:
-                q = -q
-            prev = core.quat_to_vals(o_q.slerp(q, w), tg.rot_mode, prev)
-            want[core.ROTATION].append(prev)
-        if core.SCALE in want:
-            want[core.SCALE].append(list(o_s.lerp(sc, w)))
-    if seam is not None:
-        # (the loop closed again: its end as far from its start as it was - the same, or a Repeat with Offset's step)
-        for p in sets:
-            ch = tg.channels(p)
-            step = [a - b for a, b in zip(ch.values(seam[1]), ch.values(seam[0]))]
-            want[p][-1] = [a + d for a, d in zip(want[p][0], step)]
-    # ---- fitted into keys, set by set
+    quat = tg.rot_mode in {'QUATERNION', 'AXIS_ANGLE'}
     written = {}
-    for ptype in sets:
-        written[ptype] = _write(fobj, owner, fbone, ptype, r0, r1, frames, want[ptype], tolerance, cyc)
-        if seam is not None:
-            _close_seam(fobj, owner, fbone, ptype, seam)
+    for p in sets:
+        pl = plans[p]
+        cyc, when, windows = pl["cyc"], pl["when"], pl["windows"]
+        steps = cyc["steps"] if cyc is not None else {}
+        ch = tg.channels(p)
+
+        def turned(vals, k, sign, ch=ch, steps=steps):
+            """Values of the loop's own keys as seen k turns away (sign 1) and back (-1): a Repeat with Offset adds
+            its step every turn."""
+            out = list(vals)
+            if not k or not steps:
+                return out
+            for i, fc in enumerate(ch.fcurves):
+                st = steps.get((fc.data_path, fc.array_index)) if fc is not None else None
+                if st is not None and (st[2] if k > 0 else st[1]):
+                    out[i] += sign * k * st[0]
+            return out
+        want = {}
+        for x0, x1 in windows:
+            prev = list(tg.rot.values(x0 - 1))
+            for t in range(x0, x1 + 1):
+                s, w, k = when.get(t, (t, 0.0, 0))
+                own = ch.values(t)
+                if w <= 0.0:
+                    want[t] = prev = list(own)
+                    continue
+                loc, q, sc = got[s].decompose()
+                if dl is not None:
+                    loc = loc - dl
+                    q = dq @ q
+                    sc = Vector([x / d if abs(d) > 1e-12 else x for x, d in zip(sc, ds)])
+                if p == core.LOCATION:
+                    want[t] = list(Vector(own).lerp(Vector(turned(loc, k, -1)), w))
+                elif p == core.SCALE:
+                    want[t] = list(Vector(own).lerp(Vector(turned(sc, k, -1)), w))
+                else:
+                    if k and steps:
+                        rv = core.quat_to_vals(q, tg.rot_mode, turned(own, k, 1))
+                        q = core.vals_to_quat(turned(rv, k, -1), tg.rot_mode)
+                    o_q = core.vals_to_quat(own, tg.rot_mode)
+                    if o_q.dot(q) < 0.0:
+                        q = -q
+                    want[t] = prev = core.quat_to_vals(o_q.slerp(q, w), tg.rot_mode, prev)
+        tie = cyc is not None and cyc["tie"] and when[cyc["c0"]][1] > 0.0
+        if tie:
+            # (the loop closed again: its last key as far from its first as it was - the same, a Repeat with
+            # Offset's step, a turn of the rotation)
+            c0, c1 = cyc["c0"], cyc["c1"]
+            a0, a1 = ch.values(c0), ch.values(c1)
+            if p == core.ROTATION and quat:
+                d = core.vals_to_quat(a0, tg.rot_mode).inverted() @ core.vals_to_quat(a1, tg.rot_mode)
+                q1 = core.vals_to_quat(want[c0], tg.rot_mode) @ d
+                want[c1] = core.quat_to_vals(q1, tg.rot_mode, want.get(c1 - 1, a1))
+            else:
+                want[c1] = [v + (b - a) for v, a, b in zip(want[c0], a0, a1)]
+        # ---- fitted into keys, span by span
+        if cyc is not None:
+            _loop_keys(fobj, owner, fbone, p, cyc)
+        n = 0
+        for x0, x1 in windows:
+            frames = list(range(x0, x1 + 1))
+            n += _write(fobj, owner, fbone, p, x0, x1, frames, [want[t] for t in frames], tolerance)
+        written[p] = n
+        if tie and when[cyc["c0"] + 1][1] > 0.0 and when[cyc["c1"] - 1][1] > 0.0:
+            _close_seam(fobj, owner, fbone, p, (cyc["c0"], cyc["c1"]))
+    # ---- what its own constraints / drivers make of it (they come after its keys)
+    if _overridden(fobj, owner, fbone) and influence >= 1.0 - 1e-9 and not notes:
+        full = [f for f in range(int(start), int(end) + 1) if f in D]
+        if full:
+            if len(full) > 12:
+                full = sorted({full[int(round(i * (len(full) - 1) / 11.0))] for i in range(12)})
+            far, turn = _verify(scene, fobj, fbone, lobj, D, full)
+            pts = [D[f].translation for f in full]
+            size = max((a - b).length for a in pts for b in pts) if len(pts) > 1 else 0.0
+            if far > max(1e-3, 0.01 * size) or turn > math.radians(0.5):
+                notes.append("its constraints / drivers keep it up to %.3f off (%.1f deg)" % (far, math.degrees(turn)))
+    written["notes"] = notes
     return written
 
 
@@ -301,24 +542,19 @@ def _close_seam(fobj, owner, fbone, ptype, seam):
         fc.update()
 
 
-def _ensure_curves(owner, fbone, ptype, frame, cyc=None):
-    """Every channel of the set has a curve with a key (a channel without one gets a key now: its value as it is -
-    in a loop: on its first and last frame, looped like the others)."""
+def _ensure_curves(owner, fbone, ptype, frame):
+    """Every channel of the set has a curve with a key (a channel without one gets a key now: its value as it
+    is)."""
     tg = core.Target(owner.id_data if fbone else owner, owner, bool(fbone))
     ch = tg.channels(ptype)
     made = False
     for i, fc in enumerate(ch.fcurves):
         if fc is None or not len(fc.keyframe_points):
-            for f in ((frame,) if cyc is None else cyc):
-                if fbone:
-                    owner.keyframe_insert(ch.prop, index=i, frame=f, group=fbone)
-                else:
-                    owner.keyframe_insert(ch.prop, index=i, frame=f)
+            if fbone:
+                owner.keyframe_insert(ch.prop, index=i, frame=frame, group=fbone)
+            else:
+                owner.keyframe_insert(ch.prop, index=i, frame=frame)
             made = True
-    if made and cyc is not None:
-        for fc in core.Target(owner.id_data if fbone else owner, owner, bool(fbone)).channels(ptype).fcurves:
-            if fc is not None and not len(fc.modifiers):
-                fc.modifiers.new('CYCLES')
     return made
 
 
@@ -332,12 +568,66 @@ def _bezier_split(p0, p1, p2, p3, u):
     return p012, lerp(p012, p123), p123, p01, p23
 
 
+def _extrapolated(fc, after):
+    """(the end key's index, the slope Blender carries on past it) - its extrapolation as Blender works it out:
+    level for Constant (or a Constant end key), a Linear end key: on to its neighbor's line, else along its
+    handle."""
+    kps = fc.keyframe_points
+    i = len(kps) - 1 if after else 0
+    e = kps[i]
+    if e.interpolation == 'CONSTANT' or fc.extrapolation == 'CONSTANT':
+        return i, 0.0
+    if e.interpolation == 'LINEAR':
+        if len(kps) < 2:
+            return i, 0.0
+        n = kps[i - 1] if after else kps[1]
+        dx = n.co[0] - e.co[0]
+        return i, ((n.co[1] - e.co[1]) / dx if abs(dx) > 1e-9 else 0.0)
+    h = e.handle_right if after else e.handle_left
+    dx = e.co[0] - h[0]
+    return i, ((e.co[1] - h[1]) / dx if abs(dx) > 1e-9 else 0.0)
+
+
+def _extend_to(fc, x):
+    """A key at frame x past the curve's keys, on its extrapolation, and the piece from the end key to it that same
+    level / line: the frames between stay as they were (and past it: it carries the same slope on)."""
+    kps = fc.keyframe_points
+    after = x > kps[-1].co[0]
+    i, m = _extrapolated(fc, after)
+    e = kps[i]
+    ex, ey = e.co[0], e.co[1]
+    y = ey + m * (x - ex)
+    d = abs(x - ex) / 3.0
+    others = [(k.co[0], tuple(k.handle_left), tuple(k.handle_right)) for j, k in enumerate(kps) if j != i]
+    e_inner = tuple(e.handle_left) if after else tuple(e.handle_right)
+    kps.insert(x, y, options={'FAST'})
+    ek = min(kps, key=lambda k: abs(k.co[0] - ex))
+    nk = min(kps, key=lambda k: abs(k.co[0] - x))
+    for k in (ek, nk):
+        k.handle_left_type = k.handle_right_type = 'FREE'
+    nk.co = (x, y)
+    nk.handle_left, nk.handle_right = (x - d, y - m * d), (x + d, y + m * d)
+    if after:
+        # (the piece after the old end key is its own: Bezier along the line; what comes before it as it was)
+        ek.interpolation = 'BEZIER'
+        ek.handle_left, ek.handle_right = e_inner, (ex + d, ey + m * d)
+    else:
+        ek.handle_left, ek.handle_right = (ex - d, ey - m * d), e_inner
+    nk.interpolation = 'BEZIER'
+    fc.update()
+    _keep_handles(fc, others)
+    return True
+
+
 def split_at(fc, x):
     """A key put on the curve at frame x without changing its shape: a Bezier piece split in two (de Casteljau),
-    a linear / constant one keyed where it is. False where it can't be (an easing piece: Sine, Back...)."""
+    a linear / constant one keyed where it is, past the keys: on the extrapolation (_extend_to). False where it
+    can't be (an easing piece: Sine, Back...)."""
     kps = fc.keyframe_points
-    if not len(kps) or any(abs(k.co[0] - x) < 1e-4 for k in kps) or not kps[0].co[0] < x < kps[-1].co[0]:
-        return True     # (a key there already, or outside the keys: the extrapolation goes on from the key)
+    if not len(kps) or any(abs(k.co[0] - x) < 1e-4 for k in kps):
+        return True
+    if not kps[0].co[0] < x < kps[-1].co[0]:
+        return _extend_to(fc, x)
     i = max(j for j, k in enumerate(kps) if k.co[0] < x)
     k0, k1 = kps[i], kps[i + 1]
     ip = k0.interpolation
@@ -393,11 +683,11 @@ def _keep_handles(fc, was):
         fc.update()
 
 
-def _write(fobj, owner, fbone, ptype, r0, r1, frames, vals, tolerance, cyc=None):
+def _write(fobj, owner, fbone, ptype, r0, r1, frames, vals, tolerance):
     """Replace the keys of this channel set over [r0, r1] by as few as follow `vals` (on whole frames) within the
     tolerance. The curves are split at r0 and r1 first without changing their shape (split_at): the frames outside
     stay exactly as they were - else the fit goes on to the keys on either side (their outer handles stay)."""
-    _ensure_curves(owner, fbone, ptype, r0, cyc)
+    _ensure_curves(owner, fbone, ptype, r0)
     tg = core.Target(fobj, owner, bool(fbone))
     ch = tg.channels(ptype)
     cut = all(split_at(fc, x) for fc in ch.fcurves if fc is not None for x in (float(r0), float(r1)))
@@ -483,6 +773,14 @@ def _depth(node):
     return d
 
 
+def _icon(ob):
+    """The object's icon as the path list draws it (its type)."""
+    if ob is None:
+        return 'OBJECT_DATA'
+    from .ui import _object_icon
+    return _object_icon(ob)
+
+
 class EMP_OT_match_motion(bpy.types.Operator):
     """The selected bones / objects follow the active one over a range of frames, keeping where they are against it
     on a reference frame - baked into their own keys, blended in before the range and out after it. Nothing to
@@ -494,7 +792,12 @@ class EMP_OT_match_motion(bpy.types.Operator):
     leader: StringProperty(name="Follow", description="The object (an armature: with a bone) to follow - the active "
                                                        "one. Empty: the selected ones stay where they are (pinned)")
     leader_bone: StringProperty(name="Bone", description="The bone of that armature to follow")
+    # (the dialog: what to follow from the scene's fields, which have an eyedropper; once run, from the operator's
+    # own - the redo panel undoes the step before running it again, and that would put the scene's fields back)
     from_dialog: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    # (who was selected when it first ran - the active one first: the redo panel's undo puts the selection back the
+    # way it was before, which may be another one)
+    picked: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
     leader_space: EnumProperty(name="Followed Space", default='GLOBAL', items=[
         ('GLOBAL', "Global", "Its motion in the world"),
         ('LOCAL', "Local", "Its motion against its parent (what its parents do left out)"),
@@ -539,9 +842,18 @@ class EMP_OT_match_motion(bpy.types.Operator):
             return None
         return ob, (self.leader_bone if ob.type == 'ARMATURE' else "")
 
+    def _selected(self, context):
+        """selection(context) - as it was when it first ran, once it has."""
+        if not self.picked:
+            return selection(context)
+        recs = [tuple(r.split("\x1f")) for r in self.picked.split("\x1e")]
+        recs = [r if len(r) == 2 else (r[0], "") for r in recs]
+        active = None if recs[0] == ("", "") else recs[0]
+        return recs[1:], active
+
     def _followers(self, context):
         """The selected ones that follow (the one they follow left out)."""
-        followers, active = selection(context)
+        followers, active = self._selected(context)
         got = self._lead(context)
         lead = (got[0].name, got[1]) if got is not None else None
         if active is not None and active != lead and active not in followers:
@@ -576,17 +888,16 @@ class EMP_OT_match_motion(bpy.types.Operator):
         n = len(self._followers(context))
         layout.label(text="%d selected %s" % (n, "follows" if n == 1 else "follow"), icon='CON_CHILDOF')
         st = state.settings(context.scene)
-        ob = None
         if self.from_dialog and st is not None:
-            layout.prop(st, "match_leader")
             ob = st.match_leader
+            layout.prop(st, "match_leader", icon=_icon(ob))
             if ob is not None and ob.type == 'ARMATURE' and ob.pose is not None:
-                layout.prop_search(st, "match_leader_bone", ob.pose, "bones")
+                layout.prop_search(st, "match_leader_bone", ob.pose, "bones", icon='BONE_DATA')
         else:
-            layout.prop_search(self, "leader", context.scene, "objects")
-            ob = bpy.data.objects.get(self.leader)
+            ob = bpy.data.objects.get(self.leader) if self.leader else None
+            layout.prop_search(self, "leader", context.scene, "objects", icon=_icon(ob))
             if ob is not None and ob.type == 'ARMATURE' and ob.pose is not None:
-                layout.prop_search(self, "leader_bone", ob.pose, "bones")
+                layout.prop_search(self, "leader_bone", ob.pose, "bones", icon='BONE_DATA')
         if ob is None:
             layout.label(text="Nothing to follow: they stay where they are", icon='PINNED')
         else:
@@ -612,27 +923,47 @@ class EMP_OT_match_motion(bpy.types.Operator):
             return {'CANCELLED'}
         got = self._lead(context)
         lobj, lbone = got if got is not None else (None, "")
-        if lobj is not None:
-            self.leader, self.leader_bone = lobj.name, lbone
+        if not self.picked:
+            sel, active = selection(context)
+            self.picked = "\x1e".join("\x1f".join(r) for r in [active or ("", "")] + sel)
         followers = self._followers(context)
+        # (from now on what it follows - and who - is the operator's own: the redo panel keeps it)
+        self.leader, self.leader_bone = (lobj.name, lbone) if lobj is not None else ("", "")
+        self.from_dialog = False
         if not followers:
             self.report({'WARNING'}, "Select what should follow, the one to follow last (active)")
             return {'CANCELLED'}
-        done = 0
+        done, keys, notes = [], 0, []
         for name, bone in followers:
-            res = match(context.scene, (bpy.data.objects.get(name), bone), (lobj, lbone), self.start, self.end,
-                        self.reference, self.blend_in, self.blend_out, self.influence, self.use_location,
-                        self.use_rotation, self.use_scale, self.tolerance, self.space, self.leader_space)
+            try:
+                res = match(context.scene, (bpy.data.objects.get(name), bone), (lobj, lbone), self.start, self.end,
+                            self.reference, self.blend_in, self.blend_out, self.influence, self.use_location,
+                            self.use_rotation, self.use_scale, self.tolerance, self.space, self.leader_space)
+            except RuntimeError as e:       # (keys Blender won't take: linked data...)
+                res = str(e).strip().splitlines()[-1] if str(e).strip() else "Blender refused the keys"
+            label = bone or name
             if isinstance(res, str):
-                self.report({'WARNING'}, res)
+                notes.append("%s: %s" % (label, res))
                 continue
-            done += 1
+            done.append(label)
+            keys += sum(v for k, v in res.items() if k != "notes")
+            notes += ["%s: %s" % (label, t) for t in res.get("notes", ())]
         if not done:
+            self.report({'WARNING'}, "; ".join(notes) or "Nothing could follow")
             return {'CANCELLED'}
         for c in state.all_caches():
             c.dirty = True
         state.schedule_rebake(0.2)
         pick.tag_anim_editors()
+        who = ", ".join(done) if len(done) <= 2 else "%d bones / objects" % len(done)
+        what = ("follow%s %s" % ("s" if len(done) == 1 else "", lbone or lobj.name)) if lobj is not None else \
+            "pinned"
+        start, end = sorted((self.start, self.end))
+        msg = "%s %s on frames %d - %d (%d keys)" % (who, what, start, end, keys)
+        if notes:
+            self.report({'WARNING'}, msg + ". " + "; ".join(notes))
+        else:
+            self.report({'INFO'}, msg)
         return {'FINISHED'}
 
 
