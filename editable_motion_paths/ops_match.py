@@ -16,13 +16,16 @@ channels where it blends in / out (location and scale mixed, rotation turned the
 Clean Up fitter (fit.py): its keys there are replaced, the curves split at the ends first without changing their
 shape (also past its keys: on the extrapolation), so the frames outside stay exactly as they were."""
 
+import hashlib
+import json
 import math
+import uuid
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, StringProperty
 from mathutils import Matrix, Vector
 
-from . import core, fit, pick, state
+from . import compat, core, fit, pick, props, state
 
 MATCH_SCENE = ".Motion Paths Match"     # (the scene the frames are stepped through in - see core.aux_scene)
 _TRANSFORMS = {"location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "scale"}
@@ -344,11 +347,14 @@ def _plan(cyc, start, end, blend_in, blend_out, influence, notes):
 
 
 def match(scene, follower, leader, start, end, reference, blend_in=0, blend_out=0, influence=1.0,
-          location=True, rotation=True, scale=True, tolerance=0.5, space='GLOBAL', leader_space='GLOBAL'):
+          location=True, rotation=True, scale=True, tolerance=0.5, space='GLOBAL', leader_space='GLOBAL',
+          offset='KEEP'):
     """follower / leader: (object, bone name or ''); leader (None, ''): pinned - it stays where it was. space: where
     the motion is put on the follower, leader_space: what of the leader's motion is taken - 'GLOBAL' (the world) /
-    'LOCAL' (against its parent; see the module's notes). Returns {channel set: keys written, "notes": [what didn't
-    come out exactly, in words]}, or a string saying why nothing could be done."""
+    'LOCAL' (against its parent; see the module's notes). offset 'KEEP': where it is against the leader on the
+    reference frame is kept; 'SNAP': it takes the leader's place (W = P @ L, like Copy Transforms). Returns
+    {channel set: keys written, "notes": [what didn't come out exactly, in words]}, or a string saying why nothing
+    could be done."""
     fobj, fbone = follower
     lobj, lbone = leader
     if fobj is None:
@@ -425,7 +431,10 @@ def match(scene, follower, leader, start, end, reference, blend_in=0, blend_out=
             return
         D[f] = Pf @ L @ off[0]
         got[f] = _basis(fo, fbone, D[f])
-    step_frames(scene, [fobj, lobj], [int(reference)], at_ref)
+    if offset == 'SNAP' and lobj is not None:
+        off.append(ident)       # (its place: no offset kept)
+    else:
+        step_frames(scene, [fobj, lobj], [int(reference)], at_ref)
     if not off:
         return "The bone is gone"
     need = sorted({w[0] for pl in plans.values() for w in pl["when"].values() if w[1] > 0.0})
@@ -781,48 +790,330 @@ def _icon(ob):
     return _object_icon(ob)
 
 
+def _settings(src):
+    """An operator's / a session's settings as match()'s keyword arguments (all but the frames)."""
+    return dict(blend_in=src.blend_in, blend_out=src.blend_out, influence=src.influence,
+                location=src.use_location, rotation=src.use_rotation, scale=src.use_scale, tolerance=src.tolerance,
+                space=src.space, leader_space=src.leader_space, offset=src.offset)
+
+
+def _run(scene, followers, lobj, lbone, src):
+    """match() for each follower with these settings: (the ones done, keys written, notes)."""
+    done, keys, notes = [], 0, []
+    for name, bone in followers:
+        try:
+            res = match(scene, (bpy.data.objects.get(name), bone), (lobj, lbone), src.start, src.end, src.reference,
+                        **_settings(src))
+        except RuntimeError as e:       # (keys Blender won't take: linked data...)
+            res = str(e).strip().splitlines()[-1] if str(e).strip() else "Blender refused the keys"
+        label = bone or name
+        if isinstance(res, str):
+            notes.append("%s: %s" % (label, res))
+            continue
+        done.append(label)
+        keys += sum(v for k, v in res.items() if k != "notes")
+        notes += ["%s: %s" % (label, t) for t in res.get("notes", ())]
+    return done, keys, notes
+
+
+def _summary(done, keys, lobj, lbone, src):
+    who = ", ".join(done) if len(done) <= 2 else "%d bones / objects" % len(done)
+    what = ("follow%s %s" % ("s" if len(done) == 1 else "", lbone or lobj.name)) if lobj is not None else "pinned"
+    start, end = sorted((src.start, src.end))
+    return "%s %s on frames %d - %d (%d keys)" % (who, what, start, end, keys)
+
+
+def _refresh():
+    for c in state.all_caches():
+        c.dirty = True
+    state.schedule_rebake(0.2)
+    pick.tag_anim_editors()
+    state.tag_redraw()
+
+
+def _draw_settings(layout, src, ob):
+    """The settings (an operator's or a session's); ob: the object followed (None: pinned)."""
+    if ob is None:
+        layout.label(text="Nothing to follow: they stay where they are", icon='PINNED')
+    else:
+        layout.prop(src, "offset", expand=True)
+        layout.prop(src, "leader_space", expand=True)
+    layout.prop(src, "space", expand=True)
+    col = layout.column(align=True)
+    col.prop(src, "start")
+    col.prop(src, "end")
+    row = layout.row()
+    row.active = ob is None or src.offset == 'KEEP'
+    row.prop(src, "reference")
+    col = layout.column(align=True)
+    col.prop(src, "blend_in")
+    col.prop(src, "blend_out")
+    layout.prop(src, "influence")
+    row = layout.row(align=True, heading="Channels")
+    row.prop(src, "use_location", toggle=True)
+    row.prop(src, "use_rotation", toggle=True)
+    row.prop(src, "use_scale", toggle=True)
+    layout.prop(src, "tolerance")
+
+
+# ----------------------------------------------------------------------------
+# Kept adjustable after it ran: the sidebar panel (stays while scrubbing / playing, unlike the redo panel)
+# ----------------------------------------------------------------------------
+
+_SESSIONS = {}          # session id -> {follower key: its own curves before it ran} (memory: gone with the file)
+_applying = [False]     # (settings written by the code itself: no run again)
+
+
+def _key(node):
+    return "\x1f".join(node)
+
+
+def _unkey(s):
+    a = s.split("\x1f")
+    return a[0], (a[1] if len(a) > 1 else "")
+
+
+def _followers_of(m):
+    return [_unkey(s) for s in m.followers.split("\x1e") if s]
+
+
+def _own_curves(obj, bone):
+    """[(data path, index, F-Curve or None)] of its location / rotation / scale channels."""
+    owner = obj.pose.bones.get(bone) if bone else obj
+    if owner is None:
+        return []
+    tg = core.Target(obj, owner, bool(bone))
+    return [(ch.path, i, fc) for ch in (tg.loc, tg.rot, tg.scale) for i, fc in enumerate(ch.fcurves)]
+
+
+def _snapshot(obj, bone):
+    """Its own curves as they are - keys, handles, extrapolation, a Cycles modifier - to put back."""
+    ad = obj.animation_data
+    curves = []
+    for path, i, fc in _own_curves(obj, bone):
+        if fc is None:
+            curves.append((path, i, None))
+            continue
+        cyc = next((m for m in fc.modifiers if m.type == 'CYCLES'), None)
+        curves.append((path, i, {
+            "keys": [(tuple(k.co), tuple(k.handle_left), tuple(k.handle_right), k.handle_left_type,
+                      k.handle_right_type, k.interpolation, k.easing, k.back, k.amplitude, k.period, k.type)
+                     for k in fc.keyframe_points],
+            "ext": fc.extrapolation,
+            "cycles": None if cyc is None else (cyc.mode_before, cyc.cycles_before, cyc.mode_after,
+                                                cyc.cycles_after)}))
+    return {"action": ad is not None and ad.action is not None, "curves": curves}
+
+
+def _restore(obj, snap):
+    """Its own curves back as the snapshot has them (curves Match Motion made removed)."""
+    coll = compat.get_fcurves(obj)
+    if coll is None:
+        return
+    for path, i, d in snap["curves"]:
+        fc = coll.find(path, index=i)
+        if d is None:
+            if fc is not None:
+                coll.remove(fc)
+            continue
+        if fc is None:
+            continue
+        kps = fc.keyframe_points
+        kps.clear()
+        kps.add(len(d["keys"]))
+        for kp, k in zip(kps, d["keys"]):
+            kp.interpolation = k[5]
+            kp.handle_left_type, kp.handle_right_type = k[3], k[4]
+            kp.co, kp.handle_left, kp.handle_right = k[0], k[1], k[2]
+            kp.easing = k[6]
+            kp.back, kp.amplitude, kp.period = k[7], k[8], k[9]
+            kp.type = k[10]
+        fc.extrapolation = d["ext"]
+        for m in [m for m in fc.modifiers if m.type == 'CYCLES']:
+            if d["cycles"] is None:
+                fc.modifiers.remove(m)
+        if d["cycles"] is not None:
+            m = next((m for m in fc.modifiers if m.type == 'CYCLES'), None) or fc.modifiers.new('CYCLES')
+            if m is not None:
+                m.mode_before, m.cycles_before, m.mode_after, m.cycles_after = d["cycles"]
+        fc.update()
+
+
+def _sig(obj, bone):
+    """A fingerprint of its own curves (keys and handles): were they changed since Match Motion wrote them?"""
+    out = []
+    for _path, _i, fc in _own_curves(obj, bone):
+        if fc is None:
+            out.append("-")
+            continue
+        n = len(fc.keyframe_points)
+        vals = []
+        for attr in ("co", "handle_left", "handle_right"):
+            a = [0.0] * (2 * n)
+            fc.keyframe_points.foreach_get(attr, a)
+            vals += a
+        out.append("%d:%s" % (n, ",".join("%.5f" % v for v in vals)))
+    return hashlib.md5("|".join(out).encode()).hexdigest()
+
+
+def _written(followers):
+    return json.dumps({_key(n): _sig(bpy.data.objects[n[0]], n[1]) for n in followers
+                       if bpy.data.objects.get(n[0]) is not None})
+
+
+def _changed_since(m, followers):
+    """Were their keys changed since Match Motion last wrote them (by hand, another tool)?"""
+    before = json.loads(m.written or "{}")
+    return any(bpy.data.objects.get(n[0]) is None or before.get(_key(n)) != _sig(bpy.data.objects[n[0]], n[1])
+               for n in followers)
+
+
+def _leader_of(m):
+    ob = bpy.data.objects.get(m.leader) if m.leader else None
+    if ob is None:
+        return None, ""
+    bone = m.leader_bone if ob.type == 'ARMATURE' else ""
+    if bone and (ob.pose is None or ob.pose.bones.get(bone) is None):
+        _applying[0] = True
+        try:
+            m.leader_bone = ""      # (another object picked: the old bone's name doesn't fit it)
+        finally:
+            _applying[0] = False
+        bone = ""
+    return ob, bone
+
+
+def session_changed(context):
+    """A setting of the kept Match Motion changed: their keys back as they were before it, and it runs again."""
+    if _applying[0]:
+        return
+    st = state.settings(context.scene)
+    m = st.match if st is not None else None
+    if m is None or not m.active:
+        return
+    snaps = _SESSIONS.get(m.sid)
+    if snaps is None:
+        state.flash_message("Match Motion can't be adjusted any more (the file was opened again)", 4.0)
+        return
+    followers = _followers_of(m)
+    if _changed_since(m, followers):
+        m.active = False
+        state.flash_message("Their keys were changed since: Match Motion is done, the keys stay as they are", 5.0)
+        return
+    lobj, lbone = _leader_of(m)
+    _applying[0] = True
+    try:
+        for n in followers:
+            ob = bpy.data.objects.get(n[0])
+            if ob is not None and _key(n) in snaps:
+                _restore(ob, snaps[_key(n)])
+        done, keys, notes = _run(context.scene, followers, lobj, lbone, m)
+        m.written = _written(followers)
+    finally:
+        _applying[0] = False
+    _refresh()
+    msg = _summary(done, keys, lobj, lbone, m) if done else "Nothing follows"
+    state.flash_message(msg + (". " + "; ".join(notes) if notes else ""), 4.0 if notes else 2.0)
+
+
+def _keep(context, op, sid, followers, lobj, lbone):
+    """What ran, kept adjustable in the sidebar panel."""
+    m = state.settings(context.scene).match
+    _applying[0] = True
+    try:
+        m.sid = sid
+        m.followers = "\x1e".join(_key(n) for n in followers)
+        m.leader, m.leader_bone = (lobj.name, lbone) if lobj is not None else ("", "")
+        for name in props.match_props():
+            if name not in ("leader", "leader_bone"):
+                setattr(m, name, getattr(op, name))
+        m.written = _written(followers)
+        m.active = True
+    finally:
+        _applying[0] = False
+
+
+def draw_session(layout, context):
+    """The sidebar panel of the kept Match Motion."""
+    m = state.settings(context.scene).match
+    followers = _followers_of(m)
+    if m.sid not in _SESSIONS:
+        layout.label(text="Opened again: it can't be adjusted any more", icon='INFO')
+        layout.operator("emp.match_finish", icon='CHECKMARK')
+        return
+    layout.use_property_split = True
+    layout.use_property_decorate = False     # (no keyframe dots: these settings aren't animation)
+    names = ", ".join(b or o for o, b in followers[:2]) + (" and %d more" % (len(followers) - 2)
+                                                           if len(followers) > 2 else "")
+    layout.label(text="%s %s" % (names, "follows" if len(followers) == 1 else "follow"))
+    ob = bpy.data.objects.get(m.leader) if m.leader else None
+    layout.prop_search(m, "leader", context.scene, "objects", icon=_icon(ob))
+    if ob is not None and ob.type == 'ARMATURE' and ob.pose is not None:
+        layout.prop_search(m, "leader_bone", ob.pose, "bones", icon='BONE_DATA')
+    _draw_settings(layout, m, ob)
+    layout.separator()
+    row = layout.row(align=True)
+    row.operator("emp.match_cancel", text="Cancel", icon='X')
+    row.operator("emp.match_finish", text="Done", icon='CHECKMARK')
+
+
+class EMP_OT_match_finish(bpy.types.Operator):
+    """Done: the keys stay as they are and the panel closes"""
+    bl_idname = "emp.match_finish"
+    bl_label = "Done"
+    bl_options = {'UNDO'}
+
+    def execute(self, context):
+        state.settings(context.scene).match.active = False
+        state.tag_redraw()
+        return {'FINISHED'}
+
+
+class EMP_OT_match_cancel(bpy.types.Operator):
+    """Their own keys back as they were before Match Motion, and the panel closes"""
+    bl_idname = "emp.match_cancel"
+    bl_label = "Cancel Match Motion"
+    bl_options = {'UNDO'}
+
+    def execute(self, context):
+        m = state.settings(context.scene).match
+        snaps = _SESSIONS.get(m.sid)
+        followers = _followers_of(m)
+        m.active = False
+        if snaps is None:
+            self.report({'WARNING'}, "It can't be undone from here any more (the file was opened again): Ctrl+Z")
+            return {'FINISHED'}
+        if _changed_since(m, followers):
+            self.report({'WARNING'}, "Their keys were changed since: they stay as they are (Ctrl+Z steps back)")
+            return {'FINISHED'}
+        for n in followers:
+            ob = bpy.data.objects.get(n[0])
+            snap = snaps.get(_key(n))
+            if ob is None or snap is None:
+                continue
+            _restore(ob, snap)
+            ad = ob.animation_data
+            if not snap["action"] and ad is not None and ad.action is not None and \
+                    not len(list(compat.get_fcurves(ob) or ())):
+                ad.action = None        # (it had no animation: the action Match Motion made goes)
+        _refresh()
+        return {'FINISHED'}
+
+
 class EMP_OT_match_motion(bpy.types.Operator):
-    """The selected bones / objects follow the active one over a range of frames, keeping where they are against it
-    on a reference frame - baked into their own keys, blended in before the range and out after it. Nothing to
-    follow: they stay where they are (pinned)"""
+    """The selected bones / objects follow the active one over a range of frames - keeping where they are against it
+    on a reference frame, or in its place - baked into their own keys, blended in before the range and out after it.
+    Nothing to follow: they stay where they are (pinned)"""
     bl_idname = "emp.match_motion"
     bl_label = "Match Motion"
     bl_options = {'REGISTER', 'UNDO'}
 
-    leader: StringProperty(name="Follow", description="The object (an armature: with a bone) to follow - the active "
-                                                       "one. Empty: the selected ones stay where they are (pinned)")
-    leader_bone: StringProperty(name="Bone", description="The bone of that armature to follow")
     # (the dialog: what to follow from the scene's fields, which have an eyedropper; once run, from the operator's
     # own - the redo panel undoes the step before running it again, and that would put the scene's fields back)
     from_dialog: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
     # (who was selected when it first ran - the active one first: the redo panel's undo puts the selection back the
     # way it was before, which may be another one)
     picked: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
-    leader_space: EnumProperty(name="Followed Space", default='GLOBAL', items=[
-        ('GLOBAL', "Global", "Its motion in the world"),
-        ('LOCAL', "Local", "Its motion against its parent (what its parents do left out)"),
-    ])
-    space: EnumProperty(name="Follower Space", default='GLOBAL', items=[
-        ('GLOBAL', "Global", "Put on them in the world: where it goes, they go"),
-        ('LOCAL', "Local", "Put on them against their parent: they move against it as the followed one moves"),
-    ])
-    start: IntProperty(name="Start", description="The first frame they follow on")
-    end: IntProperty(name="End", description="The last frame they follow on")
-    reference: IntProperty(name="Reference Frame", description="Where they are against the followed one on this "
-                                                               "frame is kept over the range")
-    blend_in: IntProperty(name="Blend In", min=0, soft_max=200,
-                          description="Frames before the range over which they go over from their own motion (in a "
-                                      "loop: from its end)")
-    blend_out: IntProperty(name="Blend Out", min=0, soft_max=200,
-                           description="Frames after the range over which they go back to their own motion (in a "
-                                       "loop: into its start)")
-    influence: FloatProperty(name="Influence", min=0.0, max=1.0, default=1.0, subtype='FACTOR',
-                             description="How much of the followed motion they take")
-    use_location: BoolProperty(name="Location", default=True)
-    use_rotation: BoolProperty(name="Rotation", default=True)
-    use_scale: BoolProperty(name="Scale", default=True)
-    tolerance: FloatProperty(name="Tolerance", subtype='PERCENTAGE', default=0.5, min=0.01, soft_max=5.0,
-                             description="How closely the keys follow (more keys where it needs them)")
 
     @classmethod
     def poll(cls, context):
@@ -852,13 +1143,14 @@ class EMP_OT_match_motion(bpy.types.Operator):
         return recs[1:], active
 
     def _followers(self, context):
-        """The selected ones that follow (the one they follow left out)."""
+        """The selected ones that follow (the one they follow left out - and its armature, when it is a bone: an
+        armature can't follow a bone of its own)."""
         followers, active = self._selected(context)
         got = self._lead(context)
         lead = (got[0].name, got[1]) if got is not None else None
         if active is not None and active != lead and active not in followers:
             followers = sorted(followers + [active], key=_depth)
-        return [n for n in followers if n != lead]
+        return [n for n in followers if n != lead and not (lead is not None and lead[1] and n == (lead[0], ""))]
 
     def invoke(self, context, event):
         followers, active = selection(context)
@@ -898,24 +1190,7 @@ class EMP_OT_match_motion(bpy.types.Operator):
             layout.prop_search(self, "leader", context.scene, "objects", icon=_icon(ob))
             if ob is not None and ob.type == 'ARMATURE' and ob.pose is not None:
                 layout.prop_search(self, "leader_bone", ob.pose, "bones", icon='BONE_DATA')
-        if ob is None:
-            layout.label(text="Nothing to follow: they stay where they are", icon='PINNED')
-        else:
-            layout.prop(self, "leader_space", expand=True)
-        layout.prop(self, "space", expand=True)
-        col = layout.column(align=True)
-        col.prop(self, "start")
-        col.prop(self, "end")
-        layout.prop(self, "reference")
-        col = layout.column(align=True)
-        col.prop(self, "blend_in")
-        col.prop(self, "blend_out")
-        layout.prop(self, "influence")
-        row = layout.row(align=True, heading="Channels")
-        row.prop(self, "use_location", toggle=True)
-        row.prop(self, "use_rotation", toggle=True)
-        row.prop(self, "use_scale", toggle=True)
-        layout.prop(self, "tolerance")
+        _draw_settings(layout, self, ob)
 
     def execute(self, context):
         if not self.from_dialog and self.leader and bpy.data.objects.get(self.leader) is None:
@@ -933,38 +1208,28 @@ class EMP_OT_match_motion(bpy.types.Operator):
         if not followers:
             self.report({'WARNING'}, "Select what should follow, the one to follow last (active)")
             return {'CANCELLED'}
-        done, keys, notes = [], 0, []
-        for name, bone in followers:
-            try:
-                res = match(context.scene, (bpy.data.objects.get(name), bone), (lobj, lbone), self.start, self.end,
-                            self.reference, self.blend_in, self.blend_out, self.influence, self.use_location,
-                            self.use_rotation, self.use_scale, self.tolerance, self.space, self.leader_space)
-            except RuntimeError as e:       # (keys Blender won't take: linked data...)
-                res = str(e).strip().splitlines()[-1] if str(e).strip() else "Blender refused the keys"
-            label = bone or name
-            if isinstance(res, str):
-                notes.append("%s: %s" % (label, res))
-                continue
-            done.append(label)
-            keys += sum(v for k, v in res.items() if k != "notes")
-            notes += ["%s: %s" % (label, t) for t in res.get("notes", ())]
+        # (their own curves as they are: the sidebar panel runs it again from them when a setting changes)
+        sid = uuid.uuid4().hex
+        _SESSIONS[sid] = {_key(n): _snapshot(bpy.data.objects[n[0]], n[1]) for n in followers
+                          if bpy.data.objects.get(n[0]) is not None}
+        while len(_SESSIONS) > 8:
+            _SESSIONS.pop(next(iter(_SESSIONS)))
+        done, keys, notes = _run(context.scene, followers, lobj, lbone, self)
         if not done:
+            _SESSIONS.pop(sid, None)
             self.report({'WARNING'}, "; ".join(notes) or "Nothing could follow")
             return {'CANCELLED'}
-        for c in state.all_caches():
-            c.dirty = True
-        state.schedule_rebake(0.2)
-        pick.tag_anim_editors()
-        who = ", ".join(done) if len(done) <= 2 else "%d bones / objects" % len(done)
-        what = ("follow%s %s" % ("s" if len(done) == 1 else "", lbone or lobj.name)) if lobj is not None else \
-            "pinned"
-        start, end = sorted((self.start, self.end))
-        msg = "%s %s on frames %d - %d (%d keys)" % (who, what, start, end, keys)
+        _keep(context, self, sid, followers, lobj, lbone)
+        _refresh()
+        msg = _summary(done, keys, lobj, lbone, self) + " - adjust it in the sidebar (Motion Paths) while you scrub"
         if notes:
             self.report({'WARNING'}, msg + ". " + "; ".join(notes))
         else:
             self.report({'INFO'}, msg)
         return {'FINISHED'}
+
+
+EMP_OT_match_motion.__annotations__.update(props.match_props())
 
 
 def menu_entry(self, context):
@@ -975,4 +1240,4 @@ def menu_entry(self, context):
         self.layout.operator("emp.match_motion", text="Match Motion...", icon='CON_CHILDOF')
 
 
-classes = (EMP_OT_match_motion,)
+classes = (EMP_OT_match_motion, EMP_OT_match_finish, EMP_OT_match_cancel)

@@ -345,14 +345,18 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   or one key per curve point. That way you can export, edit as a curve and bring it back.
 * **Match Motion...** (Object / Pose > Animation, the right-click menu, the Shape panel; no path needed):
   the selected bones / objects follow the active one (like parenting: select them, the one to follow
-  last) over a range of frames (the selected path keys' range, else the preview / scene range), keeping
-  where they are against it on a *Reference Frame* - as if parented to it there. *Follow* / *Bone* in the
-  dialog pick another one (with the eyedropper, or E over the field).
+  last) over a range of frames (the selected path keys' range, else the preview / scene range). *Follow* /
+  *Bone* in the dialog pick another one (with the eyedropper, or E over the field).
+  * *Offset*: **Keep** - they keep where they are against it on a *Reference Frame* and move along with it,
+    as if parented to it there; **Snap** - they take its place, like Copy Transforms: its transform in the
+    world (*Global*) or against its parent (*Local*), the reference frame isn't used. A foot snapped to the
+    other foot in Global stands in it.
   * In Pose Mode objects selected along (before going into it) count too: several bones and one
     object - the bones follow the object; objects and one bone - the objects follow the bone.
   * *Followed Space*: its motion in the world (*Global*) or against its parent (*Local*: what its parents
     do left out). *Follower Space*: put on them in the world (*Global*) or against their parent (*Local*).
-    Both Local: an arm's motion put on another arm, whatever their bodies do.
+    Both Local: an arm's motion put on another arm, whatever their bodies do. (Two bones under the same
+    parent that stays still: Global and Local come out the same.)
   * With nothing to follow (only one selected, or *Follow* left empty) they are **pinned**: they stay
     where they were on the reference frame - in the world (*Global*), or against their parent (*Local*).
   * It is baked into their own keys - also on one that had none: the keys over the range are replaced by
@@ -368,13 +372,19 @@ That is Blender's own behaviour. To keep edits local, turn it off:
     value goes along with the others.
   * A range past its keys: the extrapolation up to it and after it stays as it was (Constant or Linear).
   * Several selected: parents first, so their children follow on top. Something that moves with a
-    follower (its child) can't be followed.
+    follower (its child) can't be followed; an armature doesn't follow a bone of its own (with the rig
+    active in Object Mode and its bone picked, only the others follow).
   * The status bar says what was done (who follows what, the frames, how many keys) - on the reference
     frame itself nothing moves, scrub to see it. It says too what couldn't be done exactly: frames past
     a loop's turns, a range longer than the loop, a follower's own constraints or drivers that keep it
     elsewhere. Animation that plays only from NLA strips is refused (Tab into the strip to match it).
-  * The Adjust Last Operation panel changes it afterwards: the same ones follow, whatever is selected
-    then.
+  * **Adjust it while you watch:** after it ran, a *Match Motion* panel opens at the top of the sidebar's
+    Motion Paths tab. It stays while you scrub and play (the Adjust Last Operation panel closes when the
+    frame changes): change any setting - what it follows, Offset, spaces, frames, blends, influence,
+    channels, tolerance - and it runs again from the keys they had before. Ctrl+Z steps back through the
+    changes. **Done** keeps the keys and closes the panel; **Cancel** puts their own keys back as they were.
+    If their keys are edited some other way meanwhile, the next change closes it and leaves the keys alone.
+    After the file is opened again it can't be adjusted any more (Done closes it).
 
 ## Modifiers
 

@@ -26,7 +26,7 @@ body:
       description: The shortest list of steps that shows it, from opening the file.
       placeholder: |
         1. Open the attached file
-        2. Select the bone CTRL_Hand_L, press Ctrl+T
+        2. Select the bone hand.L, press Ctrl+T
         3. Click the key on frame 24, press G, move the mouse up
     validations:
       required: true

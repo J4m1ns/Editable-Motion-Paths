@@ -648,6 +648,23 @@ class _Panel:
         return context.mode in {'POSE', 'OBJECT'}
 
 
+class EMP_PT_match(_Panel, bpy.types.Panel):
+    """Match Motion kept adjustable after it ran: a change runs it again - scrub and play meanwhile"""
+    bl_label = "Match Motion"
+    bl_idname = "EMP_PT_match"
+
+    @classmethod
+    def poll(cls, context):
+        st = state.settings(context.scene)
+        return st is not None and st.match.active
+
+    def draw_header(self, context):
+        self.layout.label(icon='CON_CHILDOF')
+
+    def draw(self, context):
+        ops_match.draw_session(self.layout, context)
+
+
 class EMP_PT_main(_Panel, bpy.types.Panel):
     bl_label = "Editable Motion Paths"
     bl_idname = "EMP_PT_main"
@@ -1102,7 +1119,7 @@ class EMP_PT_help(_Panel, bpy.types.Panel):
 
 classes = (EMP_MT_handle_type, EMP_MT_interpolation, EMP_MT_value_channel, EMP_OT_set_value_channel,
            EMP_MT_space, EMP_MT_looptools, EMP_MT_snap, EMP_MT_curves, EMP_MT_context, EMP_UL_paths,
-           EMP_PT_main, EMP_PT_shape, EMP_PT_timing, ops_easing.EMP_PT_easing_sidebar, EMP_PT_keys,
+           EMP_PT_match, EMP_PT_main, EMP_PT_shape, EMP_PT_timing, ops_easing.EMP_PT_easing_sidebar, EMP_PT_keys,
            ops_fmods.EMP_PT_modifiers, snapshots.EMP_PT_snapshots,
            EMP_PT_range, EMP_PT_display, EMP_PT_display_popover, EMP_PT_onion_popover, EMP_PT_com_popover, ops_fmods.EMP_PT_modifiers_popover,
            ops_easing.EMP_PT_easing_presets,
