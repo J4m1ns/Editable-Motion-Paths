@@ -404,14 +404,32 @@ def _match_changed(self, context):
 
 
 def match_props(update=None):
-    """Match Motion's settings (the sidebar panel, like a Copy constraint's: Target, its space and the owner's,
-    Offset, Influence - plus frames, blends and tolerance; update: run the one being adjusted again)."""
+    """Match Motion's settings (the sidebar panel, like Copy Transforms': Target, Mix, its space and the owner's,
+    Influence - plus Keep Offset, frames, blends and tolerance; update: run the one being adjusted again)."""
     u = {} if update is None else {"update": update}
     return {
-        "use_offset": BoolProperty(name="Offset", default=False, description=(
-            "Keep where they are against the target on the reference frame and move along with it, as if parented "
-            "to it there (like Child Of after Set Inverse). Off: they take its transform, like a Copy constraint"),
-            **u),
+        "mix": EnumProperty(name="Mix", default='REPLACE', description=(
+            "How the target's transform and their own come together, as in Copy Transforms"), items=[
+            ('REPLACE', "Replace", "Take the target's transform in place of their own"),
+            None,
+            ('BEFORE_FULL', "Before Original (Full)", "The target's transform before their own, as if the target "
+             "were their parent (Full Inherit Scale): their own motion is kept, carried by the target"),
+            ('BEFORE', "Before Original (Aligned)", "The target's transform before their own, as if the target "
+             "were their parent (Aligned Inherit Scale): location as Full, rotation and scale each on their own"),
+            ('BEFORE_SPLIT', "Before Original (Split Channels)", "The target's transform before their own, "
+             "location, rotation and scale each on their own (the target's location added to theirs)"),
+            None,
+            ('AFTER_FULL', "After Original (Full)", "The target's transform after their own, as if they were its "
+             "parent (Full Inherit Scale): their own motion is kept, the target's added in their own axes"),
+            ('AFTER', "After Original (Aligned)", "The target's transform after their own (Aligned Inherit "
+             "Scale): location as Full, rotation and scale each on their own"),
+            ('AFTER_SPLIT', "After Original (Split Channels)", "The target's transform after their own, location, "
+             "rotation and scale each on their own (the target's location added to theirs)"),
+        ], **u),
+        "use_offset": BoolProperty(name="Keep Offset", default=False, description=(
+            "On the reference frame they stay where they are, and from there move with the target (Replace: as if "
+            "parented to it there, like Child Of after Set Inverse; Before / After Original: the target's change "
+            "since that frame mixed with their own motion). Off: the target's transform is taken as it is"), **u),
         "leader_space": EnumProperty(name="Target Space", default='GLOBAL', items=[
             ('GLOBAL', "World", "The target's transform in the world"),
             ('LOCAL', "Local", "The target's own channels: its transform against its rest pose and its parent (a "
@@ -429,8 +447,8 @@ def match_props(update=None):
         "start": IntProperty(name="Start", default=1, description="The first frame they follow on", **u),
         "end": IntProperty(name="End", default=250, description="The last frame they follow on", **u),
         "reference": IntProperty(name="Reference Frame", default=1, description=(
-            "With Offset: where they are against the target on this frame is kept. Nothing to follow: where they "
-            "are on this frame is held"), **u),
+            "With Keep Offset: on this frame they stay where they are, and the target counts from there. Nothing "
+            "to follow: where they are on this frame is held"), **u),
         "blend_in": IntProperty(name="Blend In", min=0, soft_max=200, description="Frames before the range over "
                                 "which they go over from their own motion (in a loop: from its end)", **u),
         "blend_out": IntProperty(name="Blend Out", min=0, soft_max=200, description="Frames after the range over "

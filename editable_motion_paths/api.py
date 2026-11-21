@@ -613,13 +613,14 @@ def follow_curve(obj, bone=None, curve=None, frames=None, timing='KEEP', mode=No
 
 def match_motion(obj, bone=None, leader=None, leader_bone=None, frames=None, reference=None, blend_in=0,
                  blend_out=0, influence=1.0, location=True, rotation=True, scale=True, tolerance=0.5,
-                 space='GLOBAL', leader_space='GLOBAL', use_offset=False, mode=None):
+                 space='GLOBAL', leader_space='GLOBAL', use_offset=False, mix='REPLACE', mode=None):
     """The bone / object (no path needed) follows `leader` (an object; an armature's bone: `leader_bone`; None: it
     stays where it is on `reference` - pinned) from the first to the last of `frames` (None: the scene's range),
-    like a Copy constraint baked into its own keys (as few as the motion needs): leader_space (the target's) /
-    space (the owner's) 'GLOBAL' = world, 'LOCAL' = its own channels (a constraint's Local Space); use_offset: it
-    keeps where it is against the leader on `reference` (None: the first frame), as if parented there - else it
-    takes the leader's transform. A looped follower (a Cycles modifier) stays looped.
+    like Copy Transforms baked into its own keys (as few as the motion needs): leader_space (the target's) /
+    space (the owner's) 'GLOBAL' = world, 'LOCAL' = its own channels (a constraint's Local Space); mix: Copy
+    Transforms' Mix ('REPLACE', 'BEFORE_FULL', 'BEFORE', 'BEFORE_SPLIT', 'AFTER_FULL', 'AFTER', 'AFTER_SPLIT');
+    use_offset (Keep Offset): on `reference` (None: the first frame) it stays where it is and the target counts
+    from there ('REPLACE': as if parented there). A looped follower (a Cycles modifier) stays looped.
     blend_in / blend_out: frames before / after the range over which it goes over from / back to its own motion;
     influence 0..1; location / rotation / scale: which channels it takes. Several to follow: one call each, parents
     first."""
@@ -632,6 +633,7 @@ def match_motion(obj, bone=None, leader=None, leader_bone=None, frames=None, ref
         _check_bone(lo, leader_bone)
     _one_of("space", space, ('GLOBAL', 'LOCAL'))
     _one_of("leader_space", leader_space, ('GLOBAL', 'LOCAL'))
+    _one_of("mix", mix, ops_match.MIXES)
     sc = _scene()
     if frames:
         start, end = int(round(min(frames))), int(round(max(frames)))
@@ -640,7 +642,7 @@ def match_motion(obj, bone=None, leader=None, leader_bone=None, frames=None, ref
     got = ops_match.match(sc, (o, bone or ""), (lo, leader_bone or ""), start, end,
                           int(start if reference is None else reference), int(blend_in), int(blend_out),
                           float(influence), location, rotation, scale, float(tolerance), space, leader_space,
-                          bool(use_offset))
+                          bool(use_offset), mix)
     if isinstance(got, str):
         raise ValueError(got)
     for c in state.all_caches():

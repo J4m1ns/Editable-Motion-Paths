@@ -3,10 +3,13 @@ into their own keys (only as many as the motion needs). Before the range they bl
 after it back out; an influence for all of it. No path is needed. With nothing to follow they are pinned: they stay
 where they were on the reference frame. Run from the sidebar panel, which then keeps it adjustable.
 
-As a constraint's spaces: the target's matrix T is its world matrix (World) or its own channels (Local: the
-transform against its rest pose and parent, matrix_basis), and what comes out is the follower's world matrix (World)
-or its own channels (Local). Without Offset it takes the target's: O(f) = T(f). With Offset (or pinned) where it is
-against the target on the reference frame is kept: O(f) = T(f) @ T(ref)^-1 @ O(ref).
+As Copy Transforms: the target's matrix T is its world matrix (World) or its own channels (Local: the transform
+against its rest pose and parent, matrix_basis), the follower's own O the same in its space, and what comes out
+(world or own channels) is T mixed with O as Blender's Mix does it (formulas.mix_transforms): Replace O(f) = T(f),
+Before Original T(f) @ O(f), After Original O(f) @ T(f) (Full; Aligned / Split Channels as Blender has them).
+Keep Offset (or pinned): on the reference frame it stays where it is - the target counts from there: Replace
+O(f) = T(f) @ T(ref)^-1 @ O(ref) (as if parented there), Before T(f) @ T(ref)^-1 mixed with O(f) (Child Of after
+Set Inverse), After O(f) mixed with T(ref)^-1 @ T(f) (Split Channels: the channels' own changes).
 In a loop (the follower's curves repeated by a Cycles modifier) all of it stays inside the loop: each frame of the
 loop takes the leader on the frame of the turn that falls in the range (a blend before the range goes on from the
 loop's end, one after it into its start; Repeat with Offset: its step taken off; Mirror: the turns played back),
@@ -24,10 +27,25 @@ import uuid
 import bpy
 from mathutils import Matrix, Vector
 
-from . import compat, core, fit, pick, state
+from . import compat, core, fit, formulas, pick, state
 
 MATCH_SCENE = ".Motion Paths Match"     # (the scene the frames are stepped through in - see core.aux_scene)
 _TRANSFORMS = {"location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle", "scale"}
+MIXES = ('REPLACE', 'BEFORE_FULL', 'BEFORE', 'BEFORE_SPLIT', 'AFTER_FULL', 'AFTER', 'AFTER_SPLIT')
+
+
+def _since(T, T_ref, mix):
+    """Keep Offset: the target's change since the reference frame, as the mix puts it on (identity on that frame) -
+    Before: in front (T @ T_ref^-1), After: behind (T_ref^-1 @ T), Split Channels: each channel's own change."""
+    if mix in {'BEFORE_SPLIT', 'AFTER_SPLIT'}:
+        l1, r1, s1 = formulas.loc_rot_size(T)
+        l0, r0, s0 = formulas.loc_rot_size(T_ref)
+        rot = r1 @ r0.inverted_safe() if mix == 'BEFORE_SPLIT' else r0.inverted_safe() @ r1
+        size = Vector([a / b if abs(b) > 1e-12 else a for a, b in zip(s1, s0)])
+        return formulas.loc_rot_size_matrix(l1 - l0, rot, size)
+    if mix.startswith('BEFORE'):
+        return T @ T_ref.inverted_safe()
+    return T_ref.inverted_safe() @ T
 
 
 def _world(obj, bone):
@@ -356,13 +374,13 @@ def _plan(cyc, start, end, blend_in, blend_out, influence, notes):
 
 def match(scene, follower, leader, start, end, reference, blend_in=0, blend_out=0, influence=1.0,
           location=True, rotation=True, scale=True, tolerance=0.5, space='GLOBAL', leader_space='GLOBAL',
-          use_offset=False):
-    """follower / leader: (object, bone name or ''); leader (None, ''): pinned - it stays where it was. Like a Copy
-    constraint: leader_space (the target's) / space (the owner's) 'GLOBAL' = world, 'LOCAL' = its own channels (the
-    transform against its rest pose and parent, a constraint's Local Space); use_offset: where it is against the
-    leader on the reference frame is kept (as if parented there), else it takes the leader's transform. Returns
-    {channel set: keys written, "notes": [what didn't come out exactly, in words]}, or a string saying why nothing
-    could be done."""
+          use_offset=False, mix='REPLACE'):
+    """follower / leader: (object, bone name or ''); leader (None, ''): pinned - it stays where it was. Like Copy
+    Transforms: leader_space (the target's) / space (the owner's) 'GLOBAL' = world, 'LOCAL' = its own channels (the
+    transform against its rest pose and parent, a constraint's Local Space); mix: how the target's transform and its
+    own come together (MIXES, Blender's Mix); use_offset (Keep Offset): on the reference frame it stays where it is
+    and the target counts from there (Replace: as if parented there). Returns {channel set: keys written, "notes":
+    [what didn't come out exactly, in words]}, or a string saying why nothing could be done."""
     fobj, fbone = follower
     lobj, lbone = leader
     if fobj is None:
@@ -377,6 +395,11 @@ def match(scene, follower, leader, start, end, reference, blend_in=0, blend_out=
     if influence <= 0.0:
         return "Influence 0: nothing would change"
     local_f, local_l = space == 'LOCAL', leader_space == 'LOCAL'
+    if mix not in MIXES:
+        return "Unknown mix %r" % (mix,)
+    keep = use_offset or lobj is None
+    if lobj is None:
+        mix = 'REPLACE'
     if end < start:
         start, end = end, start
     blend_in, blend_out = max(0, int(blend_in)), max(0, int(blend_out))
@@ -418,28 +441,36 @@ def match(scene, follower, leader, start, end, reference, blend_in=0, blend_out=
         lo = lobj.evaluated_get(dg) if dg is not None else lobj
         return _channels(lo, lbone) if local_l else _world(lo, lbone)
 
+    def own_now(fo):
+        """Its own matrix on this frame - in the world, or its own channels (Local)."""
+        return _channels(fo, fbone) if local_f else _world(fo, fbone)
+
     def at_ref(_f, dg):
         fo = fobj.evaluated_get(dg) if dg is not None else fobj
-        T, O = leader_now(dg), (_channels(fo, fbone) if local_f else _world(fo, fbone))
+        T, O = leader_now(dg), own_now(fo)
         if T is not None and O is not None:
-            off.append(T.inverted_safe() @ O)
+            off.append((T, O))
 
     def each(f, dg):
         fo = fobj.evaluated_get(dg) if dg is not None else fobj
         T = leader_now(dg)
-        if T is None:
+        O = own_now(fo) if mix != 'REPLACE' else ident
+        if T is None or O is None:
             got[f] = None
             return
-        O = T @ off[0]
-        if local_f:
-            got[f] = O          # (its own channels: written as they are)
+        if mix == 'REPLACE':
+            R = T @ off[0][0].inverted_safe() @ off[0][1] if keep else T
         else:
-            D[f] = O
-            got[f] = _basis(fo, fbone, O)
-    if lobj is not None and not use_offset:
-        off.append(ident)       # (its transform taken as it is: no offset kept)
-    else:
+            R = formulas.mix_transforms(_since(T, off[0][0], mix) if keep else T, O, mix)
+        if local_f:
+            got[f] = R          # (its own channels: written as they are)
+        else:
+            D[f] = R
+            got[f] = _basis(fo, fbone, R)
+    if keep:
         step_frames(scene, [fobj, lobj], [int(reference)], at_ref)
+    else:
+        off.append((ident, ident))      # (the target's transform taken as it is: no offset kept)
     if not off:
         return "The bone is gone"
     need = sorted({w[0] for pl in plans.values() for w in pl["when"].values() if w[1] > 0.0})
@@ -812,7 +843,7 @@ def _run(scene, followers, lobj, lbone, m):
         try:
             res = match(scene, (bpy.data.objects.get(name), bone), (lobj, lbone), start, end, m.reference,
                         m.blend_in, m.blend_out, m.influence, m.use_location, m.use_rotation, m.use_scale,
-                        m.tolerance, m.space, m.leader_space, m.use_offset)
+                        m.tolerance, m.space, m.leader_space, m.use_offset, m.mix)
         except RuntimeError as e:       # (keys Blender won't take: linked data...)
             res = str(e).strip().splitlines()[-1] if str(e).strip() else "Blender refused the keys"
         label = bone or name
@@ -1039,6 +1070,7 @@ def draw_panel(layout, context):
     if ob is not None and ob.type == 'ARMATURE' and ob.pose is not None:
         layout.prop_search(st, "match_leader_bone", ob.pose, "bones", icon='BONE_DATA')
     if ob is not None:
+        layout.prop(m, "mix")
         layout.prop(m, "leader_space", expand=True)
     layout.prop(m, "space", expand=True)
     if ob is None:
@@ -1081,9 +1113,10 @@ def draw_panel(layout, context):
 
 
 class EMP_OT_match_motion(bpy.types.Operator):
-    """The selected bones / objects follow the target over the frames - in its place, or keeping where they are against
-    it (Offset) - baked into their own keys, blended in before and out after. No target: they stay where they are
-    (pinned). Then the panel keeps it adjustable while you scrub and play"""
+    """The selected bones / objects follow the target over the frames, like Copy Transforms (its transform mixed with
+    their own as Mix says; Keep Offset: from where they are on the reference frame), baked into their own keys,
+    blended in before and out after. No target: they stay where they are (pinned). Then the panel keeps it
+    adjustable while you scrub and play"""
     bl_idname = "emp.match_motion"
     bl_label = "Match Motion"
     bl_options = {'UNDO'}
@@ -1181,18 +1214,47 @@ class EMP_OT_match_reference(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def selected_key_frames(context):
+    """Frames of the selected keys of the ones that follow (as the Dope Sheet / Timeline / Graph Editor select them:
+    all their curves - a bone's own), else of the keys selected on the paths."""
+    sc = context.scene
+    m = state.settings(sc).match
+    nodes = _followers_of(m) if m.active else followers_of(context, *target_of(sc))
+    out = set()
+    for name, bone in nodes:
+        ob = bpy.data.objects.get(name)
+        if ob is None:
+            continue
+        ad = ob.animation_data
+        tweak = ad is not None and getattr(ad, "use_tweak_mode", False)
+        pre = 'pose.bones["%s"]' % bpy.utils.escape_identifier(bone) if bone else None
+        for fc in compat.get_fcurves(ob) or ():
+            if pre is not None and not fc.data_path.startswith(pre):
+                continue
+            for kp in fc.keyframe_points:
+                if kp.select_control_point:
+                    x = kp.co.x
+                    if tweak:       # (an action edited in the NLA: its time put in the scene's)
+                        x = ad.nla_tweak_strip_time_to_scene(x)
+                    out.add(int(round(x)))
+    if len(out) < 2:
+        for c in state.editable_caches(sc):
+            out |= {int(round(k.t)) for k in c.keys if k.sel}
+    return sorted(out)
+
+
 class EMP_OT_match_keys_range(bpy.types.Operator):
-    """Frames: from the first to the last selected path key (Custom)"""
+    """Frames: from the first to the last selected key of the ones that follow - in the Dope Sheet, Timeline or Graph
+    Editor, or on a path (Custom)"""
     bl_idname = "emp.match_keys_range"
     bl_label = "Frames of the Selected Keys"
     bl_options = {'UNDO', 'INTERNAL'}
 
     def execute(self, context):
-        sel = []
-        for c in state.editable_caches(context.scene):
-            sel += [k.t for k in c.keys if k.sel]
+        sel = selected_key_frames(context)
         if len(sel) < 2:
-            self.report({'WARNING'}, "Select two or more keys on a path")
+            self.report({'WARNING'}, "Select keys on two or more frames (Dope Sheet, Timeline, Graph Editor or a "
+                                     "path) of the ones that follow")
             return {'CANCELLED'}
         m = state.settings(context.scene).match
         _applying[0] = True

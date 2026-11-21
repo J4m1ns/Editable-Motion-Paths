@@ -344,22 +344,29 @@ That is Blender's own behaviour. To keep edits local, turn it off:
   frame). *Follow Curve* makes the path follow any curve object: keep the timing, even speed,
   or one key per curve point. That way you can export, edit as a curve and bring it back.
 * **Match Motion** (the sidebar's Motion Paths tab, its own collapsible panel; no path needed): the selected
-  bones / objects follow a *Target* over a range of frames - like a Copy Transforms / Copy Location
-  constraint, but baked into their own keys, with blends at the ends. Pick the target in the panel (*Target*,
-  for an armature also *Bone*; the eyedropper, or E over the field), select what should follow - everything
-  selected follows, the active one too - and press **Match**.
-  * The settings read like a constraint's. *Target Space* / *Owner Space*: **World** - the transform in the
-    world; **Local** - the bone's / object's own channels (its transform against its rest pose and parent),
-    as a constraint's Local Space. World / World: a foot put on the other foot stands in it. Local / Local:
-    the channels copied - an arm's own rotation put on the other arm, whatever their bodies do. Two
-    bones with the same parent that stays still come out the same in World and Local.
-  * *Offset* (off: they take the target's transform, like a Copy constraint). On: they keep where they are
-    against the target on the *Reference Frame* and move along with it - as if parented to it there (like
-    Child Of after Set Inverse). The clock button sets the reference frame to the current one.
+  bones / objects follow a *Target* over a range of frames - like a Copy Transforms constraint, but baked
+  into their own keys, with blends at the ends. Pick the target in the panel (*Target*, for an armature also
+  *Bone*; the eyedropper, or E over the field), select what should follow - everything selected follows, the
+  active one too - and press **Match**.
+  * The settings read like Copy Transforms'. *Mix*, as in the constraint: **Replace** - they take the
+    target's transform; **Before Original** - the target's transform before their own, as if it were their
+    parent: their own motion stays, carried by the target; **After Original** - after their own: their own
+    motion stays, the target's added in their own axes. Each in *Full*, *Aligned* or *Split Channels*, as
+    Blender has them. The result is what the constraint gives with the same settings.
+  * *Target Space* / *Owner Space*: **World** - the transform in the world; **Local** - the bone's /
+    object's own channels (its transform against its rest pose and parent), as a constraint's Local Space.
+    World / World: a foot put on the other foot stands in it. Local / Local: the channels copied - an arm's
+    own rotation put on the other arm, whatever their bodies do; with After Original, a control whose rest
+    is at zero adds the target's motion to its own.
+  * *Keep Offset*: on the *Reference Frame* they stay where they are, and from there move with the target.
+    With Replace: as if parented to it on that frame (like Child Of after Set Inverse) - their own keys over
+    the range are replaced. With Before / After Original: the target's change since that frame is mixed
+    with their own motion, which stays. The clock button sets the reference frame to the current one.
   * No target: they are **pinned** - they stay where they were on the reference frame, in the world (World)
     or in their own channels (Local).
   * *Frames*: the scene's range (the preview range when it is on), or *Custom* (Start / End); the key
-    button takes the range of the selected path keys. *Blend In* / *Blend Out* go over from their own motion
+    button takes the range of the selected keys of what follows - selected in the Dope Sheet, the Timeline
+    or the Graph Editor (no path needed), or on a path. *Blend In* / *Blend Out* go over from their own motion
     before the range and back after it (none: within a frame); *Influence* takes only part of the target's
     motion; *Location* / *Rotation* / *Scale* pick the channels; *Tolerance*: how closely the keys follow.
   * It is baked into their own keys - also on one that had none: the keys over the range are replaced by

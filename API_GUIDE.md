@@ -156,6 +156,8 @@ emp.match_motion("Character_Rig", "hand.L", leader="Target", frames=[40, 90], us
 emp.match_motion("Character_Rig", "foot.L", frames=[12, 30])      # no leader: pinned in place over 12-30
 emp.match_motion("Character_Rig", "hand.R", leader="Character_Rig", leader_bone="hand.L",
                  frames=[40, 90], space='LOCAL', leader_space='LOCAL')   # its own channels copied (Local Space)
+emp.match_motion("Character_Rig", "hand.R", leader="Character_Rig", leader_bone="hand.L", frames=[40, 90],
+                 space='LOCAL', leader_space='LOCAL', mix='AFTER_FULL')  # its own motion + the other hand's
 print(max(emp.jitter("Character_Rig", "head"), key=lambda fv: fv[1]))  # roughest frame
 emp.set_mode('VALUE'); emp.set_value_channel("Character_Rig", "hand.L", '["ik_fk"]')
 ```

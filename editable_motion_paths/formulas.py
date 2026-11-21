@@ -210,8 +210,6 @@ def _con(c, idb, prefix):
         s.update(axes=[c.use_x, c.use_y, c.use_z], offset=c.use_offset, add=c.use_add, power=c.power,
                  uniform=c.use_make_uniform)
     elif t == 'COPY_TRANSFORMS':
-        if c.mix_mode not in {'REPLACE', 'BEFORE_FULL', 'AFTER_FULL'}:
-            raise Unsupported("mix")
         s.update(mix=c.mix_mode, shear=c.remove_target_shear)
     elif t == 'CHILD_OF':
         s.update(loc=[c.use_location_x, c.use_location_y, c.use_location_z],
@@ -584,11 +582,46 @@ def _copy_scale(M, T, s, _r):
 def _copy_transforms(M, T, s, _r):
     if s["shear"]:
         T = _ortho(T, False)
-    if s["mix"] == 'REPLACE':
+    return mix_transforms(T, M, s["mix"])
+
+
+def loc_rot_size(M):
+    """Blender's mat4_to_loc_rot_size: (location, the 3x3 axes made unit - turned over with a negative determinant -,
+    their lengths)."""
+    cols = _cols(M)
+    size = Vector([c.length for c in cols])
+    R = Matrix.Identity(3)
+    _set_cols(R, [c / s if s > 1e-35 else Vector() for c, s in zip(cols, size)])
+    if R.determinant() < 0.0:
+        R = R * -1.0
+        size = -size
+    return M.translation.copy(), R, size
+
+
+def loc_rot_size_matrix(loc, R, size):
+    """Blender's loc_rot_size_to_mat4."""
+    M = R.copy()
+    _set_cols(M, [Vector(M.col[i]) * size[i] for i in range(3)])
+    M = M.to_4x4()
+    M.translation = loc
+    return M
+
+
+def mix_transforms(T, M, mix):
+    """Copy Transforms: the target's matrix T mixed with the owner's M as its Mix says (Blender's
+    translike_evaluate): Replace; Before / After Original - Full (one matrix times the other), Aligned (location as
+    Full, rotation and scale each on their own), Split Channels (location added too)."""
+    if mix == 'REPLACE':
         return T.copy()
-    if s["mix"] == 'BEFORE_FULL':
+    if mix == 'BEFORE_FULL':
         return T @ M
-    return M @ T
+    if mix == 'AFTER_FULL':
+        return M @ T
+    A, B = (T, M) if mix in {'BEFORE', 'BEFORE_SPLIT'} else (M, T)
+    la, ra, sa = loc_rot_size(A)
+    lb, rb, sb = loc_rot_size(B)
+    loc = A @ lb if mix in {'BEFORE', 'AFTER'} else la + lb
+    return loc_rot_size_matrix(loc, ra @ rb, Vector([x * y for x, y in zip(sa, sb)]))
 
 def _child_of(M, T, s, k):
     inv = s["inv"]
