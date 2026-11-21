@@ -343,27 +343,34 @@ That is Blender's own behaviour. To keep edits local, turn it off:
 * **Curves**: *Path to Curve* makes a Curve object (a Bezier point per key, or a point per
   frame). *Follow Curve* makes the path follow any curve object: keep the timing, even speed,
   or one key per curve point. That way you can export, edit as a curve and bring it back.
-* **Match Motion...** (Object / Pose > Animation, the right-click menu, the Shape panel; no path needed):
-  the selected bones / objects follow the active one (like parenting: select them, the one to follow
-  last) over a range of frames (the selected path keys' range, else the preview / scene range). *Follow* /
-  *Bone* in the dialog pick another one (with the eyedropper, or E over the field).
-  * *Offset*: **Keep** - they keep where they are against it on a *Reference Frame* and move along with it,
-    as if parented to it there; **Snap** - they take its place, like Copy Transforms: its transform in the
-    world (*Global*) or against its parent (*Local*), the reference frame isn't used. A foot snapped to the
-    other foot in Global stands in it.
-  * In Pose Mode objects selected along (before going into it) count too: several bones and one
-    object - the bones follow the object; objects and one bone - the objects follow the bone.
-  * *Followed Space*: its motion in the world (*Global*) or against its parent (*Local*: what its parents
-    do left out). *Follower Space*: put on them in the world (*Global*) or against their parent (*Local*).
-    Both Local: an arm's motion put on another arm, whatever their bodies do. (Two bones under the same
-    parent that stays still: Global and Local come out the same.)
-  * With nothing to follow (only one selected, or *Follow* left empty) they are **pinned**: they stay
-    where they were on the reference frame - in the world (*Global*), or against their parent (*Local*).
+* **Match Motion** (the sidebar's Motion Paths tab, its own collapsible panel; no path needed): the selected
+  bones / objects follow a *Target* over a range of frames - like a Copy Transforms / Copy Location
+  constraint, but baked into their own keys, with blends at the ends. Pick the target in the panel (*Target*,
+  for an armature also *Bone*; the eyedropper, or E over the field), select what should follow - everything
+  selected follows, the active one too - and press **Match**.
+  * The settings read like a constraint's. *Target Space* / *Owner Space*: **World** - the transform in the
+    world; **Local** - the bone's / object's own channels (its transform against its rest pose and parent),
+    as a constraint's Local Space. World / World: a foot put on the other foot stands in it. Local / Local:
+    the channels copied - an arm's own rotation put on the other arm, whatever their bodies do. Two
+    bones with the same parent that stays still come out the same in World and Local.
+  * *Offset* (off: they take the target's transform, like a Copy constraint). On: they keep where they are
+    against the target on the *Reference Frame* and move along with it - as if parented to it there (like
+    Child Of after Set Inverse). The clock button sets the reference frame to the current one.
+  * No target: they are **pinned** - they stay where they were on the reference frame, in the world (World)
+    or in their own channels (Local).
+  * *Frames*: the scene's range (the preview range when it is on), or *Custom* (Start / End); the key
+    button takes the range of the selected path keys. *Blend In* / *Blend Out* go over from their own motion
+    before the range and back after it (none: within a frame); *Influence* takes only part of the target's
+    motion; *Location* / *Rotation* / *Scale* pick the channels; *Tolerance*: how closely the keys follow.
   * It is baked into their own keys - also on one that had none: the keys over the range are replaced by
-    as few as follow it (*Tolerance*). *Blend In* / *Blend Out* go over from their own motion before the
-    range and back after it (none: within a frame); *Influence* takes only part of the followed motion;
-    *Location* / *Rotation* / *Scale* pick the channels. The frames outside stay exactly as they were.
-  * A looped one (a Cycles modifier on its curves) stays looped: each frame of the loop takes the followed
+    as few as follow it. The frames outside stay exactly as they were.
+  * **Adjust it while you watch:** after Match the panel keeps it adjustable (*Adjusting: ...*) while you
+    scrub and play: change any setting - the target too - and it runs again from the keys they had before.
+    Ctrl+Z steps back through the changes. **Done** keeps the keys; **Cancel** puts their own keys and
+    values back exactly as they were, at once (one without animation has none again). If their keys are
+    edited some other way meanwhile, the next change ends it and leaves the keys alone. After the file is
+    opened again it can't be adjusted any more (Done closes it).
+  * A looped one (a Cycles modifier on its curves) stays looped: each frame of the loop takes the target's
     motion from the turn of the loop that falls in the range, a blend before the range goes on from the
     loop's end and one after it into its start, and the loop's end meets its start again. Only the part
     of the loop that changes is rewritten - its other keys stay. Repeat with Offset keeps its step,
@@ -371,20 +378,13 @@ That is Blender's own behaviour. To keep edits local, turn it off:
     says so). Location, rotation and scale may each loop over their own frames; a curve that holds one
     value goes along with the others.
   * A range past its keys: the extrapolation up to it and after it stays as it was (Constant or Linear).
-  * Several selected: parents first, so their children follow on top. Something that moves with a
-    follower (its child) can't be followed; an armature doesn't follow a bone of its own (with the rig
-    active in Object Mode and its bone picked, only the others follow).
-  * The status bar says what was done (who follows what, the frames, how many keys) - on the reference
-    frame itself nothing moves, scrub to see it. It says too what couldn't be done exactly: frames past
-    a loop's turns, a range longer than the loop, a follower's own constraints or drivers that keep it
-    elsewhere. Animation that plays only from NLA strips is refused (Tab into the strip to match it).
-  * **Adjust it while you watch:** after it ran, a *Match Motion* panel opens at the top of the sidebar's
-    Motion Paths tab. It stays while you scrub and play (the Adjust Last Operation panel closes when the
-    frame changes): change any setting - what it follows, Offset, spaces, frames, blends, influence,
-    channels, tolerance - and it runs again from the keys they had before. Ctrl+Z steps back through the
-    changes. **Done** keeps the keys and closes the panel; **Cancel** puts their own keys back as they were.
-    If their keys are edited some other way meanwhile, the next change closes it and leaves the keys alone.
-    After the file is opened again it can't be adjusted any more (Done closes it).
+  * In Pose Mode, objects selected along (before going into it) follow too. Several: parents first, so their
+    children follow on top. The target itself doesn't follow, nor its armature when it is a bone of it;
+    something that moves with a follower (its child) can't be the target.
+  * The status bar says what was done (who follows what, the frames, how many keys) and what couldn't be
+    done exactly: frames past a loop's turns, a range longer than the loop, a follower's own constraints or
+    drivers that keep it elsewhere. Animation that plays only from NLA strips is refused (Tab into the strip
+    to match it).
 
 ## Modifiers
 

@@ -570,7 +570,6 @@ class EMP_MT_context(bpy.types.Menu):
         layout.menu("EMP_MT_loop", icon='FILE_REFRESH')
         layout.menu("EMP_MT_snap", icon='SNAP_ON')
         layout.menu("EMP_MT_curves", icon='CURVE_DATA')
-        layout.operator("emp.match_motion", text="Match Motion...", icon='CON_CHILDOF')
         layout.separator()
         layout.menu("EMP_MT_delete", icon='X')
 
@@ -648,23 +647,6 @@ class _Panel:
         return context.mode in {'POSE', 'OBJECT'}
 
 
-class EMP_PT_match(_Panel, bpy.types.Panel):
-    """Match Motion kept adjustable after it ran: a change runs it again - scrub and play meanwhile"""
-    bl_label = "Match Motion"
-    bl_idname = "EMP_PT_match"
-
-    @classmethod
-    def poll(cls, context):
-        st = state.settings(context.scene)
-        return st is not None and st.match.active
-
-    def draw_header(self, context):
-        self.layout.label(icon='CON_CHILDOF')
-
-    def draw(self, context):
-        ops_match.draw_session(self.layout, context)
-
-
 class EMP_PT_main(_Panel, bpy.types.Panel):
     bl_label = "Editable Motion Paths"
     bl_idname = "EMP_PT_main"
@@ -735,7 +717,22 @@ class EMP_PT_shape(_Panel, bpy.types.Panel):
         row = col.row(align=True)
         row.menu("EMP_MT_looptools", text="LoopTools", icon='MESH_CIRCLE')
         row.menu("EMP_MT_curves", text="Curves", icon='CURVE_DATA')
-        col.operator("emp.match_motion", text="Match Motion...", icon='CON_CHILDOF')
+
+
+class EMP_PT_match(_Panel, bpy.types.Panel):
+    """Match Motion: the selected bones / objects follow a target, like a Copy constraint baked into their keys - then
+    kept adjustable while you scrub and play"""
+    bl_label = "Match Motion"
+    bl_idname = "EMP_PT_match"
+    bl_parent_id = "EMP_PT_main"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw_header(self, context):
+        st = state.settings(context.scene)
+        self.layout.label(icon='CON_CHILDOF' if st is None or not st.match.active else 'REC')
+
+    def draw(self, context):
+        ops_match.draw_panel(self.layout, context)
 
 
 class EMP_PT_timing(_Panel, bpy.types.Panel):
@@ -1119,8 +1116,8 @@ class EMP_PT_help(_Panel, bpy.types.Panel):
 
 classes = (EMP_MT_handle_type, EMP_MT_interpolation, EMP_MT_value_channel, EMP_OT_set_value_channel,
            EMP_MT_space, EMP_MT_looptools, EMP_MT_snap, EMP_MT_curves, EMP_MT_context, EMP_UL_paths,
-           EMP_PT_match, EMP_PT_main, EMP_PT_shape, EMP_PT_timing, ops_easing.EMP_PT_easing_sidebar, EMP_PT_keys,
-           ops_fmods.EMP_PT_modifiers, snapshots.EMP_PT_snapshots,
+           EMP_PT_main, EMP_PT_shape, EMP_PT_timing, ops_easing.EMP_PT_easing_sidebar, EMP_PT_keys,
+           ops_fmods.EMP_PT_modifiers, snapshots.EMP_PT_snapshots, EMP_PT_match,
            EMP_PT_range, EMP_PT_display, EMP_PT_display_popover, EMP_PT_onion_popover, EMP_PT_com_popover, ops_fmods.EMP_PT_modifiers_popover,
            ops_easing.EMP_PT_easing_presets,
            EMP_PT_help, EMP_PT_smoothing)
@@ -1146,9 +1143,6 @@ def register():
     bpy.app.timers.register(_late_hotkeys, first_interval=1.0)
     bpy.types.VIEW3D_MT_pose_context_menu.append(_context_menu_entry)
     bpy.types.VIEW3D_MT_object_context_menu.append(_context_menu_entry)
-    bpy.types.VIEW3D_MT_object_animation.append(ops_match.menu_entry)
-    bpy.types.VIEW3D_MT_pose_context_menu.append(ops_match.menu_entry)
-    bpy.types.VIEW3D_MT_object_context_menu.append(ops_match.menu_entry)
     from . import ops_vertex
     bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(ops_vertex.context_menu_entry)
     # right click on a setting in the U / J / P panels: a Reset to Default that works there
@@ -1182,9 +1176,6 @@ def unregister():
     _addon_keymaps.clear()
     bpy.types.VIEW3D_MT_pose_context_menu.remove(_context_menu_entry)
     bpy.types.VIEW3D_MT_object_context_menu.remove(_context_menu_entry)
-    bpy.types.VIEW3D_MT_object_animation.remove(ops_match.menu_entry)
-    bpy.types.VIEW3D_MT_pose_context_menu.remove(ops_match.menu_entry)
-    bpy.types.VIEW3D_MT_object_context_menu.remove(ops_match.menu_entry)
     from . import ops_vertex
     bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(ops_vertex.context_menu_entry)
     if hasattr(bpy.types, "WM_MT_button_context"):

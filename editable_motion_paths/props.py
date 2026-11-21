@@ -380,44 +380,63 @@ class EMP_Snapshot(bpy.types.PropertyGroup):
 
 
 def _match_leader_changed(self, context):
-    """A bone the newly picked object doesn't have: the Bone field emptied."""
+    """A bone the newly picked object doesn't have: the Bone field emptied. While a Match Motion is being adjusted,
+    it runs again."""
+    from . import ops_match
     ob = self.match_leader
     if self.match_leader_bone and (ob is None or ob.pose is None or ob.pose.bones.get(self.match_leader_bone) is None):
-        self.match_leader_bone = ""
+        ops_match._applying[0] = True
+        try:
+            self.match_leader_bone = ""
+        finally:
+            ops_match._applying[0] = False
+    ops_match.session_changed(context)
+
+
+def _match_bone_changed(self, context):
+    from . import ops_match
+    ops_match.session_changed(context)
+
+
+def _match_changed(self, context):
+    from . import ops_match
+    ops_match.session_changed(context)
 
 
 def match_props(update=None):
-    """Match Motion's settings - the operator's (its dialog and redo panel) and the ones kept adjustable after it
-    ran (EMP_MatchSession: the sidebar panel, open while scrubbing; update: run it again)."""
+    """Match Motion's settings (the sidebar panel, like a Copy constraint's: Target, its space and the owner's,
+    Offset, Influence - plus frames, blends and tolerance; update: run the one being adjusted again)."""
     u = {} if update is None else {"update": update}
     return {
-        "leader": StringProperty(name="Follow", description="The object (an armature: with a bone) to follow - the "
-                                 "active one. Empty: the selected ones stay where they are (pinned)", **u),
-        "leader_bone": StringProperty(name="Bone", description="The bone of that armature to follow", **u),
-        "offset": EnumProperty(name="Offset", default='KEEP', items=[
-            ('KEEP', "Keep", "They keep where they are against it on the reference frame and move along with it - "
-                             "as if parented to it there"),
-            ('SNAP', "Snap", "They take its place: its transform in the world (Global) or against its parent "
-                             "(Local), like Copy Transforms - the reference frame isn't used"),
+        "use_offset": BoolProperty(name="Offset", default=False, description=(
+            "Keep where they are against the target on the reference frame and move along with it, as if parented "
+            "to it there (like Child Of after Set Inverse). Off: they take its transform, like a Copy constraint"),
+            **u),
+        "leader_space": EnumProperty(name="Target Space", default='GLOBAL', items=[
+            ('GLOBAL', "World", "The target's transform in the world"),
+            ('LOCAL', "Local", "The target's own channels: its transform against its rest pose and its parent (a "
+                               "constraint's Local Space)"),
         ], **u),
-        "leader_space": EnumProperty(name="Followed Space", default='GLOBAL', items=[
-            ('GLOBAL', "Global", "Its motion in the world"),
-            ('LOCAL', "Local", "Its motion against its parent (what its parents do left out)"),
+        "space": EnumProperty(name="Owner Space", default='GLOBAL', items=[
+            ('GLOBAL', "World", "Put on them in the world"),
+            ('LOCAL', "Local", "Put into their own channels: against their rest pose and their parent (a "
+                               "constraint's Local Space)"),
         ], **u),
-        "space": EnumProperty(name="Follower Space", default='GLOBAL', items=[
-            ('GLOBAL', "Global", "Put on them in the world: where it goes, they go"),
-            ('LOCAL', "Local", "Put on them against their parent: they move against it as the followed one moves"),
+        "frames": EnumProperty(name="Frames", default='SCENE', items=[
+            ('SCENE', "Scene", "The scene's frame range (the preview range when it is on)"),
+            ('CUSTOM', "Custom", "From Start to End"),
         ], **u),
-        "start": IntProperty(name="Start", description="The first frame they follow on", **u),
-        "end": IntProperty(name="End", description="The last frame they follow on", **u),
-        "reference": IntProperty(name="Reference Frame", description="Where they are against the followed one on "
-                                 "this frame is kept over the range", **u),
+        "start": IntProperty(name="Start", default=1, description="The first frame they follow on", **u),
+        "end": IntProperty(name="End", default=250, description="The last frame they follow on", **u),
+        "reference": IntProperty(name="Reference Frame", default=1, description=(
+            "With Offset: where they are against the target on this frame is kept. Nothing to follow: where they "
+            "are on this frame is held"), **u),
         "blend_in": IntProperty(name="Blend In", min=0, soft_max=200, description="Frames before the range over "
                                 "which they go over from their own motion (in a loop: from its end)", **u),
         "blend_out": IntProperty(name="Blend Out", min=0, soft_max=200, description="Frames after the range over "
                                  "which they go back to their own motion (in a loop: into its start)", **u),
         "influence": FloatProperty(name="Influence", min=0.0, max=1.0, default=1.0, subtype='FACTOR',
-                                   description="How much of the followed motion they take", **u),
+                                   description="How much of the target's motion they take", **u),
         "use_location": BoolProperty(name="Location", default=True, **u),
         "use_rotation": BoolProperty(name="Rotation", default=True, **u),
         "use_scale": BoolProperty(name="Scale", default=True, **u),
@@ -426,25 +445,21 @@ def match_props(update=None):
     }
 
 
-def _match_changed(self, context):
-    from . import ops_match
-    ops_match.session_changed(context)
-
-
 class EMP_MatchSession(bpy.types.PropertyGroup):
-    """Match Motion kept adjustable after it ran (the sidebar panel: it stays while scrubbing and playing, unlike the
-    redo panel): who follows what, with its settings - a change runs it again from the keys they had before (kept
-    in memory, see ops_match). Undone with the keys."""
+    """Match Motion's settings in the sidebar panel - and the one just run, kept adjustable (active): it stays while
+    scrubbing and playing; a change runs it again from the keys they had before (kept in memory, see ops_match).
+    Undone with the keys."""
     __annotations__ = dict(match_props(_match_changed), active=BoolProperty(), sid=StringProperty(),
                            followers=StringProperty(), written=StringProperty())
 
 
 class EMP_Settings(bpy.types.PropertyGroup):
-    # (Match Motion's dialog: what to follow - fields with an eyedropper, see ops_match)
-    match_leader: PointerProperty(type=bpy.types.Object, name="Follow", update=_match_leader_changed,
+    # (Match Motion: the target - fields with an eyedropper; the rest of its settings in `match`, see ops_match)
+    match_leader: PointerProperty(type=bpy.types.Object, name="Target", update=_match_leader_changed,
                                   description="The object to follow (an armature: with a bone). Empty: they stay "
                                               "where they are (pinned)")
-    match_leader_bone: StringProperty(name="Bone", description="The bone of that armature to follow")
+    match_leader_bone: StringProperty(name="Bone", update=_match_bone_changed,
+                                      description="The bone of that armature to follow")
     match: PointerProperty(type=EMP_MatchSession)
     snapshots: CollectionProperty(type=EMP_Snapshot)
     snapshot_index: IntProperty()

@@ -149,13 +149,13 @@ emp.extrude("Character_Rig", "foot.L", frame=97, frames_later=6)      # continue
 emp.loop_tool("Character_Rig", "hand.L", frames=[8, 12, 16, 20], tool='CIRCLE')  # clean arc
 emp.path_to_curve("Character_Rig", "foot.L")                           # -> object "Path foot.L"
 emp.follow_curve("Character_Rig", "foot.L", curve="MyCurve", timing='KEEP')
-emp.match_motion("Character_Rig", "hand.L", leader="Target", frames=[40, 90], reference=60,
-                 blend_in=8, blend_out=8)   # follows "Target" over 40-90, its offset on frame 60 kept
-emp.match_motion("Character_Rig", "foot.L", leader="Character_Rig", leader_bone="foot.R", frames=[1, 36],
-                 offset='SNAP')   # in the other foot's place (its world transform), no offset kept
+emp.match_motion("Character_Rig", "foot.L", leader="Character_Rig", leader_bone="foot.R",
+                 frames=[1, 36])   # like Copy Transforms (World / World), baked: in the other foot's place
+emp.match_motion("Character_Rig", "hand.L", leader="Target", frames=[40, 90], use_offset=True, reference=60,
+                 blend_in=8, blend_out=8)   # follows "Target" over 40-90 keeping its offset of frame 60
 emp.match_motion("Character_Rig", "foot.L", frames=[12, 30])      # no leader: pinned in place over 12-30
 emp.match_motion("Character_Rig", "hand.R", leader="Character_Rig", leader_bone="hand.L",
-                 frames=[40, 90], space='LOCAL', leader_space='LOCAL')   # against its parent, as the other does
+                 frames=[40, 90], space='LOCAL', leader_space='LOCAL')   # its own channels copied (Local Space)
 print(max(emp.jitter("Character_Rig", "head"), key=lambda fv: fv[1]))  # roughest frame
 emp.set_mode('VALUE'); emp.set_value_channel("Character_Rig", "hand.L", '["ik_fk"]')
 ```
