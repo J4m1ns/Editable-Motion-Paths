@@ -14,7 +14,9 @@ Transforms in full, Copy Location + Copy Rotation (+ Copy Scale) of one target, 
 constraint on one bone) to that one, an object hung on one vertex to that mesh (only the vertex's move reaches it -
 when the mesh is the same on every frame). Limits in a bone's own Local space change nothing above it.
 The bones / objects on the way that are animated get hidden baked caches of their own (helper_keys) when they have
-no path: an edit of any of them is followed too.
+no path: an edit of any of them is followed too. A link that passes only a change without scale as it is (Copy
+Location + Copy Rotation keeping the owner's scale, Copy Transforms removing the target's shear, an Armature
+constraint with Preserve Volume) hands a scaled change to its owner's formula (formulas.py).
 
 Where a link isn't rigid (IK, Stretch To, a constraint mixing in another bone, an influence that changes over time)
 nothing is guessed: the frames the edit changed are baked again - during a drag a few at a time (state._drag_tick,
@@ -319,7 +321,25 @@ def _constrained_up(cons, owner_arm, has_parent, memo):
     if last.type in _COPIES:
         return _stack_of(cons, owner_arm, memo)
     got = _copy_of(last, owner_arm, memo)
-    return (got[0], got[1], False) if got is not None else None
+    return _sheared_copy(last, got)
+
+
+def _sheared_copy(c, got):
+    """A copy (see _copy_of) as a link: (node, M, strict) - a Copy Transforms removing the target's shear passes
+    only a change without scale as it is (the shear a scaled change brings is taken out: its formula's), and only
+    through spaces that don't stretch it (else None)."""
+    if got is None:
+        return None
+    if c.type != 'COPY_TRANSFORMS' or not getattr(c, "remove_target_shear", False):
+        return got[0], got[1], False
+    M = got[1]
+    if M is not None:
+        m = M.to_3x3()
+        p = m @ m.transposed()
+        k = (p[0][0] + p[1][1] + p[2][2]) / 3.0
+        if any(abs(p[i][j] - (k if i == j else 0.0)) > 1e-5 * max(k, 1e-12) for i in range(3) for j in range(3)):
+            return None
+    return got[0], M, True
 
 
 def _ik_chains(o, memo):
@@ -374,8 +394,8 @@ def _up(node, memo, first=False):
         return None
     if cons:
         if len(cons) == 1 and o.parent is None and cons[0].type in {'COPY_TRANSFORMS', 'CHILD_OF'}:
-            got = _copy_of(cons[0], None, memo)
-            return (got[0], got[1], 'RIGID', False) if got is not None else None
+            got = _sheared_copy(cons[0], _copy_of(cons[0], None, memo))
+            return (got[0], got[1], 'RIGID', got[2]) if got is not None else None
         if o.parent is not None or all(_local_limit(c) for c in cons) or \
                 cons[-1].type not in _COPIES | {'ARMATURE'}:
             return None
@@ -522,8 +542,14 @@ def helper_keys(st):
 MAX_F = 64
 _F = {}          # F-node -> {"r": its recipe, "basis": its own basis per frame as baked, "sig": its curves then}
 _F_order = []    # the F-nodes, the ones others read first
-_ichain = {}     # a node an F-node reads -> [(node, Q, Q^-1)] root first: what its world change is made of
+_ichain = {}     # a node an F-node reads -> [(node, Q, Q^-1, index in its walk)] root first: what its world change
+                 # is made of
 _opaque = set()  # the nodes F-nodes read whose change can't all be seen (see _opaque_input)
+# F-nodes that are a rigid link too, one passing only a change without scale (Copy Location + Copy Rotation of one
+# target, an Armature constraint with Preserve Volume): the rigid link while it can pass the change, the formula for
+# a scaled change (or an edit of their own)
+_strict_F = set()
+_subs = {}       # node -> (the F-node owning the lowest such link on its walk, Q, Q^-1): its change from there up
 _nodes = {"fs": None, "W": {}, "V": {}}    # as baked (core.BakeJob): world matrices per frame, driven values
 
 
@@ -539,6 +565,7 @@ def formula_graph(starts, memo):
     past them) - then the same for everything those read. Ones no recipe can do are left out (they wait for the
     re-bake)."""
     F, bad, seen = {}, set(), set()
+    n_strict = 0        # (those only there for a link passing a change without scale: counted apart)
     todo = list(starts)
     while todo:
         n = todo.pop()
@@ -550,10 +577,14 @@ def formula_graph(starts, memo):
         cands = [x for x in nodes if _animated_node(x, memo) and (_limits(x, memo) or [])]
         if not _true_root(nodes[-1]):
             cands.append(nodes[-1])
-        for x in cands:
+        # (and each one on the way that copies another one passing only a change without scale: a scaled change of
+        # what it copies is worked out by its formula)
+        strict = [nodes[i] for i in strict_links(n[0], n[1], memo) if nodes[i] not in cands]
+        for x in cands + strict:
             if x in F or x in bad:
                 continue
-            if len(F) >= MAX_F or (x[1] and x[1] in _ik_chains(bpy.data.objects[x[0]], memo)):
+            full = n_strict >= MAX_F if x in strict else len(F) - n_strict >= MAX_F
+            if full or (x[1] and x[1] in _ik_chains(bpy.data.objects[x[0]], memo)):
                 bad.add(x)      # (an IK chain: Blender's solver - the bake during the drag, and after it)
                 continue
             try:
@@ -562,6 +593,7 @@ def formula_graph(starts, memo):
                 bad.add(x)
                 continue
             F[x] = r
+            n_strict += x in strict
             todo += r.inputs
     return F
 
@@ -613,6 +645,31 @@ def _own_sig(node, r=None):
     return hash(tuple(out))
 
 
+def _edit_sig(node):
+    """An edited parent's own transform as its curves and values make it: every location / rotation / scale curve
+    and the value of each channel without one (the same on every frame) - all three, whatever kind of path it has
+    (the signature of a Location path covers its location curves only: a turn or a scale edited in the Graph
+    Editor went unseen)."""
+    tg = _own_target(node)
+    if tg is None:
+        return None
+    out = [tg.rot_mode]
+    for ch in (tg.loc, tg.rot, tg.scale):
+        for fc, on, v in zip(ch.fcurves, ch.live, ch.static):
+            out.append((core.fc_shape(fc), fc.mute, tuple(core._fmod_signature(m) for m in fc.modifiers))
+                       if fc is not None else None)
+            out.append(None if on else v)
+    for d in (tg.dloc, tg.drot, tg.dscale):
+        out.append(tuple(d) if d is not None else None)
+    return hash(tuple(out))
+
+
+def _anc_sig(c, node):
+    """What an edited parent's edit is told by (see _edit_sig): the signature of the path cache it is followed with
+    when that covers every channel (a Rotation path, a hidden one), else its own (refreshed first)."""
+    return c.sig if c.ptype == core.ROTATION else _edit_sig(node)
+
+
 def _influence_curves(node, r):
     if r is None:
         return []
@@ -645,7 +702,7 @@ def _opaque_input(i, memo):
     chain, _how = walk(i[0], i[1], memo)
     nodes = [i] + [n for n, _Q in chain]
     for n in nodes:
-        if n in _F:
+        if n in _F and n not in _strict_F:
             return False        # (from there up: the formula's)
         if (_animated_node(n, memo) and n not in _anc) or _driven_transform(n, memo):
             return True
@@ -684,11 +741,30 @@ def _check(x, r, fs, n):
     return basis
 
 
-def _world_change(node, deltas, blocked):
+def _substitute(k, deltas, blocked, subst):
+    """The F-node owning the lowest link on k's walk that passes only a change without scale, when its formula gives
+    its change this time: (its change (fs, [matrix or None]) or None for none, Q, Q^-1) - None: the rigid link."""
+    got = _subs.get(k)
+    if got is None or got[0] not in subst or got[0] in blocked:
+        return None
+    return (deltas.get(got[0]),) + got[1:]
+
+
+def _world_change(node, deltas, blocked, subst=()):
     """The world change of a node an F-node reads, from the changes its rigid chain is made of: {frame index:
-    matrix} ({} none), None when one of them can't be worked out."""
+    matrix} ({} none), None when one of them can't be worked out (or a scaled change passes a link taking only one
+    without scale)."""
     out = {}
-    for n, Q, Qi in _ichain.get(node, ()):
+    thr = _strict.get(node)
+    sub = _substitute(node, deltas, blocked, subst) if thr is not None else None
+    if sub is not None and sub[0] is not None:
+        for i, d in enumerate(sub[0][1]):
+            if d is not None:
+                out[i] = sub[1] @ d @ sub[2] if sub[1] is not None else d
+    hi = {}             # (the part passing that link)
+    for n, Q, Qi, idx in _ichain.get(node, ()):
+        if sub is not None and idx >= thr:
+            continue        # (from that link up: the formula's)
         if n in blocked:
             return None
         got = deltas.get(n)
@@ -701,11 +777,17 @@ def _world_change(node, deltas, blocked):
                 d = Q @ d @ Qi
             prev = out.get(i)
             out[i] = d if prev is None else d @ prev
+            if sub is None and thr is not None and idx >= thr:
+                hi[i] = out[i]
+    if any(not _rigid(h) for h in hi.values()):
+        return None
     return out
 
 
-def _formula_delta(x, deltas, blocked, dragged, selfs):
-    """An F-node's world change on each frame (fs, [matrix or None]) - {} none, None it can't be worked out."""
+def _formula_delta(x, deltas, blocked, dragged, selfs, subst):
+    """An F-node's world change on each frame (fs, [matrix or None]) - {} none, None it can't be worked out. One that
+    is a rigid link too (_strict_F): {} while that link passes the change (rigid, nothing of its own edited), else
+    noted in subst - its formula's change is the one taken."""
     info = _F[x]
     r = info["r"]
     fs = _nodes["fs"]
@@ -726,11 +808,15 @@ def _formula_delta(x, deltas, blocked, dragged, selfs):
             own_frames.update(i for i, (a, b) in enumerate(zip(now, was)) if abs(a - b) > 1e-7)
     changes = {}
     for i in r.inputs:
-        wc = _world_change(i, deltas, blocked)
+        wc = _world_change(i, deltas, blocked, subst)
         if wc is None:
             return None
         if wc:
             changes[i] = wc
+    if x in _strict_F:
+        if not own_frames and all(_rigid(d) for wc in changes.values() for d in wc.values()):
+            return {}
+        subst.add(x)
     # (what it reads may have moved in a way not seen here - an IK chain, an edited bone without a hidden cache: an
     # edit that changes the rest of what it reads may change that too - worked out with half of it, it'd be wrong)
     if (changes or own_frames) and any(i in _opaque for i in r.inputs):
@@ -847,6 +933,8 @@ def clear():
     _ichain.clear()
     _opaque.clear()
     _order.clear()
+    _strict_F.clear()
+    _subs.clear()
 
 
 def _formulas(owners, full, memo):
@@ -864,15 +952,20 @@ def _formulas(owners, full, memo):
         if basis is not None:
             _F[x] = {"r": r, "basis": basis, "sig": _own_sig(x, r), "infl": _influences(x, r, fs, n),
                      "drv": _driver_sig(r)}
+            up = _up(x, memo)
+            if up is not None and up[3]:
+                _strict_F.add(x)
 
 
 def _order_nodes():
     """The nodes with a change of their own (edited ancestors, F-nodes), each after what it is worked out from."""
     deps = {}
     for a in _anc:
-        deps[a] = [n for n, _Q, _Qi, _i in _chain.get(a, ()) if n != a]
+        deps[a] = [n for n, _Q, _Qi, _i in _chain.get(a, ()) if n != a] + \
+            ([_subs[a][0]] if a in _subs else [])
     for x, info in _F.items():
-        deps[x] = [n for i in info["r"].inputs for n, _Q, _Qi in _ichain.get(i, ()) if n != x]
+        deps[x] = [n for i in info["r"].inputs for n, _Q, _Qi, _i in _ichain.get(i, ()) if n != x] + \
+            [_subs[i][0] for i in info["r"].inputs if i in _subs and _subs[i][0] != x]
     out, state_ = [], {}
 
     def visit(n, depth=0):
@@ -916,12 +1009,12 @@ def snapshot():
             """[(node, Q, Q^-1, index in its walk)] nearest first: the rigid ancestors with an edit of their own,
             up to the nearest F-node (its change is all of what is above it) - itself included if it is one."""
             chain, _how = walk(k[0], k[1], memo)
-            if k in _F:
+            if k in _F and k not in _strict_F:
                 return [(k, None, None, -1)]
             out = []
             for idx, (n, Q) in enumerate(chain):
                 Qi = Q.inverted_safe() if Q is not None else None
-                if n in _F:
+                if n in _F and n not in _strict_F:
                     out.append((n, Q, Qi, idx))
                     break
                 if n not in full:
@@ -935,8 +1028,8 @@ def snapshot():
                     if tg is None:
                         continue
                     a.refresh()
-                    _anc[n] = {"c": a, "B": a.B, "fs": a.fs, "basis": _basis_list(tg, a.fs, len(a.B)), "sig": a.sig,
-                               "limits": lims}
+                    _anc[n] = {"c": a, "B": a.B, "fs": a.fs, "basis": _basis_list(tg, a.fs, len(a.B)),
+                               "sig": _anc_sig(a, n), "limits": lims}
                 out.append((n, Q, Qi, idx))
             return out
         for k in owners:
@@ -969,12 +1062,21 @@ def snapshot():
                     if tg is not None:
                         a.refresh()
                         _anc[i] = {"c": a, "B": a.B, "fs": a.fs, "basis": _basis_list(tg, a.fs, len(a.B)),
-                                   "sig": a.sig, "limits": lims}
+                                   "sig": _anc_sig(a, i), "limits": lims}
                 if i in _anc and i not in _F:
                     es = [(i, None, None, -1)] + es
-                _ichain[i] = [(n, Q, Qi) for n, Q, Qi, _idx in es[::-1]]
+                _ichain[i] = es[::-1]
+                strict = strict_links(i[0], i[1], memo)
+                if strict:
+                    _strict[i] = min(strict)
                 if _opaque_input(i, memo):
                     _opaque.add(i)
+        # (the F-node owning the lowest link passing only a change without scale on each one's walk)
+        for n, thr in _strict.items():
+            chain, _hw = walk(n[0], n[1], memo)
+            S, Q = (n, None) if thr == 0 else chain[thr - 1]
+            if S in _strict_F:
+                _subs[n] = (S, Q, Q.inverted_safe() if Q is not None else None)
         for n in _anc:
             _depth[n] = len(walk(n[0], n[1], memo)[0])
         _order_nodes()
@@ -1235,22 +1337,30 @@ def _inside_limits(lims, rot_mode, mats):
     return True
 
 
-def _moved(k, B0, fs0, deltas, moves):
+def _moved(k, B0, fs0, deltas, moves, blocked=(), subst=()):
     """Its baked parent space with the world changes of what carries it put in front - None when they can't
-    be (a mesh hung on by three vertices scaled)."""
+    be (a mesh hung on by three vertices scaled, a scaled change through a link passing only one without scale
+    whose owner's formula doesn't give it)."""
     M = B0
     if _carry.get(k) in moves:
         Dm = moves[_carry[k]]
         M = [Dm @ b for b in M]
-    chain = [x for x in _chain.get(k, ()) if x[0] in deltas]
-    if not chain:
+    thr = _strict.get(k)
+    sub = _substitute(k, deltas, blocked, subst) if thr is not None else None
+    # (with that link's owner worked out by its formula: its change, then what is below it)
+    chain = [x for x in _chain.get(k, ()) if x[0] in deltas and (sub is None or x[3] < thr)]
+    if not chain and (sub is None or sub[0] is None):
         return M
     how, pinv = _how.get(k, ('RIGID', None))
-    thr = _strict.get(k)
     out = []
     for i, b in enumerate(M):
         tot = None          # (the whole world change of what it hangs on, on this frame)
         hi = None           # (the part of it passing a link that takes only a change without scale)
+        if sub is not None and sub[0] is not None:
+            fsS, DS = sub[0]
+            d = DS[min(max(fs0 + i - fsS, 0), len(DS) - 1)]
+            if d is not None:
+                tot = sub[1] @ d @ sub[2] if sub[1] is not None else d
         for ka, Q, Qi, idx in chain:
             fsD, D = deltas[ka]
             d = D[min(max(fs0 + i - fsD, 0), len(D) - 1)]
@@ -1259,7 +1369,7 @@ def _moved(k, B0, fs0, deltas, moves):
             if Q is not None:
                 d = Q @ d @ Qi
             tot = d if tot is None else d @ tot
-            if thr is not None and idx >= thr:
+            if sub is None and thr is not None and idx >= thr:
                 hi = tot
         if hi is not None and not _rigid(hi):
             return None         # (a copy keeping its own scale, its target scaled: not followed - the re-bake)
@@ -1280,9 +1390,10 @@ def _update(dragged=()):
     deltas = {}         # ancestor owner -> (fs, [D per frame or None])
     blocked = set()     # ancestors edited in a way not followed here: what they carry waits for the re-bake
     selfs = set()       # F-nodes whose own curves were edited (their own paths are drawn from those)
+    subst = set()       # F-nodes that are rigid links too, their change worked out by their formula this time
     for ka in _order:
         if ka in _F:
-            got = _formula_delta(ka, deltas, blocked, dragged, selfs)
+            got = _formula_delta(ka, deltas, blocked, dragged, selfs, subst)
             if got is None:
                 blocked.add(ka)
             elif got:
@@ -1295,7 +1406,7 @@ def _update(dragged=()):
         if _cache(a.key) is not a or (a.B is not info["B"] and a.B is not _live.get(a.key)):
             continue        # (baked again some other way meanwhile)
         a.refresh()
-        if a.sig == info["sig"] and ka not in _moved_before and ka not in dragged:
+        if ka not in _moved_before and ka not in dragged and _anc_sig(a, ka) == info["sig"]:
             continue        # (its curves as baked)
         tg = a.target()
         if tg is None:
@@ -1313,7 +1424,7 @@ def _update(dragged=()):
             blocked.add(ka)
             continue
         # its own parent space as the parents above it moved it (and an object carrying it moved by hand)
-        B = _moved(ka, info["B"], info["fs"], deltas, moves)
+        B = _moved(ka, info["B"], info["fs"], deltas, moves, blocked, subst)
         if B is None or any(x[0] in blocked for x in _chain.get(ka, ())):
             blocked.add(ka)
             continue
@@ -1332,7 +1443,7 @@ def _update(dragged=()):
             continue
         M = None
         if not any(x[0] in blocked for x in _chain.get(key[:2], ())) and key[:2] not in selfs:
-            M = _moved(key[:2], B0, fs0, deltas, moves)
+            M = _moved(key[:2], B0, fs0, deltas, moves, blocked, subst)
         if M is None or M is B0:
             if c.B is not B0:            # (the parents back as baked - an undo of the edit; or not followed)
                 c.B = B0

@@ -60,15 +60,18 @@ a re-bake. The edited bone needs no path of its own. That goes through:
 * parenting (also to a bone, a bone that doesn't inherit rotation / scale in full);
 * Copy Location / Rotation / Scale / Transforms - alone or together, from one bone or several, any axes,
   mixes, offsets and influences (an FK / IK switch, also animated), in any space (custom ones too);
-* Child Of (all channels), an Armature constraint on one bone or several, the Transformation constraint;
+* Child Of (all channels), an Armature constraint on one bone or several (Preserve Volume too), the
+  Transformation constraint;
 * Damped Track, Track To, Stretch To;
 * Limit Location / Rotation / Scale / Distance - also a bone edited past its limit;
-* an object hung on one vertex of a mesh, also of one an armature bends (an Armature modifier alone).
+* an object hung on one vertex of a mesh, also of one an armature bends (an Armature modifier alone);
+* a scale edit anywhere above, also a non-uniform one above a turned bone (the shear it makes is taken out as
+  Blender does it), and the turn or scale of a bone that has only a Location path, edited in the Graph Editor.
 
 Where a bone isn't simply carried by what is above it, the add-on works out what Blender does for it and
 checks that against what Blender worked out on frames spread over the range; one that doesn't come out the
 same isn't used. Everything else - an IK chain (Blender's solver), an Action constraint, Locked Track,
-drivers reading the edited bone, a sheared bone - is worked out again while keys are dragged (with the add-on
+drivers reading the edited bone - is worked out again while keys are dragged (with the add-on
 or in the Graph Editor), a few frames at a time - only the frames the edit changed (see Range and updates);
 after Blender's own G / R / S in the view, once it is done.
 

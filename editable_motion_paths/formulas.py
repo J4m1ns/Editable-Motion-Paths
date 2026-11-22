@@ -4,9 +4,11 @@ Python - so the paths below it follow an edit at once (live.py), not only after 
 A recipe says how a bone / object is placed: its parent (a bone through Blender's own inherit rules -
 Bone.convert_local_to_pose -, an object through its parent matrix), its own channels, then its constraints in their
 spaces with their influence (static, keyed, or driven: as baked), as Blender's constraint solver does them: Copy
-Location / Rotation / Scale / Transforms (any axes, mix, offset), Child Of, Armature (linear), Damped Track, Track
-To, Stretch To, Limit Location / Rotation / Scale / Distance - and an object hung on a vertex of a mesh an armature
-bends. (An IK chain is Blender's iterative solver: not redone here - the bake during the drag follows it.)
+Location / Rotation / Scale / Transforms (any axes, mix, offset), Child Of, Armature (linear, or with Preserve Volume
+as dual quaternions), Damped Track, Track To, Stretch To, Limit Location / Rotation / Scale / Distance - and an object
+hung on a vertex of a mesh an armature bends. A sheared matrix (a non-uniform scale above a turned bone) is
+straightened as Blender does it (orthogonalize_m4_stable). (An IK chain is Blender's iterative solver: not redone
+here - the bake during the drag follows it.)
 
 evaluate() takes the world matrices of what the recipe reads (the new ones where an edit changed them, else as
 baked) and gives the new world matrix. Nothing is trusted blindly: after each bake every recipe is checked against
@@ -15,7 +17,7 @@ what Blender worked out on a few frames (check()); one that doesn't come out the
 import math
 
 import bpy
-from mathutils import Euler, Matrix, Vector
+from mathutils import Euler, Matrix, Quaternion, Vector
 
 _EULER = {'XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY', 'ZYX'}
 _DIRS = (Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1)), Vector((-1, 0, 0)), Vector((0, -1, 0)),
@@ -61,9 +63,16 @@ def _normalized(M):
     return N, size
 
 
+_SHEAR_MIN = 1e-4          # (Blender corrects the angle between X and Z when its cosine is above this...)
+_SHEAR_MAX = 1.0 - 1.1920929e-07    # (...and below this: X and Z not parallel)
+_SHEAR_EDGE = 2e-6         # (that close to either bound Blender's float math may decide the other way: not done)
+
+
 def _ortho(M, normalize=True):
-    """Blender's orthogonalize_m4_stable(M, Y, normalize) for a matrix without much shear: the X / Z axes made
-    perpendicular to Y."""
+    """Blender's orthogonalize_m4_stable(M, Y, normalize): the X / Z axes made perpendicular to Y (projected on its
+    plane), then to each other - a sheared matrix (a non-uniform scale above a turned bone) corrected as Blender
+    does it: X and Z each turned by half the missing angle, their lengths kept in proportion and the area kept
+    (normalize: unit axes)."""
     x, y, z = _cols(M)
     ly = y.length_squared
     if ly > 0.0:
@@ -75,12 +84,23 @@ def _ortho(M, normalize=True):
     nx = x / lx if lx > 0.0 else x
     nz = z / lz if lz > 0.0 else z
     c = nx.dot(nz)
-    if 1e-4 < abs(c) < 1.0 - 1.2e-7:
-        # (a sheared matrix - a non-uniform scale above a turned bone: Blender corrects it its own way, not
-        # done here; the paths below wait for the re-bake)
-        raise Unsupported("shear")
+    a = abs(c)
+    if abs(a - _SHEAR_MIN) < _SHEAR_EDGE or a > _SHEAR_MAX - _SHEAR_EDGE:
+        # (on the edge of Blender's own test - or X and Z all but parallel: which way it went can't be told)
+        raise Unsupported("shear on the edge")
+    if a > _SHEAR_MIN:
+        angle = math.acos(c)
+        target = angle + (math.pi / 2 - angle) / 2
+        nx = nx - nz * c
+        nx = nx * (math.sin(target) / nx.length)
+        nx = nx + nz * math.cos(target)
+        nz = nx.cross(nz).cross(nx)
+        nz.normalize()
+        if not normalize:
+            f = math.sqrt(math.sin(angle))
+            x, z = nx * (lx * f), nz * (lz * f)
     if normalize:
-        x, z = x.normalized(), z.normalized()
+        x, z = nx, nz
     N = M.copy()
     _set_cols(N, [x, y, z])
     return N
@@ -256,15 +276,17 @@ def _con(c, idb, prefix):
                  mix_loc=c.mix_mode, mix_rot=c.mix_mode_rot, mix_scale=c.mix_mode_scale, order=c.to_euler_order,
                  from_order=c.from_rotation_mode)
     elif t == 'ARMATURE':
-        if c.use_bone_envelopes or c.use_deform_preserve_volume:
-            raise Unsupported("envelopes / volume")
-        s.update(cur=c.use_current_location)
+        if c.use_bone_envelopes:
+            raise Unsupported("envelopes")
+        s.update(cur=c.use_current_location, vol=c.use_deform_preserve_volume)
         for tt in c.targets:
             if tt.weight <= 0.0:
                 continue
             node, _ht, _o = _target(c, tt.target, tt.subtarget)
             if not node[1]:
                 raise Unsupported("armature target without a bone")
+            if _bone(node).use_envelope_multiply:
+                raise Unsupported("envelope multiply")      # (its weight changes with where the owner is)
             k.targets.append((node, tt.weight, None))
         if not k.targets:
             raise Unsupported("no bones")
@@ -836,11 +858,13 @@ def _limit_scale(M, _T, s, _r):
 
 
 def _limit_rotation(M, _T, s, r):
-    Mo = _ortho(M, True)
+    # (as Blender: the shear taken out without making the axes unit - the size is read from that, the turn from
+    # it made unit)
+    Mo = _ortho(M, False)
     loc = M.translation.copy()
-    size = _size(M)
+    size = _size(Mo)
     order = r.order if s["order"] == 'AUTO' else s["order"]
-    eul = Mo.to_3x3().to_euler(order)
+    eul = Mo.to_3x3().normalized().to_euler(order)
     for i, (use, lo, hi) in enumerate(s["lims"]):
         if use:
             eul[i] = min(max(eul[i], lo), hi) if s["legacy"] else _clamp_angle(eul[i], lo, hi)
@@ -895,9 +919,12 @@ _EVAL = {'TRANSFORM': _transformation, 'COPY_LOCATION': _copy_location, 'COPY_RO
          'LIMIT_LOCATION': _limit_location, 'LIMIT_SCALE': _limit_scale, 'LIMIT_ROTATION': _limit_rotation}
 
 
-def _armature(M, k, world):
-    """Blender's Armature constraint (linear): the weighted mean of the target bones' deform matrices (pose @
-    rest^-1, in the world) in front of the owner."""
+def _armature(M, k, world, r):
+    """Blender's Armature constraint: the target bones' deform matrices (pose @ rest^-1, in the world) mixed by
+    their weights - linearly, or with Preserve Volume as dual quaternions (armdef_evaluate) - in front of the
+    owner."""
+    if k.s["vol"]:
+        return _armature_dq(M, k, world, r)
     S = None
     total = 0.0
     for node, w, _o in k.targets:
@@ -910,6 +937,144 @@ def _armature(M, k, world):
         return M
     S = S * (1.0 / total)
     return S @ M
+
+
+# Dual quaternions as Blender's math_rotation does them (DualQuat): [quat (w, x, y, z), trans (4), scale matrix,
+# scale weight]
+
+def _orthonormal(m3):
+    """Blender's is_orthonormal_m3 (its axes: unit and perpendicular, to 1e-5) - (the answer, how near a bound)."""
+    cols = [Vector(m3.col[i]) for i in range(3)]
+    near = 1.0
+    for i in range(3):
+        for j in range(i):
+            d = abs(cols[i].dot(cols[j]))
+            near = min(near, abs(d - 1e-5))
+            if d > 1e-5:
+                return False, near
+    for i in range(3):
+        d = abs(cols[i].dot(cols[i]) - 1.0)
+        near = min(near, abs(d - 1e-5))
+        if d > 1e-5:
+            return False, near
+    return True, near
+
+
+def _ortho_y(M):
+    """Blender's orthogonalize_m4(M, 1): Y made unit, X / Z made perpendicular to it by cross products, then all
+    three given their lengths back."""
+    size = _size(M)
+    x, y, z = _cols(M)
+    y = y.normalized()
+    if y.dot(x) < 1.0:
+        z = x.cross(y).normalized()
+        x = y.cross(z)
+    elif x.dot(z) < 1.0:
+        x = y.cross(z).normalized()
+        z = x.cross(y)
+    else:
+        x = y.cross(Vector((y[1], y[2], y[0]))).normalized()
+        z = x.cross(y)
+    N = M.copy()
+    _set_cols(N, [x * size[0], y * size[1], z * size[2]])
+    return N
+
+
+def _mat_to_dq(base, mat):
+    """Blender's mat4_to_dquat: the deform matrix `mat` of a bone at rest `base` (orthonormal, in the world) as a
+    dual quaternion - its scale (in the bone's rest axes) kept apart as a matrix."""
+    baseRS = mat @ base
+    dscale = _size(baseRS) - Vector((1.0, 1.0, 1.0))
+    ortho, near = _orthonormal(mat.to_3x3())
+    ds = dscale.length_squared
+    if near < 2e-6 or (ortho and abs(ds - 1e-8) < 4e-10):
+        raise Unsupported("dual quaternion on the edge")     # (Blender's float math may take the other branch)
+    if mat.determinant() < 0.0:
+        raise Unsupported("negative scale")
+    if not ortho or ds > 1e-8:
+        tmp = _ortho_y(baseRS)
+        baseR = tmp.to_quaternion().to_matrix().to_4x4()
+        baseR.translation = baseRS.translation
+        baseinv = base.inverted_safe()
+        R = baseR @ baseinv
+        S = baseR.inverted_safe() @ baseRS
+        scale = base @ S @ baseinv
+        sw = 1.0
+    else:
+        R = mat
+        scale = Matrix.Identity(4)
+        sw = 0.0
+    q = R.to_quaternion()
+    t = R.translation
+    trans = [-0.5 * (t[0] * q[1] + t[1] * q[2] + t[2] * q[3]),
+             0.5 * (t[0] * q[0] + t[1] * q[3] - t[2] * q[2]),
+             0.5 * (-t[0] * q[3] + t[1] * q[0] + t[2] * q[1]),
+             0.5 * (t[0] * q[2] - t[1] * q[1] + t[2] * q[0])]
+    return [list(q), trans, scale, sw]
+
+
+def _dq_add(acc, dq, pivot, w):
+    """Blender's add_weighted_dq_dq_pivot (its scale matrix taken about the pivot, the rest of it carried by the
+    dual quaternion) and add_weighted_dq_dq: a weighted dual quaternion added to the sum (the shorter way round)."""
+    q, trans, scale, sw = dq
+    if sw:
+        d = scale @ pivot - pivot
+        trans = [trans[0] - 0.5 * (q[1] * d[0] + q[2] * d[1] + q[3] * d[2]),
+                 trans[1] + 0.5 * (q[0] * d[0] + q[2] * d[2] - q[3] * d[1]),
+                 trans[2] + 0.5 * (q[0] * d[1] + q[3] * d[0] - q[1] * d[2]),
+                 trans[3] + 0.5 * (q[0] * d[2] + q[1] * d[1] - q[2] * d[0])]
+        scale = scale.copy()
+        scale.translation = scale.translation - d
+    flipped = sum(a * b for a, b in zip(q, acc[0])) < 0.0
+    ws = -w if flipped else w
+    acc[0] = [a + ws * b for a, b in zip(acc[0], q)]
+    acc[1] = [a + ws * b for a, b in zip(acc[1], trans)]
+    if sw:
+        acc[2] = acc[2] + scale * w
+        acc[3] += w
+
+
+def _dq_to_mat(acc, total):
+    """Blender's normalize_dq and dquat_to_mat4: the sum divided by the weights, back to a matrix (the scale
+    matrix of the ones without one counted as identity)."""
+    f = 1.0 / total
+    q = [a * f for a in acc[0]]
+    t = [a * f for a in acc[1]]
+    scale, sw = acc[2], acc[3]
+    if sw:
+        add = total - sw
+        if add:
+            scale = scale + Matrix.Identity(4) * add
+        scale = scale * f
+    n = math.sqrt(sum(a * a for a in q))
+    if n != 0.0:
+        n = 1.0 / n
+    q0 = [a * n for a in q]
+    R = Quaternion(q0).to_matrix().to_4x4()
+    R[0][3] = 2.0 * (-t[0] * q0[1] + t[1] * q0[0] - t[2] * q0[3] + t[3] * q0[2]) * n
+    R[1][3] = 2.0 * (-t[0] * q0[2] + t[1] * q0[3] + t[2] * q0[0] - t[3] * q0[1]) * n
+    R[2][3] = 2.0 * (-t[0] * q0[3] - t[1] * q0[2] + t[2] * q0[1] + t[3] * q0[0]) * n
+    return R @ scale if sw else R
+
+
+def _armature_dq(M, k, world, r):
+    """armdef_evaluate with Preserve Volume: about the owner's rest head (a bone; Use Current Location: where it
+    is), each bone's deform matrix against its rest in the world (made orthonormal) as a dual quaternion."""
+    if r.kind == 'BONE' and not k.s["cur"]:
+        pivot = world((r.node[0], "")) @ _bone(r.node).head_local
+    else:
+        pivot = M.translation.copy()
+    acc = [[0.0] * 4, [0.0] * 4, Matrix(((0.0,) * 4,) * 4), 0.0]
+    total = 0.0
+    for node, w, _o in k.targets:
+        aw = world((node[0], ""))
+        mat = world(node) @ _bone(node).matrix_local.inverted_safe() @ aw.inverted_safe()
+        base = _ortho(aw @ _bone(node).matrix_local, True)
+        _dq_add(acc, _mat_to_dq(base, mat), pivot, w)
+        total += w
+    if total <= 1e-4:
+        raise Unsupported("weights")        # (all but none: where Blender draws the line isn't followed here)
+    return _dq_to_mat(acc, total) @ M
 
 
 # ----------------------------------------------------------------------------
@@ -982,7 +1147,7 @@ def evaluate(r, f, world, basis, values):
         old = M
         S = to_space(M, r.node, k.own, world, basis, k)
         if k.type == 'ARMATURE':
-            S = _armature(S, k, world)
+            S = _armature(S, k, world, r)
         else:
             T = target_matrix(k.targets[0][0], k.targets[0][1], k.tar, world, k) if k.targets else None
             S = _EVAL[k.type](S, T, k.s, k if k.type == 'CHILD_OF' else r)
