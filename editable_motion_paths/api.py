@@ -4,11 +4,11 @@
     emp = next(m for n, m in sys.modules.items() if n.endswith("editable_motion_paths.api"))
 
     print(emp.controls("Rig"))                      # the animator's bones, by bone collection
-    emp.add_paths("Rig", ["CTRL_Foot_L"])           # show paths
-    print(emp.analyze("Rig", "CTRL_Foot_L")["summary"])   # read the motion like an animator
+    emp.add_paths("Rig", ["foot.L"])           # show paths
+    print(emp.analyze("Rig", "foot.L")["summary"])   # read the motion like an animator
     emp.preview_objects()                           # make the paths visible in screenshots
-    emp.move_key("Rig", "CTRL_Foot_L", 25, offset=(0, 0, 0.05))
-    emp.move_key("Rig", "CTRL_Hand_R", 12, target=(0.4, -0.3, 1.5))   # key it there, in world space
+    emp.move_key("Rig", "foot.L", 25, offset=(0, 0, 0.05))
+    emp.move_key("Rig", "hand.R", 12, target=(0.4, -0.3, 1.5))   # key it there, in world space
 
 Every function takes object names / bone names (not RNA references) and works no matter
 which tool, mode or selection is active. `mode` is 'LOCATION' or 'ROTATION' (default: the
@@ -609,6 +609,48 @@ def follow_curve(obj, bone=None, curve=None, frames=None, timing='KEEP', mode=No
     timing: 'KEEP', 'EVEN' or 'POINTS'."""
     return _run_op(bpy.ops.emp.import_curve, frames if frames is not None else [], obj, bone, mode,
                    curve=curve, timing=timing)
+
+
+def match_motion(obj, bone=None, leader=None, leader_bone=None, frames=None, reference=None, blend_in=0,
+                 blend_out=0, influence=1.0, location=True, rotation=True, scale=True, tolerance=0.5,
+                 space='GLOBAL', leader_space='GLOBAL', use_offset=False, mix='REPLACE', mode=None):
+    """The bone / object (no path needed) follows `leader` (an object; an armature's bone: `leader_bone`; None: it
+    stays where it is on `reference` - pinned) from the first to the last of `frames` (None: the scene's range),
+    like Copy Transforms baked into its own keys (as few as the motion needs): leader_space (the target's) /
+    space (the owner's) 'GLOBAL' = world, 'LOCAL' = its own channels (a constraint's Local Space); mix: Copy
+    Transforms' Mix ('REPLACE', 'BEFORE_FULL', 'BEFORE', 'BEFORE_SPLIT', 'AFTER_FULL', 'AFTER', 'AFTER_SPLIT');
+    use_offset (Keep Offset): on `reference` (None: the first frame) it stays where it is and the target counts
+    from there ('REPLACE': as if parented there). A looped follower (a Cycles modifier) stays looped.
+    blend_in / blend_out: the first / last frames of the range, over which it goes over from / back to its own motion
+    (as an NLA strip's Blend In / Out);
+    influence 0..1; location / rotation / scale: which channels it takes. Several to follow: one call each, parents
+    first."""
+    from . import ops_match
+    o = _object(obj)
+    if bone:
+        _check_bone(o, bone)
+    lo = _object(leader) if leader is not None else None
+    if leader_bone:
+        _check_bone(lo, leader_bone)
+    _one_of("space", space, ('GLOBAL', 'LOCAL'))
+    _one_of("leader_space", leader_space, ('GLOBAL', 'LOCAL'))
+    _one_of("mix", mix, ops_match.MIXES)
+    sc = _scene()
+    if frames:
+        start, end = int(round(min(frames))), int(round(max(frames)))
+    else:
+        start, end = sc.frame_start, sc.frame_end
+    got = ops_match.match(sc, (o, bone or ""), (lo, leader_bone or ""), start, end,
+                          int(start if reference is None else reference), int(blend_in), int(blend_out),
+                          float(influence), location, rotation, scale, float(tolerance), space, leader_space,
+                          bool(use_offset), mix)
+    if isinstance(got, str):
+        raise ValueError(got)
+    for c in state.all_caches():
+        c.dirty = True
+    state.schedule_rebake(0.2)
+    _push("Match Motion")
+    return {'FINISHED'}
 
 
 def set_value_channel(obj, bone=None, data_path='', index=0):

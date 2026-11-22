@@ -71,6 +71,7 @@ API_GUIDE.md, DEV_GUIDE.md, LICENSE (GPL-3.0-or-later)
 | `ops_sculpt.py` | Sculpt Motion Path tool: timing and shape brushes, Dissolve brush, brush strip |
 | `ops_fmods.py` | F-Curve modifiers as a modifier stack for the active path |
 | `ops_io.py` | path to Curve object, path follows a curve |
+| `ops_match.py` | Match Motion (its sidebar panel): follow a target like a Copy constraint over a range, baked into keys (split_at, fit.py); kept adjustable after it ran (snapshots in memory, `session_changed`) |
 | `ops_value.py` | Edit Value popup (type exact values) |
 | `ops_vertex.py` | Track Motion Path of a mesh vertex (Edit Mode: right-click menu), its own list; only to look at |
 | `snap.py`, `space.py` | Blender's snapping and transform pivot / orientation applied to path keys; `space.py` also has the rotation rings and the move gizmo's geometry (`rot_rings`, `move_gizmo`), shared by drawing and picking |
@@ -339,7 +340,7 @@ run()
   before == after), "the keys keep their frames", "undo restores the curves".
 * Don't keep RNA references across `undo` in a test either; look objects up by name again.
 * The author's own suite (about 90 scripts, a few thousand checks, synthetic scenes plus
-  Blender Studio's rigs, run on Blender 4.4 and 5.2) isn't in the repository; write tests for
+  production-size rigs, run on Blender 4.4 and 5.x) isn't in the repository; write tests for
   what you change.
 
 **Building and installing:**

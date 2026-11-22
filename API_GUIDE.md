@@ -23,7 +23,7 @@ import sys
 # the add-on's API (works for the extension and a plain add-on install)
 emp = next(m for n, m in sys.modules.items() if n.endswith("editable_motion_paths.api"))
 
-emp.add_paths("Character_Rig", ["CTRL_Foot_L", "CTRL_Hand_IK_R"], mode='LOCATION')
+emp.add_paths("Character_Rig", ["foot.L", "hand_ik.R"], mode='LOCATION')
 print(emp.list_paths())
 ```
 
@@ -39,11 +39,11 @@ A production rig has thousands of bones; most of them are machinery hidden from 
 with:
 
 ```python
-print(emp.controls("RIG-rain"))   # {bone collection shown: [bones]}, plus 'keyed': bones with keys now
+print(emp.controls("Character_Rig"))   # {bone collection shown: [bones]}, plus 'keyed': bones with keys now
 ```
 
 `analyze()` says so in its summary when a bone is hidden machinery. A wrong name raises
-`ValueError` with the closest names ("Did you mean 'IK-Hand_Parent.L'?"); a frame without a key
+`ValueError` with the closest names ("Did you mean 'hand_ik.L'?"); a frame without a key
 raises `ValueError` listing the frames of the path's keys.
 
 ## Animate in world space
@@ -53,7 +53,7 @@ keys yet: the rig's parents and constraints are worked out, no bone-local axes t
 
 ```python
 for f, p in ((1, (0.5, 0.0, 1.2)), (12, (0.4, -0.3, 1.6)), (24, (0.5, -0.6, 1.2))):
-    emp.move_key("RIG-rain", "IK-Hand_Parent.L", f, target=p, mode='LOCATION')
+    emp.move_key("Character_Rig", "hand_ik.L", f, target=p, mode='LOCATION')
 ```
 
 Every edit works on the one path named (other paths and Blender's selection are left alone).
@@ -61,9 +61,9 @@ Every edit works on the one path named (other paths and Blender's selection are 
 ## Read the motion
 
 ```python
-a = emp.analyze("Character_Rig", "CTRL_Foot_L")
+a = emp.analyze("Character_Rig", "foot.L")
 print(a["summary"])          # distance, speeds, holds, pops, sharp turns, how keys are hit
-p = emp.get_path("Character_Rig", "CTRL_Foot_L")   # frames, points, speed_per_frame, keys+handles
+p = emp.get_path("Character_Rig", "foot.L")   # frames, points, speed_per_frame, keys+handles
 ```
 
 How to read the result:
@@ -81,7 +81,7 @@ The add-on draws its overlay with Python, and the MCP screenshot does not show t
 real preview objects instead, then take the screenshot:
 
 ```python
-emp.setup_view("Character_Rig", "CTRL_Foot_L", angle=(1.3, 0, 1.2), show_bones=False)  # Solid, framed, no rig shapes
+emp.setup_view("Character_Rig", "foot.L", angle=(1.3, 0, 1.2), show_bones=False)  # Solid, framed, no rig shapes
 emp.preview_objects()        # curve colored by speed, octahedra on keys and on every frame
 # ... take the viewport screenshot with the MCP tool ...
 emp.preview_objects(False)   # remove them when done
@@ -99,7 +99,7 @@ frame numbers included, from the view `setup_view` / `frame_path` just set (also
 script call):
 
 ```python
-emp.setup_view("Character_Rig", "CTRL_Foot_L", angle=(1.3, 0, 1.2))
+emp.setup_view("Character_Rig", "foot.L", angle=(1.3, 0, 1.2))
 emp.render_view(r"C:\path\shot.png")     # framed on the path, close up
 ```
 
@@ -107,7 +107,7 @@ The speed graph alone, to judge the timing by eye (the speed over the frames, th
 lines with their frame numbers):
 
 ```python
-emp.render_speed_graph(r"C:\path\speed.png", "RIG-rain", "IK-Hand_Parent.L", frames=[12, 36])
+emp.render_speed_graph(r"C:\path\speed.png", "Character_Rig", "hand_ik.L", frames=[12, 36])
 emp.render_view(r"C:\path\shot.png", frame_numbers=True)   # every key's frame written next to it
 ```
 
@@ -119,38 +119,47 @@ with it...) isn't edited: the call raises a RuntimeError that says why - `get_pa
 same reason (None when it can be edited).
 
 ```python
-emp.move_key("Character_Rig", "CTRL_Foot_L", frame=25, offset=(0, 0, 0.05))   # world-space nudge
-emp.move_key("Character_Rig", "CTRL_Foot_L", frame=25, target=(0.1, -0.2, 0.3))
-emp.insert_key("Character_Rig", "CTRL_Foot_L", frame=30)       # keeps the motion
-emp.set_key("Character_Rig", "CTRL_Torso", frame=12, values=(1.1, 0.85, 1.1), mode='SCALE')  # squash, by values
-emp.set_key("Character_Rig", "CTRL_Hand_L", frame=20, values=(0.0,), mode='VALUE')     # the value channel
-emp.smooth("Character_Rig", "CTRL_Foot_L", frames=[19, 25, 27], factor=1.0)  # shape; <0 sharpens
-emp.ease("Character_Rig", "CTRL_Foot_L", frames=[25], factor=0.8)            # slow in/out at a key
-emp.ease("Character_Rig", "CTRL_Foot_L", frames=[25], factor=0.8, side='IN') # slow in only (arrive gently)
-emp.exaggerate("Character_Rig", "CTRL_Foot_L", factor=0.3)     # <0 tones down, -1 flattens
-emp.slide("Character_Rig", "CTRL_Foot_L", frames=[33], offset=3)              # retime, keep pose (TIMING)
-emp.slide("Character_Rig", "CTRL_Foot_L", frames=[33], offset=3, slide_mode='SPACING')
-emp.slide("Character_Rig", "CTRL_Foot_L", frames=[40], offset=5, continue_motion=True)  # extend
-emp.cleanup("Character_Rig", "CTRL_Torso", method='ADAPTIVE', tolerance=1.0)  # fewer keys, same 3D shape
-emp.fix_loop("Character_Rig", "CTRL_Head", frame=1)  # close a broken loop: last key := key 1
-emp.set_handle_type("Character_Rig", "CTRL_Foot_L", frames=[25], handle_type='VECTOR')
+emp.move_key("Character_Rig", "foot.L", frame=25, offset=(0, 0, 0.05))   # world-space nudge
+emp.move_key("Character_Rig", "foot.L", frame=25, target=(0.1, -0.2, 0.3))
+emp.insert_key("Character_Rig", "foot.L", frame=30)       # keeps the motion
+emp.set_key("Character_Rig", "torso", frame=12, values=(1.1, 0.85, 1.1), mode='SCALE')  # squash, by values
+emp.set_key("Character_Rig", "hand.L", frame=20, values=(0.0,), mode='VALUE')     # the value channel
+emp.smooth("Character_Rig", "foot.L", frames=[19, 25, 27], factor=1.0)  # shape; <0 sharpens
+emp.ease("Character_Rig", "foot.L", frames=[25], factor=0.8)            # slow in/out at a key
+emp.ease("Character_Rig", "foot.L", frames=[25], factor=0.8, side='IN') # slow in only (arrive gently)
+emp.exaggerate("Character_Rig", "foot.L", factor=0.3)     # <0 tones down, -1 flattens
+emp.slide("Character_Rig", "foot.L", frames=[33], offset=3)              # retime, keep pose (TIMING)
+emp.slide("Character_Rig", "foot.L", frames=[33], offset=3, slide_mode='SPACING')
+emp.slide("Character_Rig", "foot.L", frames=[40], offset=5, continue_motion=True)  # extend
+emp.cleanup("Character_Rig", "torso", method='ADAPTIVE', tolerance=1.0)  # fewer keys, same 3D shape
+emp.fix_loop("Character_Rig", "head", frame=1)  # close a broken loop: last key := key 1
+emp.set_handle_type("Character_Rig", "foot.L", frames=[25], handle_type='VECTOR')
 emp.update()   # recalculate after you change animation by other means
 ```
 
 Timing and topology (2.0):
 
 ```python
-emp.space("Character_Rig", "CTRL_Hand_L", frames=[10, 30], profile='EVEN')        # constant speed, same shape
-emp.space("Character_Rig", "CTRL_Hand_L", frames=[10, 30], profile='SLOW_IN_OUT', strength=2.5)
-emp.dissolve_keys("Character_Rig", "CTRL_Torso", frames=[14, 18])  # remove keys, keep the shape
-emp.subdivide("Character_Rig", "CTRL_Foot_L", frames=[13, 25], cuts=2)
-emp.bevel("Character_Rig", "CTRL_Hand_L", frames=[20], width=3, segments=2)   # round a sharp corner
-emp.extrude("Character_Rig", "CTRL_Foot_L", frame=97, frames_later=6)      # continue the motion
-emp.loop_tool("Character_Rig", "CTRL_Hand_L", frames=[8, 12, 16, 20], tool='CIRCLE')  # clean arc
-emp.path_to_curve("Character_Rig", "CTRL_Foot_L")                           # -> object "Path CTRL_Foot_L"
-emp.follow_curve("Character_Rig", "CTRL_Foot_L", curve="MyCurve", timing='KEEP')
-print(max(emp.jitter("Character_Rig", "CTRL_Head"), key=lambda fv: fv[1]))  # roughest frame
-emp.set_mode('VALUE'); emp.set_value_channel("Character_Rig", "CTRL_Hand_L", '["ik_fk"]')
+emp.space("Character_Rig", "hand.L", frames=[10, 30], profile='EVEN')        # constant speed, same shape
+emp.space("Character_Rig", "hand.L", frames=[10, 30], profile='SLOW_IN_OUT', strength=2.5)
+emp.dissolve_keys("Character_Rig", "torso", frames=[14, 18])  # remove keys, keep the shape
+emp.subdivide("Character_Rig", "foot.L", frames=[13, 25], cuts=2)
+emp.bevel("Character_Rig", "hand.L", frames=[20], width=3, segments=2)   # round a sharp corner
+emp.extrude("Character_Rig", "foot.L", frame=97, frames_later=6)      # continue the motion
+emp.loop_tool("Character_Rig", "hand.L", frames=[8, 12, 16, 20], tool='CIRCLE')  # clean arc
+emp.path_to_curve("Character_Rig", "foot.L")                           # -> object "Path foot.L"
+emp.follow_curve("Character_Rig", "foot.L", curve="MyCurve", timing='KEEP')
+emp.match_motion("Character_Rig", "foot.L", leader="Character_Rig", leader_bone="foot.R",
+                 frames=[1, 36])   # like Copy Transforms (World / World), baked: in the other foot's place
+emp.match_motion("Character_Rig", "hand.L", leader="Target", frames=[40, 90], use_offset=True, reference=60,
+                 blend_in=8, blend_out=8)   # follows "Target" over 40-90 keeping its offset of frame 60
+emp.match_motion("Character_Rig", "foot.L", frames=[12, 30])      # no leader: pinned in place over 12-30
+emp.match_motion("Character_Rig", "hand.R", leader="Character_Rig", leader_bone="hand.L",
+                 frames=[40, 90], space='LOCAL', leader_space='LOCAL')   # its own channels copied (Local Space)
+emp.match_motion("Character_Rig", "hand.R", leader="Character_Rig", leader_bone="hand.L", frames=[40, 90],
+                 space='LOCAL', leader_space='LOCAL', mix='AFTER_FULL')  # its own motion + the other hand's
+print(max(emp.jitter("Character_Rig", "head"), key=lambda fv: fv[1]))  # roughest frame
+emp.set_mode('VALUE'); emp.set_value_channel("Character_Rig", "hand.L", '["ik_fk"]')
 ```
 
 Roughness from `jitter()` above about 0.4 usually reads as a hitch or noise: smooth those
@@ -160,24 +169,24 @@ Easing, timing and the speed (what an animator does in the P gallery, the Shift+
 the speed graph):
 
 ```python
-emp.apply_easing("Character_Rig", "CTRL_Hand_L", frames=[10, 30], easing='CUBIC', direction='EASE_OUT')
-emp.apply_easing("Character_Rig", "CTRL_Hand_L", frames=[10, 30], easing='BACK', direction='EASE_OUT',
+emp.apply_easing("Character_Rig", "hand.L", frames=[10, 30], easing='CUBIC', direction='EASE_OUT')
+emp.apply_easing("Character_Rig", "hand.L", frames=[10, 30], easing='BACK', direction='EASE_OUT',
                  start=0.6, blend=0.2)        # only the last 40% of the part, joined softly
-emp.breakdown("Character_Rig", "CTRL_Hand_L", frames=[20], favor=0.3)       # -1 previous pose .. 1 next pose
-emp.scale_time("Character_Rig", "CTRL_Hand_L", frames=[10, 30], factor=1.5)  # slower (ripple=True moves the rest)
-emp.add_frames("Character_Rig", "CTRL_Hand_L", frame=30, count=4)           # everything after frame 30 later
-emp.moving_hold("Character_Rig", "CTRL_Hand_L", frame=30, frames=8)         # a hold that still drifts
-emp.snap_to_frames("Character_Rig", "CTRL_Hand_L")                          # keys on whole frames
+emp.breakdown("Character_Rig", "hand.L", frames=[20], favor=0.3)       # -1 previous pose .. 1 next pose
+emp.scale_time("Character_Rig", "hand.L", frames=[10, 30], factor=1.5)  # slower (ripple=True moves the rest)
+emp.add_frames("Character_Rig", "hand.L", frame=30, count=4)           # everything after frame 30 later
+emp.moving_hold("Character_Rig", "hand.L", frame=30, frames=8)         # a hold that still drifts
+emp.snap_to_frames("Character_Rig", "hand.L")                          # keys on whole frames
 emp.offset_cascade("Character_Rig", ["Tail1", "Tail2", "Tail3"], offset=2, mode='ROTATION')   # overlap
-emp.shift_phase("Character_Rig", "CTRL_Hip", offset=12)   # a loop: same motion, 12 frames later inside it
-emp.shift_phase("Character_Rig", "CTRL_Hip", offset=3, affect='ROTATION')   # only the rotation curves
-emp.change_speed("Character_Rig", "CTRL_Hand_L", frame=24, amount=-0.02, reach=2.0)  # slower around 24
-emp.smooth_speed("Character_Rig", "CTRL_Hand_L", frames=[10, 40], radius=4, strength=0.5)  # even out bumps in the speed
-emp.copy_pose("Character_Rig", "CTRL_Hand_L", frame=12); emp.paste_pose("Character_Rig", "CTRL_Hand_L", frame=40)
-emp.mirror("Character_Rig", "CTRL_Hand_L", frames=[8, 12, 16], axis='Z')  # bend the arc the other way
-emp.select_keys("Character_Rig", "CTRL_Hand_L", frames=[12, 16])   # select them (and the bone) for Blender's own tools
-emp.delete_keys("Character_Rig", "CTRL_Hand_L", frames=[14])       # delete (dissolve_keys keeps the shape instead)
-emp.remove_paths("Character_Rig", ["CTRL_Hand_L"])                 # stop showing paths (no argument: all of them)
+emp.shift_phase("Character_Rig", "hips", offset=12)   # a loop: same motion, 12 frames later inside it
+emp.shift_phase("Character_Rig", "hips", offset=3, affect='ROTATION')   # only the rotation curves
+emp.change_speed("Character_Rig", "hand.L", frame=24, amount=-0.02, reach=2.0)  # slower around 24
+emp.smooth_speed("Character_Rig", "hand.L", frames=[10, 40], radius=4, strength=0.5)  # even out bumps in the speed
+emp.copy_pose("Character_Rig", "hand.L", frame=12); emp.paste_pose("Character_Rig", "hand.L", frame=40)
+emp.mirror("Character_Rig", "hand.L", frames=[8, 12, 16], axis='Z')  # bend the arc the other way
+emp.select_keys("Character_Rig", "hand.L", frames=[12, 16])   # select them (and the bone) for Blender's own tools
+emp.delete_keys("Character_Rig", "hand.L", frames=[14])       # delete (dissolve_keys keeps the shape instead)
+emp.remove_paths("Character_Rig", ["hand.L"])                 # stop showing paths (no argument: all of them)
 ```
 
 `change_speed` and `smooth_speed` keep the path's shape and the keys' frames (the rest of each
@@ -187,9 +196,9 @@ how far each pass of `smooth_speed` evens the speed out.
 The character's balance and the ghosts:
 
 ```python
-c = emp.center_of_mass("RIG-rain")    # {"ready": False, ...} the first time: call again a moment later
+c = emp.center_of_mass("Character_Rig")    # {"ready": False, ...} the first time: call again a moment later
 # {"ready": True, "frames": {f: {"center": [x, y, z], "lowest": z}}, "now": {"balance": 'IN' / 'OUT' / 'AIR', ...}}
-emp.onion(True, before=3, after=3, obj="RIG-rain", bones=["IK-Hand.L"])   # ghosts of those bones' frames
+emp.onion(True, before=3, after=3, obj="Character_Rig", bones=["hand_ik.L"])   # ghosts of those bones' frames
 # -> {"ready": False, ...} while they are captured: call onion() again a moment later, then render_view
 ```
 

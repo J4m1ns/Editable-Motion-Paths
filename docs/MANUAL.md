@@ -9,12 +9,12 @@ Sheet stay in sync. You shouldn't need the Graph Editor at all. Like Blender's o
 the paths are shown (the edit mode, onion skin, center of mass, display settings) isn't undone:
 Ctrl+Z goes straight to the edits.
 
-Requires Blender 4.4 or newer (tested on 5.2).
+Requires Blender 4.4 or newer (tested on 4.4 and 5.3).
 
 ## Install
 
 Edit > Preferences > Get Extensions > **Install from Disk…** → choose
-`editable_motion_paths-2.0.7.zip`.
+`editable_motion_paths-2.0.8.zip`.
 
 To remove it: Edit > Preferences > **Get Extensions**, find *Editable Motion Paths* among the
 installed ones, and in the dropdown menu at the right of its row choose **Uninstall** (Blender shows no
@@ -50,18 +50,30 @@ there): drag a ring to turn around that axis only (it follows the mouse steadily
 
 **A mode of its own**: each path in the path list has a mode icon - the chain while it is *Auto*
 (follows the mode picked at the top, 1 - 4); its menu pins one of its own (*Always Location / Rotation /
-...*), or **Shift+1 - 4** in the view pins it for the highlighted paths (again: back to Auto). An arm that turns stays in
-Rotation while the sword tip it swings shows Location; both are edited together like any paths.
+...*), or **Shift+1 - 4** in the view pins it for the highlighted paths (again: back to Auto). A bone that turns stays in
+Rotation while the end of a child it carries shows Location; both are edited together like any paths.
 
 **Children follow at once**: when a bone / object is edited (with the add-on, in the Graph Editor, or
-rotated with auto keying), the paths of what it carries rigidly - the sword in the hand, its tip, an object
-hung on a bone - move with it right away, during the drag, not after a re-bake. The edited bone needs no
-path of its own. Rigidly means: parenting (also to a bone, or to one vertex of a mesh that doesn't bend), a
-Copy Transforms in full (an FK / IK switch set to one side) or Copy Location + Copy Rotation (+ Copy Scale)
-of one bone, a full Child Of (a prop held by the hand), an Armature constraint on one bone, limits in a bone's
-own Local space. A chain with other constraints (IK, Stretch To, a mix of two targets, an FK / IK switch that
-is animated) or a bone that doesn't inherit rotation / scale in full is worked out once the edit is done -
-and then only on the frames the edit changed (see Range and updates).
+rotated with auto keying), the paths of what hangs on it move with it right away, during the drag, not after
+a re-bake. The edited bone needs no path of its own. That goes through:
+
+* parenting (also to a bone, a bone that doesn't inherit rotation / scale in full);
+* Copy Location / Rotation / Scale / Transforms - alone or together, from one bone or several, any axes,
+  mixes, offsets and influences (an FK / IK switch, also animated), in any space (custom ones too);
+* Child Of (all channels), an Armature constraint on one bone or several (Preserve Volume too), the
+  Transformation constraint;
+* Damped Track, Track To, Stretch To;
+* Limit Location / Rotation / Scale / Distance - also a bone edited past its limit;
+* an object hung on one vertex of a mesh, also of one an armature bends (an Armature modifier alone);
+* a scale edit anywhere above, also a non-uniform one above a turned bone (the shear it makes is taken out as
+  Blender does it), and the turn or scale of a bone that has only a Location path, edited in the Graph Editor.
+
+Where a bone isn't simply carried by what is above it, the add-on works out what Blender does for it and
+checks that against what Blender worked out on frames spread over the range; one that doesn't come out the
+same isn't used. Everything else - an IK chain (Blender's solver), an Action constraint, Locked Track,
+drivers reading the edited bone - is worked out again while keys are dragged (with the add-on
+or in the Graph Editor), a few frames at a time - only the frames the edit changed (see Range and updates);
+after Blender's own G / R / S in the view, once it is done.
 
 Scale and Value paths of something that stays in place are drawn around a **circle** like a
 clock face, lying flat around the world Z axis (it stays put when the view turns): the frame
@@ -334,6 +346,56 @@ That is Blender's own behaviour. To keep edits local, turn it off:
 * **Curves**: *Path to Curve* makes a Curve object (a Bezier point per key, or a point per
   frame). *Follow Curve* makes the path follow any curve object: keep the timing, even speed,
   or one key per curve point. That way you can export, edit as a curve and bring it back.
+* **Match Motion** (the sidebar's Motion Paths tab, its own collapsible panel; no path needed): the selected
+  bones / objects follow a *Target* over a range of frames - like a Copy Transforms constraint, but baked
+  into their own keys, with blends at the ends. Pick the target in the panel (*Target*, for an armature also
+  *Bone*; the eyedropper, or E over the field), select what should follow - everything selected follows, the
+  active one too - and press **Match**.
+  * The settings read like Copy Transforms'. *Mix*, as in the constraint: **Replace** - they take the
+    target's transform; **Before Original** - the target's transform before their own, as if it were their
+    parent: their own motion stays, carried by the target; **After Original** - after their own: their own
+    motion stays, the target's added in their own axes. Each in *Full*, *Aligned* or *Split Channels*, as
+    Blender has them. The result is what the constraint gives with the same settings.
+  * *Target Space* / *Owner Space*: **World** - the transform in the world; **Local** - the bone's /
+    object's own channels (its transform against its rest pose and parent), as a constraint's Local Space.
+    World / World: a foot put on the other foot stands in it. Local / Local: the channels copied - an arm's
+    own rotation put on the other arm, whatever their bodies do; with After Original, a control whose rest
+    is at zero adds the target's motion to its own.
+  * *Keep Offset*: on the *Reference Frame* they stay where they are, and from there move with the target.
+    With Replace: as if parented to it on that frame (like Child Of after Set Inverse) - their own keys over
+    the range are replaced. With Before / After Original: the target's change since that frame is mixed
+    with their own motion, which stays. The clock button sets the reference frame to the current one.
+  * No target: they are **pinned** - they stay where they were on the reference frame, in the world (World)
+    or in their own channels (Local).
+  * *Frames*: the scene's range (the preview range when it is on), or *Custom* (Start / End); the key
+    button takes the range of the selected keys of what follows - selected in the Dope Sheet, the Timeline
+    or the Graph Editor (no path needed), or on a path. *Blend In* / *Blend Out*: over the first / last
+    frames of the range they go over from their own motion and back, as an NLA strip's Blend In / Out
+    (none: within a frame); *Influence* takes only part of the target's motion; *Location* / *Rotation* /
+    *Scale* pick the channels; *Tolerance*: how closely the keys follow.
+  * It is baked into their own keys - also on one that had none: the keys over the range are replaced by
+    as few as follow it. The frames outside the range stay exactly as they were.
+  * **Adjust it while you watch:** after Match the panel keeps it adjustable (*Adjusting: ...*) while you
+    scrub and play: change any setting - the target too - and it runs again from the keys they had before.
+    Ctrl+Z steps back through the changes. **Done** keeps the keys; **Cancel** puts their own keys and
+    values back exactly as they were, at once (one without animation has none again). If their keys are
+    edited some other way meanwhile, the next change ends it and leaves the keys alone. After the file is
+    opened again it can't be adjusted any more (Done closes it).
+  * A looped one (a Cycles modifier on its curves) stays looped: each frame of the loop takes the target's
+    motion from the turn of the loop that falls in the range (a range across the loop's end goes on from its
+    start, blends too), and the loop's end meets its start again. Only the part
+    of the loop that changes is rewritten - its other keys stay. Repeat with Offset keeps its step,
+    Mirror its turns played back; with a set number of turns, frames past the last one can't follow (it
+    says so). Location, rotation and scale may each loop over their own frames; a curve that holds one
+    value goes along with the others.
+  * A range past its keys: the extrapolation up to it and after it stays as it was (Constant or Linear).
+  * In Pose Mode, objects selected along (before going into it) follow too. Several: parents first, so their
+    children follow on top. The target itself doesn't follow, nor its armature when it is a bone of it;
+    something that moves with a follower (its child) can't be the target.
+  * The status bar says what was done (who follows what, the frames, how many keys) and what couldn't be
+    done exactly: frames past a loop's turns, a range longer than the loop, a follower's own constraints or
+    drivers that keep it elsewhere. Animation that plays only from NLA strips is refused (Tab into the strip
+    to match it).
 
 ## Modifiers
 
@@ -598,7 +660,7 @@ and Blender's own G / R / S with auto keying shows it as it will be. That is its
 row's mode icon (like a path's space) switches to **Static**: kept as it was tracked, with an
 **Update Static Path** button next to it that tracks it again over its range, from any mode. A vertex
 that something else moves too (a lattice, cloth, shape keys...) is Static only. Where the bones under
-it follow the controls through constraints (Rigify's deform bones), its path follows an edit once it
+it follow the controls through constraints (deform bones copying control bones), its path follows an edit once it
 is done - right after it, without a click.
 
 **Blender's G / R / S with auto keying**: while you drag a bone / object that has a path, its path and
@@ -666,8 +728,13 @@ Paths are calculated over the Scene, Action or a Manual frame range (always incl
 key of the path) and update in real time. When other animation such as a parent changes, they
 recalculate on their own (*Auto Update*). After an edit of keys only the frames it changed are
 calculated again - from the keys around the edited ones (Blender works their handles out again too)
-- the rest stays as it was; a change of extrapolation, of a curve's modifiers, of the NLA, of a
-driver or a constraint calculates every frame.
+- the rest stays as it was. A curve a Cycles modifier repeats is calculated again in every cycle
+(turned round in every other one with Mirror), an action edited in the NLA on the frames of the strips
+that play it (every repetition), a change of extrapolation on the frames outside the keys. A change
+of another curve modifier, of the NLA strips themselves, of a driver or a constraint calculates every
+frame. While keys are dragged those frames are calculated as
+you drag, in short steps: spread over them first (the frames between are drawn from the ones done),
+exact once the mouse stops; Esc puts the paths back as they were.
 
 On a heavy rig or a long range (thousands of frames) the calculation runs in the background:
 Blender stays responsive, the frames around the current one come first (a new path shows there at
@@ -682,7 +749,7 @@ it down and your scene, frame and pose are left as they are.
 gives a Python API: find a rig's animator `controls()`, add paths, read and `analyze()`
 trajectories, key controls in world space, `jitter()`, move keys in world space, smooth, exaggerate, ease, slide, `space`,
 `subdivide`, `dissolve_keys`, `bevel`, `extrude`, `loop_tool`, `path_to_curve`,
-`follow_curve`, Clean Up, easing presets (`apply_easing`), the Timing menu's tools
+`follow_curve`, `match_motion`, Clean Up, easing presets (`apply_easing`), the Timing menu's tools
 (`breakdown`, `scale_time`, `add_frames`, `moving_hold`, `offset_cascade`), the speed graph's
 `change_speed` / `smooth_speed`, `onion` and `center_of_mass`. Each call is one undo step.
 `render_view()` renders the view with the overlay for an assistant that can read images;

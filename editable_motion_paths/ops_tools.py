@@ -601,8 +601,8 @@ def _row_highlighted(e):
 
 
 class EMP_OT_path_mode_menu(bpy.types.Operator):
-    """This path's mode: Auto (as picked at the top: 1 - 4), or one of its own - an arm in Rotation while the """ \
-        """sword tip it swings shows Location. The highlighted paths all take it (Shift+1 - 4 in the view)"""
+    """This path's mode: Auto (as picked at the top: 1 - 4), or one of its own - a parent in Rotation while """ \
+        """the end of a child it carries shows Location. The highlighted paths all take it (Shift+1 - 4 in the view)"""
     bl_idname = "emp.path_mode_menu"
     bl_label = "Path Mode"
     bl_options = {'INTERNAL'}

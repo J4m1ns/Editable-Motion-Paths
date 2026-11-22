@@ -272,8 +272,8 @@ MODE_ICONS = {'LOCATION': 'CON_LOCLIKE', 'ROTATION': 'CON_ROTLIKE', 'SCALE': 'CO
 class EMP_PathEntry(bpy.types.PropertyGroup):
     object: PointerProperty(type=bpy.types.Object)
     bone_name: StringProperty()
-    # the path's own mode, or the one picked at the top (1 - 4): an arm in Rotation while the sword tip it swings
-    # shows Location (issue #12)
+    # the path's own mode, or the one picked at the top (1 - 4): a parent in Rotation while the end of a child it
+    # carries shows Location
     mode_pin: EnumProperty(
         name="Mode", default='HEADER', update=_mode_pin_changed,
         items=[('HEADER', "Auto", "This path follows the mode picked at the top (1 - 4)", 'LINKED', 0),
@@ -379,7 +379,108 @@ class EMP_Snapshot(bpy.types.PropertyGroup):
     data: PointerProperty(type=bpy.types.Mesh)     # Static: its shape and values (a mesh no object uses)
 
 
+def _match_leader_changed(self, context):
+    """A bone the newly picked object doesn't have: the Bone field emptied. While a Match Motion is being adjusted,
+    it runs again."""
+    from . import ops_match
+    ob = self.match_leader
+    if self.match_leader_bone and (ob is None or ob.pose is None or ob.pose.bones.get(self.match_leader_bone) is None):
+        ops_match._applying[0] = True
+        try:
+            self.match_leader_bone = ""
+        finally:
+            ops_match._applying[0] = False
+    ops_match.session_changed(context)
+
+
+def _match_bone_changed(self, context):
+    from . import ops_match
+    ops_match.session_changed(context)
+
+
+def _match_changed(self, context):
+    from . import ops_match
+    ops_match.session_changed(context)
+
+
+def match_props(update=None):
+    """Match Motion's settings (the sidebar panel, like Copy Transforms': Target, Mix, its space and the owner's,
+    Influence - plus Keep Offset, frames, blends and tolerance; update: run the one being adjusted again)."""
+    u = {} if update is None else {"update": update}
+    return {
+        "mix": EnumProperty(name="Mix", default='REPLACE', description=(
+            "How the target's transform and their own come together, as in Copy Transforms"), items=[
+            ('REPLACE', "Replace", "Take the target's transform in place of their own"),
+            None,
+            ('BEFORE_FULL', "Before Original (Full)", "The target's transform before their own, as if the target "
+             "were their parent (Full Inherit Scale): their own motion is kept, carried by the target"),
+            ('BEFORE', "Before Original (Aligned)", "The target's transform before their own, as if the target "
+             "were their parent (Aligned Inherit Scale): location as Full, rotation and scale each on their own"),
+            ('BEFORE_SPLIT', "Before Original (Split Channels)", "The target's transform before their own, "
+             "location, rotation and scale each on their own (the target's location added to theirs)"),
+            None,
+            ('AFTER_FULL', "After Original (Full)", "The target's transform after their own, as if they were its "
+             "parent (Full Inherit Scale): their own motion is kept, the target's added in their own axes"),
+            ('AFTER', "After Original (Aligned)", "The target's transform after their own (Aligned Inherit "
+             "Scale): location as Full, rotation and scale each on their own"),
+            ('AFTER_SPLIT', "After Original (Split Channels)", "The target's transform after their own, location, "
+             "rotation and scale each on their own (the target's location added to theirs)"),
+        ], **u),
+        "use_offset": BoolProperty(name="Keep Offset", default=False, description=(
+            "On the reference frame they stay where they are, and from there move with the target (Replace: as if "
+            "parented to it there, like Child Of after Set Inverse; Before / After Original: the target's change "
+            "since that frame mixed with their own motion). Off: the target's transform is taken as it is"), **u),
+        "leader_space": EnumProperty(name="Target Space", default='GLOBAL', items=[
+            ('GLOBAL', "World", "The target's transform in the world"),
+            ('LOCAL', "Local", "The target's own channels: its transform against its rest pose and its parent (a "
+                               "constraint's Local Space)"),
+        ], **u),
+        "space": EnumProperty(name="Owner Space", default='GLOBAL', items=[
+            ('GLOBAL', "World", "Put on them in the world"),
+            ('LOCAL', "Local", "Put into their own channels: against their rest pose and their parent (a "
+                               "constraint's Local Space)"),
+        ], **u),
+        "frames": EnumProperty(name="Frames", default='SCENE', items=[
+            ('SCENE', "Scene", "The scene's frame range (the preview range when it is on)"),
+            ('CUSTOM', "Custom", "From Start to End"),
+        ], **u),
+        "start": IntProperty(name="Start", default=1, description="The first frame they follow on", **u),
+        "end": IntProperty(name="End", default=250, description="The last frame they follow on", **u),
+        "reference": IntProperty(name="Reference Frame", default=1, description=(
+            "With Keep Offset: on this frame they stay where they are, and the target counts from there. Nothing "
+            "to follow: where they are on this frame is held"), **u),
+        "blend_in": IntProperty(name="Blend In", min=0, soft_max=200, description="The first frames of the range, "
+                                "over which they go over from their own motion (as an NLA strip's Blend In). 0: "
+                                "within a frame", **u),
+        "blend_out": IntProperty(name="Blend Out", min=0, soft_max=200, description="The last frames of the range, "
+                                 "over which they go back to their own motion (as an NLA strip's Blend Out). 0: "
+                                 "within a frame", **u),
+        "influence": FloatProperty(name="Influence", min=0.0, max=1.0, default=1.0, subtype='FACTOR',
+                                   description="How much of the target's motion they take", **u),
+        "use_location": BoolProperty(name="Location", default=True, **u),
+        "use_rotation": BoolProperty(name="Rotation", default=True, **u),
+        "use_scale": BoolProperty(name="Scale", default=True, **u),
+        "tolerance": FloatProperty(name="Tolerance", subtype='PERCENTAGE', default=0.5, min=0.01, soft_max=5.0,
+                                   description="How closely the keys follow (more keys where it needs them)", **u),
+    }
+
+
+class EMP_MatchSession(bpy.types.PropertyGroup):
+    """Match Motion's settings in the sidebar panel - and the one just run, kept adjustable (active): it stays while
+    scrubbing and playing; a change runs it again from the keys they had before (kept in memory, see ops_match).
+    Undone with the keys."""
+    __annotations__ = dict(match_props(_match_changed), active=BoolProperty(), sid=StringProperty(),
+                           followers=StringProperty(), written=StringProperty())
+
+
 class EMP_Settings(bpy.types.PropertyGroup):
+    # (Match Motion: the target - fields with an eyedropper; the rest of its settings in `match`, see ops_match)
+    match_leader: PointerProperty(type=bpy.types.Object, name="Target", update=_match_leader_changed,
+                                  description="The object to follow (an armature: with a bone). Empty: they stay "
+                                              "where they are (pinned)")
+    match_leader_bone: StringProperty(name="Bone", update=_match_bone_changed,
+                                      description="The bone of that armature to follow")
+    match: PointerProperty(type=EMP_MatchSession)
     snapshots: CollectionProperty(type=EMP_Snapshot)
     snapshot_index: IntProperty()
     show_snapshots: BoolProperty(name="Snapshots", default=True, update=_snapshots_toggled,
@@ -982,8 +1083,8 @@ GRAPH_LOOK = PREF_NAMES[-18:-3]
 for _n in PREF_NAMES:
     setattr(EMP_Settings, _n, _pref_property(_n))
 
-classes = (EMP_BrushSettings, EMP_VertexPoint, EMP_VertexPath, EMP_PathEntry, EMP_Snapshot, EMP_Settings,
-           EMP_Preferences)
+classes = (EMP_BrushSettings, EMP_VertexPoint, EMP_VertexPath, EMP_PathEntry, EMP_Snapshot, EMP_MatchSession,
+           EMP_Settings, EMP_Preferences)
 
 
 def register():

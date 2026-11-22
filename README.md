@@ -15,7 +15,7 @@ a library override, with its constraints, drivers and IK.
 ![A hand's arc and a head's rotation path edited by their keys and handles: the motion follows live](docs/media/hero.gif)
 <sub>Character: Rain by Blender Studio ([CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/))</sub>
 
-Free and open source, for Blender 4.4 and newer (tested on 4.4 and 5.2). Designed by an animator,
+Free and open source, for Blender 4.4 and newer (tested on 4.4 and 5.3). Designed by an animator,
 written by an AI - [How it was made](#how-it-was-made) · [Support the project](#support-the-project).
 
 ## What it does
@@ -71,7 +71,7 @@ read the motion (`analyze`), see it (`render_view`) and edit it in world space -
 
 ## Install
 
-1. Download `editable_motion_paths-2.0.7.zip` from the [Releases](https://github.com/J4m1ns/Editable-Motion-Paths/releases/latest).
+1. Download `editable_motion_paths-2.0.8.zip` from the [Releases](https://github.com/J4m1ns/Editable-Motion-Paths/releases/latest).
 2. Blender: *Edit > Preferences > Get Extensions > Install from Disk…* and
    choose the zip.
 
