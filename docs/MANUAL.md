@@ -366,11 +366,12 @@ That is Blender's own behaviour. To keep edits local, turn it off:
     or in their own channels (Local).
   * *Frames*: the scene's range (the preview range when it is on), or *Custom* (Start / End); the key
     button takes the range of the selected keys of what follows - selected in the Dope Sheet, the Timeline
-    or the Graph Editor (no path needed), or on a path. *Blend In* / *Blend Out* go over from their own motion
-    before the range and back after it (none: within a frame); *Influence* takes only part of the target's
-    motion; *Location* / *Rotation* / *Scale* pick the channels; *Tolerance*: how closely the keys follow.
+    or the Graph Editor (no path needed), or on a path. *Blend In* / *Blend Out*: over the first / last
+    frames of the range they go over from their own motion and back, as an NLA strip's Blend In / Out
+    (none: within a frame); *Influence* takes only part of the target's motion; *Location* / *Rotation* /
+    *Scale* pick the channels; *Tolerance*: how closely the keys follow.
   * It is baked into their own keys - also on one that had none: the keys over the range are replaced by
-    as few as follow it. The frames outside stay exactly as they were.
+    as few as follow it. The frames outside the range stay exactly as they were.
   * **Adjust it while you watch:** after Match the panel keeps it adjustable (*Adjusting: ...*) while you
     scrub and play: change any setting - the target too - and it runs again from the keys they had before.
     Ctrl+Z steps back through the changes. **Done** keeps the keys; **Cancel** puts their own keys and
@@ -378,8 +379,8 @@ That is Blender's own behaviour. To keep edits local, turn it off:
     edited some other way meanwhile, the next change ends it and leaves the keys alone. After the file is
     opened again it can't be adjusted any more (Done closes it).
   * A looped one (a Cycles modifier on its curves) stays looped: each frame of the loop takes the target's
-    motion from the turn of the loop that falls in the range, a blend before the range goes on from the
-    loop's end and one after it into its start, and the loop's end meets its start again. Only the part
+    motion from the turn of the loop that falls in the range (a range across the loop's end goes on from its
+    start, blends too), and the loop's end meets its start again. Only the part
     of the loop that changes is rewritten - its other keys stay. Repeat with Offset keeps its step,
     Mirror its turns played back; with a set number of turns, frames past the last one can't follow (it
     says so). Location, rotation and scale may each loop over their own frames; a curve that holds one

@@ -1,6 +1,7 @@
 """Match Motion: the selected bones / objects follow a target over a range of frames, like a Copy constraint baked
-into their own keys (only as many as the motion needs). Before the range they blend in from their own motion,
-after it back out; an influence for all of it. No path is needed. With nothing to follow they are pinned: they stay
+into their own keys (only as many as the motion needs). Over the range's first frames they blend in from their own
+motion, over its last ones back out (as an NLA strip's Blend In / Out); an influence for all of it; the frames outside
+the range don't change. No path is needed. With nothing to follow they are pinned: they stay
 where they were on the reference frame. Run from the sidebar panel, which then keeps it adjustable.
 
 As Copy Transforms: the target's matrix T is its world matrix (World) or its own channels (Local: the transform
@@ -11,8 +12,8 @@ Keep Offset (or pinned): on the reference frame it stays where it is - the targe
 O(f) = T(f) @ T(ref)^-1 @ O(ref) (as if parented there), Before T(f) @ T(ref)^-1 mixed with O(f) (Child Of after
 Set Inverse), After O(f) mixed with T(ref)^-1 @ T(f) (Split Channels: the channels' own changes).
 In a loop (the follower's curves repeated by a Cycles modifier) all of it stays inside the loop: each frame of the
-loop takes the leader on the frame of the turn that falls in the range (a blend before the range goes on from the
-loop's end, one after it into its start; Repeat with Offset: its step taken off; Mirror: the turns played back),
+loop takes the leader on the frame of the turn that falls in the range (a range across the loop's end goes on from
+its start, blends too; Repeat with Offset: its step taken off; Mirror: the turns played back),
 only the spans of the loop that change are written - the other keys stay - and the loop stays closed.
 A world matrix is turned into its own channels through its parents on each frame (_basis), blended with its own
 channels where it blends in / out (location and scale mixed, rotation turned the shortest way) and fitted with the
@@ -126,17 +127,16 @@ def step_frames(scene, objs, frames, fn):
 
 
 def _ramp(f, start, end, blend_in, blend_out):
-    """How much of the leader's motion a frame takes (before the influence): 1 over the range, easing in / out over
-    the blends, 0 outside."""
-    if start <= f <= end:
-        return 1.0
-    if blend_in > 0 and start - blend_in < f < start:
-        u = (f - (start - blend_in)) / blend_in
-    elif blend_out > 0 and end < f < end + blend_out:
-        u = ((end + blend_out) - f) / blend_out
-    else:
+    """How much of the leader's motion a frame takes (before the influence): 0 outside the range; inside it, as an
+    NLA strip's Blend In / Out, easing in over its first blend_in frames and out over its last blend_out (each of
+    those meeting the other's where they overlap), 1 in between."""
+    if f < start or f > end:
         return 0.0
-    return u * u * (3.0 - 2.0 * u)
+    w = 1.0
+    for u in ((f - start) / blend_in if blend_in > 0 else 1.0, (end - f) / blend_out if blend_out > 0 else 1.0):
+        if u < 1.0:
+            w = min(w, u * u * (3.0 - 2.0 * u))
+    return w
 
 
 def _catmull(vals, frames, t):
@@ -341,13 +341,14 @@ def _plan(cyc, start, end, blend_in, blend_out, influence, notes):
     leader is taken on, how much of it, the loop's turn it is seen in)}, "windows": the spans written} - or a
     string: why nothing can be done. What doesn't come out exactly goes into notes."""
     if cyc is None:
-        # (no blend: it goes over within a frame - its own motion on the frame before and after the range)
-        r0, r1 = int(start) - max(blend_in, 1), int(end) + max(blend_out, 1)
+        # (a blend: its own motion on the range's first / last frame; none: it goes over within a frame - its own
+        # motion on the frame before / after the range)
+        r0, r1 = int(start) - (0 if blend_in > 0 else 1), int(end) + (0 if blend_out > 0 else 1)
         return {"cyc": None, "windows": [(r0, r1)],
                 "when": {f: (f, influence * _ramp(f, start, end, blend_in, blend_out), 0) for f in range(r0, r1 + 1)}}
     c0, c1 = cyc["c0"], cyc["c1"]
     P = c1 - c0
-    ks = _turns(cyc, start - blend_in, end + blend_out)
+    ks = _turns(cyc, start, end)
     when = {}
     for t in range(c0, (c1 - 1 if cyc["tie"] else c1) + 1):
         best = (0.0, t, 0)
@@ -363,7 +364,7 @@ def _plan(cyc, start, end, blend_in, blend_out, influence, notes):
     if not changed:
         return "The range is outside the turns of its loop (keys %d - %d)" % (c0, c1)
     said = []
-    if (end + blend_out) - (start - blend_in) > P:
+    if end - start > P:
         said.append("the range is longer than its loop (%d frames): it follows one turn of it" % P)
     past = [s for s in range(int(start), int(end) + 1) if not any(c0 + k * P <= s <= c1 + k * P for k in ks)]
     if past:

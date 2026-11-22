@@ -449,10 +449,12 @@ def match_props(update=None):
         "reference": IntProperty(name="Reference Frame", default=1, description=(
             "With Keep Offset: on this frame they stay where they are, and the target counts from there. Nothing "
             "to follow: where they are on this frame is held"), **u),
-        "blend_in": IntProperty(name="Blend In", min=0, soft_max=200, description="Frames before the range over "
-                                "which they go over from their own motion (in a loop: from its end)", **u),
-        "blend_out": IntProperty(name="Blend Out", min=0, soft_max=200, description="Frames after the range over "
-                                 "which they go back to their own motion (in a loop: into its start)", **u),
+        "blend_in": IntProperty(name="Blend In", min=0, soft_max=200, description="The first frames of the range, "
+                                "over which they go over from their own motion (as an NLA strip's Blend In). 0: "
+                                "within a frame", **u),
+        "blend_out": IntProperty(name="Blend Out", min=0, soft_max=200, description="The last frames of the range, "
+                                 "over which they go back to their own motion (as an NLA strip's Blend Out). 0: "
+                                 "within a frame", **u),
         "influence": FloatProperty(name="Influence", min=0.0, max=1.0, default=1.0, subtype='FACTOR',
                                    description="How much of the target's motion they take", **u),
         "use_location": BoolProperty(name="Location", default=True, **u),

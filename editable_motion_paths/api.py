@@ -621,7 +621,8 @@ def match_motion(obj, bone=None, leader=None, leader_bone=None, frames=None, ref
     Transforms' Mix ('REPLACE', 'BEFORE_FULL', 'BEFORE', 'BEFORE_SPLIT', 'AFTER_FULL', 'AFTER', 'AFTER_SPLIT');
     use_offset (Keep Offset): on `reference` (None: the first frame) it stays where it is and the target counts
     from there ('REPLACE': as if parented there). A looped follower (a Cycles modifier) stays looped.
-    blend_in / blend_out: frames before / after the range over which it goes over from / back to its own motion;
+    blend_in / blend_out: the first / last frames of the range, over which it goes over from / back to its own motion
+    (as an NLA strip's Blend In / Out);
     influence 0..1; location / rotation / scale: which channels it takes. Several to follow: one call each, parents
     first."""
     from . import ops_match
