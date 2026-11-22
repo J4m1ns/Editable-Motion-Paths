@@ -9,12 +9,12 @@ Sheet stay in sync. You shouldn't need the Graph Editor at all. Like Blender's o
 the paths are shown (the edit mode, onion skin, center of mass, display settings) isn't undone:
 Ctrl+Z goes straight to the edits.
 
-Requires Blender 4.4 or newer (tested on 5.2).
+Requires Blender 4.4 or newer (tested on 4.4 and 5.3).
 
 ## Install
 
 Edit > Preferences > Get Extensions > **Install from Disk…** → choose
-`editable_motion_paths-2.0.7.zip`.
+`editable_motion_paths-2.0.8.zip`.
 
 To remove it: Edit > Preferences > **Get Extensions**, find *Editable Motion Paths* among the
 installed ones, and in the dropdown menu at the right of its row choose **Uninstall** (Blender shows no
